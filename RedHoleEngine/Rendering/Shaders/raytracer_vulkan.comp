@@ -1,0 +1,249 @@
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16) in;
+layout(set = 0, binding = 0, rgba32f) uniform image2D outputImage;
+
+layout(set = 0, binding = 1) uniform UniformBlock {
+    vec2 u_Resolution;
+    float u_Time;
+    float _pad1;
+    vec3 u_CameraPos;
+    float _pad2;
+    vec3 u_CameraForward;
+    float _pad3;
+    vec3 u_CameraRight;
+    float _pad4;
+    vec3 u_CameraUp;
+    float u_Fov;
+    vec3 u_BlackHolePos;
+    float u_BlackHoleMass;
+    float u_SchwarzschildRadius;
+    float u_DiskInnerRadius;
+    float u_DiskOuterRadius;
+    float _pad5;
+};
+
+// Constants
+const float PI = 3.14159265359;
+const int MAX_STEPS = 300;
+const float STEP_SIZE = 0.1;
+
+// ============================================
+// Schwarzschild Geodesic Integration
+// ============================================
+
+// Calculate gravitational acceleration for light ray bending
+// Using the geodesic equation for Schwarzschild metric
+vec3 schwarzschildAcceleration(vec3 pos, vec3 vel, float rs) {
+    vec3 r = pos - u_BlackHolePos;
+    float rMag = length(r);
+    
+    if (rMag < rs * 0.5) {
+        return vec3(0.0); // Inside event horizon
+    }
+    
+    // Angular momentum (cross product of position and velocity)
+    vec3 h = cross(r, vel);
+    float h2 = dot(h, h);
+    
+    // Schwarzschild geodesic acceleration
+    // d²r/dλ² = -1.5 * rs * h² / r⁵ * r_hat
+    float r5 = rMag * rMag * rMag * rMag * rMag;
+    vec3 accel = -1.5 * rs * h2 / r5 * r;
+    
+    return accel;
+}
+
+// ============================================
+// Accretion Disk
+// ============================================
+
+// Temperature-based color for accretion disk (simplified blackbody)
+vec3 diskColor(vec3 hitPos, float rs) {
+    float distFromCenter = length(hitPos.xz - u_BlackHolePos.xz);
+    
+    // Temperature decreases with distance from center
+    float t = (distFromCenter - u_DiskInnerRadius) / (u_DiskOuterRadius - u_DiskInnerRadius);
+    t = clamp(t, 0.0, 1.0);
+    
+    // Inner disk is hotter (bluer/whiter), outer is cooler (redder)
+    vec3 hotColor = vec3(1.0, 0.9, 0.8);   // White-hot
+    vec3 warmColor = vec3(1.0, 0.6, 0.2);  // Orange
+    vec3 coolColor = vec3(0.8, 0.2, 0.1);  // Red
+    
+    vec3 color;
+    if (t < 0.5) {
+        color = mix(hotColor, warmColor, t * 2.0);
+    } else {
+        color = mix(warmColor, coolColor, (t - 0.5) * 2.0);
+    }
+    
+    // Add some turbulence/variation
+    float angle = atan(hitPos.z - u_BlackHolePos.z, hitPos.x - u_BlackHolePos.x);
+    float turbulence = sin(angle * 10.0 + u_Time * 2.0) * 0.1 + 0.9;
+    
+    // Brightness based on distance (closer = brighter due to gravitational heating)
+    float brightness = 1.0 / (1.0 + t * 2.0);
+    
+    return color * brightness * turbulence * 2.0;
+}
+
+// ============================================
+// Procedural Starfield
+// ============================================
+
+// Simple hash function for procedural generation
+float hash(vec2 p) {
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+
+// Procedural starfield on unit sphere
+vec3 starfield(vec3 dir) {
+    // Normalize direction
+    dir = normalize(dir);
+    
+    // Convert direction to spherical coordinates
+    float phi = atan(dir.z, dir.x);
+    float theta = asin(clamp(dir.y, -1.0, 1.0));
+    
+    // Create a grid on the sphere
+    vec2 grid = vec2(phi, theta) * 50.0;
+    vec2 gridId = floor(grid);
+    vec2 gridUv = fract(grid);
+    
+    // Random star position within cell
+    vec2 starPos = vec2(hash(gridId), hash(gridId + 100.0));
+    float starDist = length(gridUv - starPos);
+    
+    // Star brightness based on random value
+    float starBrightness = hash(gridId + 200.0);
+    
+    // Background - dark space
+    vec3 bgColor = vec3(0.0, 0.0, 0.02);
+    
+    // Stars - more of them and brighter
+    if (starBrightness > 0.92) {
+        float star = smoothstep(0.08, 0.0, starDist);
+        
+        // Star color variation
+        vec3 starColor = vec3(1.0);
+        float colorRand = hash(gridId + 300.0);
+        if (colorRand < 0.3) {
+            starColor = vec3(1.0, 0.9, 0.7); // Warm yellow
+        } else if (colorRand < 0.6) {
+            starColor = vec3(0.7, 0.8, 1.0); // Cool blue
+        }
+        
+        float intensity = (starBrightness - 0.92) * 12.0;
+        return bgColor + starColor * star * intensity;
+    }
+    
+    return bgColor;
+}
+
+// ============================================
+// Main Raytracing
+// ============================================
+
+// Simple ray-sphere intersection for the event horizon visualization
+float intersectSphere(vec3 ro, vec3 rd, vec3 center, float radius) {
+    vec3 oc = ro - center;
+    float b = dot(oc, rd);
+    float c = dot(oc, oc) - radius * radius;
+    float h = b * b - c;
+    if (h < 0.0) return -1.0;
+    return -b - sqrt(h);
+}
+
+vec3 trace(vec3 rayOrigin, vec3 rayDir) {
+    vec3 pos = rayOrigin;
+    vec3 vel = normalize(rayDir);
+    
+    float rs = u_SchwarzschildRadius;
+    
+    for (int i = 0; i < MAX_STEPS; i++) {
+        // Distance from current position to black hole center
+        vec3 relPos = pos - u_BlackHolePos;
+        float dist = length(relPos);
+        
+        // Adaptive step size (smaller when closer to black hole for accuracy)
+        float step = STEP_SIZE * clamp(dist / (rs * 3.0), 0.02, 1.0);
+        
+        // Check if fallen into event horizon
+        if (dist < rs) {
+            return vec3(0.0); // Black - absorbed by black hole
+        }
+        
+        // Store old position for disk intersection test
+        vec3 oldPos = pos;
+        
+        // Integrate geodesic using position relative to black hole
+        vec3 h = cross(relPos, vel);
+        float h2 = dot(h, h);
+        float r5 = dist * dist * dist * dist * dist;
+        vec3 accel = -1.5 * rs * h2 / r5 * relPos;
+        
+        vel += accel * step;
+        vel = normalize(vel);
+        pos = pos + vel * step;
+        
+        // Check for disk intersection (ray crosses y=0 plane)
+        float y1 = oldPos.y - u_BlackHolePos.y;
+        float y2 = pos.y - u_BlackHolePos.y;
+        
+        if (y1 * y2 < 0.0) {
+            // Ray crossed the disk plane
+            float t = abs(y1) / (abs(y1) + abs(y2));
+            vec3 hitPos = mix(oldPos, pos, t);
+            float distFromCenter = length(hitPos.xz - u_BlackHolePos.xz);
+            
+            if (distFromCenter >= u_DiskInnerRadius && distFromCenter <= u_DiskOuterRadius) {
+                return diskColor(hitPos, rs);
+            }
+        }
+        
+        // Check if ray escaped to infinity
+        if (dist > 60.0) {
+            return starfield(vel);
+        }
+    }
+    
+    // Max iterations reached - return starfield based on final direction
+    return starfield(vel);
+}
+
+void main() {
+    uvec3 gid = gl_GlobalInvocationID;
+    ivec2 pixelCoord = ivec2(gid.xy);
+    ivec2 resolution = ivec2(u_Resolution);
+    
+    // Bounds check
+    if (pixelCoord.x >= resolution.x || pixelCoord.y >= resolution.y) {
+        return;
+    }
+    
+    // Convert pixel to normalized coordinates (-1 to 1)
+    vec2 uv = (vec2(pixelCoord) / u_Resolution) * 2.0 - 1.0;
+    uv.x *= u_Resolution.x / u_Resolution.y; // Aspect ratio correction
+    
+    // Calculate ray direction based on camera and FOV
+    float fovRad = u_Fov * PI / 180.0;
+    float tanHalfFov = tan(fovRad * 0.5);
+    
+    vec3 rayDir = normalize(
+        u_CameraForward + 
+        uv.x * tanHalfFov * u_CameraRight + 
+        uv.y * tanHalfFov * u_CameraUp
+    );
+    
+    // Trace the ray
+    vec3 color = trace(u_CameraPos, rayDir);
+    
+    // Simple tone mapping
+    color = color / (color + vec3(1.0));
+    
+    // Gamma correction
+    color = pow(color, vec3(0.4545)); // 1.0/2.2 = 0.4545
+    
+    imageStore(outputImage, pixelCoord, vec4(color, 1.0));
+}

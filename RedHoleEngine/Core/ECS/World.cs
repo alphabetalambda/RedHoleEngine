@@ -89,6 +89,38 @@ public class World : IDisposable
                _entityGenerations[entity.Id] == entity.Generation;
     }
 
+    /// <summary>
+    /// Try to get a valid entity from an ID.
+    /// Returns true if the ID refers to a currently alive entity.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool TryGetEntity(int entityId, out Entity entity)
+    {
+        if (entityId > 0 && entityId < _entityGenerations.Length)
+        {
+            int generation = _entityGenerations[entityId];
+            if (generation > 0)
+            {
+                entity = new Entity(entityId, generation);
+                return true;
+            }
+        }
+        entity = Entity.Null;
+        return false;
+    }
+
+    /// <summary>
+    /// Get the current generation for an entity ID.
+    /// Used for reconstructing Entity references from IDs.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public int GetEntityGeneration(int entityId)
+    {
+        if (entityId > 0 && entityId < _entityGenerations.Length)
+            return _entityGenerations[entityId];
+        return 0;
+    }
+
     #endregion
 
     #region Component Management

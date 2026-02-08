@@ -18,7 +18,7 @@ class Program
         {
             WindowWidth = 1280,
             WindowHeight = 720,
-            WindowTitle = "RedHole Engine - Schwarzschild Black Hole Raytracer",
+            WindowTitle = "RedHole Engine",
             VSync = true
         };
 

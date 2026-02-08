@@ -4,6 +4,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RedHoleEngine", "RedHoleEng
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RedHoleEngine.Tests", "RedHoleEngine.Tests\RedHoleEngine.Tests.csproj", "{C99215F9-8BA1-4055-A2F1-2443F2C3F4D5}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RedHoleEngine.Editor", "RedHoleEngine.Editor\RedHoleEngine.Editor.csproj", "{48882837-D01F-405A-9FE8-15195BE00B84}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -38,6 +40,18 @@ Global
 		{C99215F9-8BA1-4055-A2F1-2443F2C3F4D5}.Release|x64.Build.0 = Release|Any CPU
 		{C99215F9-8BA1-4055-A2F1-2443F2C3F4D5}.Release|x86.ActiveCfg = Release|Any CPU
 		{C99215F9-8BA1-4055-A2F1-2443F2C3F4D5}.Release|x86.Build.0 = Release|Any CPU
+		{48882837-D01F-405A-9FE8-15195BE00B84}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{48882837-D01F-405A-9FE8-15195BE00B84}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{48882837-D01F-405A-9FE8-15195BE00B84}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{48882837-D01F-405A-9FE8-15195BE00B84}.Debug|x64.Build.0 = Debug|Any CPU
+		{48882837-D01F-405A-9FE8-15195BE00B84}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{48882837-D01F-405A-9FE8-15195BE00B84}.Debug|x86.Build.0 = Debug|Any CPU
+		{48882837-D01F-405A-9FE8-15195BE00B84}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{48882837-D01F-405A-9FE8-15195BE00B84}.Release|Any CPU.Build.0 = Release|Any CPU
+		{48882837-D01F-405A-9FE8-15195BE00B84}.Release|x64.ActiveCfg = Release|Any CPU
+		{48882837-D01F-405A-9FE8-15195BE00B84}.Release|x64.Build.0 = Release|Any CPU
+		{48882837-D01F-405A-9FE8-15195BE00B84}.Release|x86.ActiveCfg = Release|Any CPU
+		{48882837-D01F-405A-9FE8-15195BE00B84}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

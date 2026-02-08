@@ -1,6 +1,7 @@
 using System.Numerics;
 using RedHoleEngine.Engine;
 using RedHoleEngine.Physics;
+using RedHoleEngine.Rendering.Debug;
 
 namespace RedHoleEngine.Rendering;
 
@@ -28,6 +29,11 @@ public interface IGraphicsBackend : IDisposable
     /// Render a frame with the raytracer
     /// </summary>
     void Render(Camera camera, BlackHole blackHole, float time);
+    
+    /// <summary>
+    /// Render a frame with the raytracer and debug overlay
+    /// </summary>
+    void Render(Camera camera, BlackHole blackHole, float time, DebugDrawManager? debugDraw);
 
     /// <summary>
     /// Handle window resize
@@ -43,4 +49,9 @@ public interface IGraphicsBackend : IDisposable
     /// Check if compute shaders are supported
     /// </summary>
     bool SupportsComputeShaders { get; }
+    
+    /// <summary>
+    /// Check if debug rendering is supported
+    /// </summary>
+    bool SupportsDebugRendering { get; }
 }

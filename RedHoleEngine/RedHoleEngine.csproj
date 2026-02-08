@@ -15,6 +15,9 @@
       <PackageReference Include="Silk.NET.Maths" Version="2.23.0" />
       <PackageReference Include="Silk.NET.MoltenVK.Native" Version="2.23.0" />
       <PackageReference Include="Silk.NET.OpenGL" Version="2.23.0" />
+      <PackageReference Include="Silk.NET.OpenAL" Version="2.23.0" />
+      <PackageReference Include="Silk.NET.OpenAL.Extensions.EXT" Version="2.23.0" />
+      <PackageReference Include="Silk.NET.OpenAL.Soft.Native" Version="1.23.1" />
       <PackageReference Include="Silk.NET.SDL" Version="2.23.0" />
       <PackageReference Include="Silk.NET.Shaderc" Version="2.23.0" />
       <PackageReference Include="Silk.NET.Vulkan" Version="2.23.0" />
@@ -39,5 +42,45 @@
         <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       </None>
     </ItemGroup>
+
+    <!-- Copy audio files to output directory -->
+    <ItemGroup>
+      <None Update="Audio\Clips\*.wav">
+        <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      </None>
+      <None Update="Audio\Clips\*.ogg">
+        <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      </None>
+    </ItemGroup>
+
+    <!-- macOS: Copy Vulkan loader and compile native launcher -->
+    <Target Name="MacOSSetup" AfterTargets="Build" Condition="$([MSBuild]::IsOSPlatform('OSX'))">
+      <PropertyGroup>
+        <HomebrewVulkanLoader>/opt/homebrew/lib/libvulkan.dylib</HomebrewVulkanLoader>
+        <HomebrewVulkanLoader1>/opt/homebrew/lib/libvulkan.1.dylib</HomebrewVulkanLoader1>
+        <LauncherSource>$(MSBuildProjectDirectory)/Launcher/macos_launcher.c</LauncherSource>
+        <LauncherOutput>$(OutputPath)RedHoleEngine</LauncherOutput>
+      </PropertyGroup>
+      
+      <!-- Copy Vulkan loader -->
+      <Copy SourceFiles="$(HomebrewVulkanLoader)" 
+            DestinationFiles="$(OutputPath)libvulkan.dylib" 
+            Condition="Exists('$(HomebrewVulkanLoader)')"
+            SkipUnchangedFiles="true" />
+      <Copy SourceFiles="$(HomebrewVulkanLoader1)" 
+            DestinationFiles="$(OutputPath)libvulkan.1.dylib" 
+            Condition="Exists('$(HomebrewVulkanLoader1)')"
+            SkipUnchangedFiles="true" />
+      
+      <!-- Compile native launcher -->
+      <Exec Command="clang -O2 -o '$(LauncherOutput)' '$(LauncherSource)' -framework Foundation" 
+            Condition="Exists('$(LauncherSource)')" 
+            IgnoreExitCode="false" />
+      
+      <Message Text="macOS: Compiled native launcher and copied Vulkan loader" Importance="high" />
+      
+      <Warning Text="Vulkan loader not found. Install via: brew install vulkan-loader" 
+               Condition="!Exists('$(HomebrewVulkanLoader)')" />
+    </Target>
 
 </Project>

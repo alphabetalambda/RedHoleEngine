@@ -3,6 +3,7 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using RedHoleEngine.Engine;
 using RedHoleEngine.Physics;
+using RedHoleEngine.Rendering.Debug;
 using Silk.NET.Core;
 using Silk.NET.Core.Native;
 using Silk.NET.Vulkan;
@@ -71,9 +72,13 @@ public unsafe class VulkanBackend : IGraphicsBackend
     private uint _computeQueueFamily;
     private uint _graphicsQueueFamily;
     private uint _presentQueueFamily;
+    
+    // Debug renderer
+    private DebugRenderer? _debugRenderer;
 
     public GraphicsBackendType BackendType => GraphicsBackendType.Vulkan;
     public bool SupportsComputeShaders => true;
+    public bool SupportsDebugRendering => _debugRenderer?.IsInitialized ?? false;
 
     public VulkanBackend(IWindow window, int width, int height)
     {
@@ -101,6 +106,7 @@ public unsafe class VulkanBackend : IGraphicsBackend
         CreateCommandPool();
         CreateCommandBuffers();
         CreateSyncObjects();
+        InitializeDebugRenderer();
 
         Console.WriteLine("Vulkan initialized successfully!");
         Console.WriteLine($"Using device: {GetDeviceName()}");
@@ -118,27 +124,79 @@ public unsafe class VulkanBackend : IGraphicsBackend
             ApiVersion = Vk.Version12
         };
 
-        // Get required extensions from window
-        var windowExtensions = _window.VkSurface!.GetRequiredExtensions(out uint extCount);
+        // Query available instance extensions
+        uint availableExtCount = 0;
+        _vk!.EnumerateInstanceExtensionProperties((byte*)null, &availableExtCount, null);
+        var availableExtensions = new ExtensionProperties[availableExtCount];
+        fixed (ExtensionProperties* extPtr = availableExtensions)
+        {
+            _vk.EnumerateInstanceExtensionProperties((byte*)null, &availableExtCount, extPtr);
+        }
         
-        var createInfo = new InstanceCreateInfo
+        var availableExtNames = new HashSet<string>();
+        for (int i = 0; i < availableExtensions.Length; i++)
         {
-            SType = StructureType.InstanceCreateInfo,
-            PApplicationInfo = &appInfo,
-            EnabledExtensionCount = extCount,
-            PpEnabledExtensionNames = windowExtensions,
-            // MoltenVK on macOS may require portability enumeration
-            Flags = InstanceCreateFlags.EnumeratePortabilityBitKhr
-        };
-
-        fixed (Instance* instance = &_instance)
-        {
-            if (_vk!.CreateInstance(&createInfo, null, instance) != Result.Success)
+            fixed (ExtensionProperties* extPtr = &availableExtensions[i])
             {
-                throw new Exception("Failed to create Vulkan instance");
+                availableExtNames.Add(Marshal.PtrToStringAnsi((IntPtr)extPtr->ExtensionName)!);
             }
         }
 
+        // Get required extensions from window
+        var windowExtensions = _window.VkSurface!.GetRequiredExtensions(out uint extCount);
+        
+        // Build extension list
+        var extensions = new List<string>();
+        for (uint i = 0; i < extCount; i++)
+        {
+            extensions.Add(Marshal.PtrToStringAnsi((IntPtr)windowExtensions[i])!);
+        }
+        
+        // Check if portability enumeration extension is available (MoltenVK on macOS)
+        const string portabilityEnumExt = "VK_KHR_portability_enumeration";
+        bool hasPortabilityEnum = availableExtNames.Contains(portabilityEnumExt);
+        
+        if (hasPortabilityEnum && !extensions.Contains(portabilityEnumExt))
+        {
+            extensions.Add(portabilityEnumExt);
+        }
+        
+
+        // Convert to native pointers
+        var extensionPtrs = new byte*[extensions.Count];
+        for (int i = 0; i < extensions.Count; i++)
+        {
+            extensionPtrs[i] = (byte*)Marshal.StringToHGlobalAnsi(extensions[i]);
+        }
+
+        fixed (byte** extensionsPtr = extensionPtrs)
+        {
+            var createInfo = new InstanceCreateInfo
+            {
+                SType = StructureType.InstanceCreateInfo,
+                PApplicationInfo = &appInfo,
+                EnabledExtensionCount = (uint)extensions.Count,
+                PpEnabledExtensionNames = extensionsPtr,
+                // Only set portability flag if the extension is available
+                Flags = hasPortabilityEnum ? InstanceCreateFlags.EnumeratePortabilityBitKhr : 0
+            };
+
+            fixed (Instance* instance = &_instance)
+            {
+                var result = _vk!.CreateInstance(&createInfo, null, instance);
+                if (result != Result.Success)
+                {
+                    throw new Exception($"Failed to create Vulkan instance: {result}");
+                }
+            }
+        }
+        
+        // Free allocated strings
+        foreach (var ptr in extensionPtrs)
+        {
+            Marshal.FreeHGlobal((IntPtr)ptr);
+        }
+        
         if (!_vk.TryGetInstanceExtension(_instance, out _khrSurface))
         {
             throw new Exception("Failed to get KHR_surface extension");
@@ -928,7 +986,27 @@ layout(set = 0, binding = 1) uniform UniformBlock {
         }
     }
 
+    private void InitializeDebugRenderer()
+    {
+        try
+        {
+            _debugRenderer = new DebugRenderer(_vk!, _device, _physicalDevice, _graphicsQueueFamily);
+            _debugRenderer.Initialize(_swapchainFormat, _swapchainExtent, _swapchainImageViews);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Warning: Debug renderer initialization failed: {ex.Message}");
+            Console.WriteLine("Debug visualization will be disabled.");
+            _debugRenderer = null;
+        }
+    }
+
     public void Render(Camera camera, BlackHole blackHole, float time)
+    {
+        Render(camera, blackHole, time, null);
+    }
+
+    public void Render(Camera camera, BlackHole blackHole, float time, DebugDrawManager? debugDraw)
     {
         fixed (Fence* fence = &_inFlightFence)
         {
@@ -963,7 +1041,7 @@ layout(set = 0, binding = 1) uniform UniformBlock {
         SubmitCompute();
 
         // Record and submit graphics commands (copy compute output to swapchain)
-        RecordGraphicsCommands(imageIndex);
+        RecordGraphicsCommands(imageIndex, camera, debugDraw);
         SubmitGraphics();
 
         // Present
@@ -1009,7 +1087,7 @@ layout(set = 0, binding = 1) uniform UniformBlock {
         _vk.EndCommandBuffer(_computeCommandBuffer);
     }
 
-    private void RecordGraphicsCommands(uint imageIndex)
+    private void RecordGraphicsCommands(uint imageIndex, Camera camera, DebugDrawManager? debugDraw)
     {
         _vk!.ResetCommandBuffer(_graphicsCommandBuffer, 0);
 
@@ -1047,8 +1125,29 @@ layout(set = 0, binding = 1) uniform UniformBlock {
             _swapchainImages[imageIndex], ImageLayout.TransferDstOptimal,
             1, &blitRegion, Filter.Linear);
 
-        // Transition swapchain image to present
-        TransitionImageLayout(_graphicsCommandBuffer, _swapchainImages[imageIndex], ImageLayout.TransferDstOptimal, ImageLayout.PresentSrcKhr);
+        // Transition swapchain image to present (or to color attachment if debug rendering)
+        if (debugDraw != null && debugDraw.HasContent && _debugRenderer?.IsInitialized == true)
+        {
+            // Transition to present layout first (debug renderer expects this)
+            TransitionImageLayout(_graphicsCommandBuffer, _swapchainImages[imageIndex], ImageLayout.TransferDstOptimal, ImageLayout.PresentSrcKhr);
+            
+            // Build view and projection matrices from camera
+            float aspect = (float)_width / _height;
+            var view = camera.GetViewMatrix();
+            var projection = Matrix4x4.CreatePerspectiveFieldOfView(
+                camera.FieldOfView * MathF.PI / 180f, 
+                aspect, 
+                0.1f, 
+                10000f);
+            
+            // Record debug rendering commands
+            _debugRenderer.RecordCommands(_graphicsCommandBuffer, imageIndex, debugDraw, view, projection);
+        }
+        else
+        {
+            // No debug rendering, just transition to present
+            TransitionImageLayout(_graphicsCommandBuffer, _swapchainImages[imageIndex], ImageLayout.TransferDstOptimal, ImageLayout.PresentSrcKhr);
+        }
 
         _vk.EndCommandBuffer(_graphicsCommandBuffer);
     }
@@ -1174,6 +1273,8 @@ layout(set = 0, binding = 1) uniform UniformBlock {
     {
         _vk!.DeviceWaitIdle(_device);
 
+        _debugRenderer?.Dispose();
+        
         _vk.DestroySemaphore(_device, _imageAvailableSemaphore, null);
         _vk.DestroySemaphore(_device, _renderFinishedSemaphore, null);
         _vk.DestroySemaphore(_device, _computeFinishedSemaphore, null);

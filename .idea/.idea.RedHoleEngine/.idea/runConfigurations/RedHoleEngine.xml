@@ -1,0 +1,20 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="RedHoleEngine" type="ShConfigurationType">
+    <option name="SCRIPT_TEXT" value="" />
+    <option name="INDEPENDENT_SCRIPT_PATH" value="1" />
+    <option name="SCRIPT_PATH" value="$PROJECT_DIR$/RedHoleEngine/bin/Debug/net10.0/RedHoleEngine" />
+    <option name="SCRIPT_OPTIONS" value="" />
+    <option name="INDEPENDENT_SCRIPT_WORKING_DIRECTORY" value="1" />
+    <option name="SCRIPT_WORKING_DIRECTORY" value="$PROJECT_DIR$/RedHoleEngine/bin/Debug/net10.0" />
+    <option name="INDEPENDENT_INTERPRETER_PATH" value="1" />
+    <option name="INTERPRETER_PATH" value="" />
+    <option name="INTERPRETER_OPTIONS" value="" />
+    <option name="EXECUTE_IN_TERMINAL" value="0" />
+    <option name="EXECUTE_SCRIPT_FILE" value="1" />
+    <envs />
+    <method v="2">
+      <option name="BuildArtifacts" enabled="false" />
+      <option name="Build" />
+    </method>
+  </configuration>
+</component>

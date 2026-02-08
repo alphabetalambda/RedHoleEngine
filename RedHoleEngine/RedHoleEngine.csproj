@@ -52,6 +52,9 @@
         <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       </None>
     </ItemGroup>
+    <ItemGroup>
+      <Folder Include="Audio\Dynamic sounds\" />
+    </ItemGroup>
 
     <!-- macOS: Copy Vulkan loader and compile native launcher -->
     <Target Name="MacOSSetup" AfterTargets="Build" Condition="$([MSBuild]::IsOSPlatform('OSX'))">

@@ -2,15 +2,44 @@
 Microsoft Visual Studio Solution File, Format Version 12.00
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RedHoleEngine", "RedHoleEngine\RedHoleEngine.csproj", "{C02FC925-C2C0-4FD8-AB9D-839431954C25}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RedHoleEngine.Tests", "RedHoleEngine.Tests\RedHoleEngine.Tests.csproj", "{C99215F9-8BA1-4055-A2F1-2443F2C3F4D5}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
+		Debug|x64 = Debug|x64
+		Debug|x86 = Debug|x86
 		Release|Any CPU = Release|Any CPU
+		Release|x64 = Release|x64
+		Release|x86 = Release|x86
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
 		{C02FC925-C2C0-4FD8-AB9D-839431954C25}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{C02FC925-C2C0-4FD8-AB9D-839431954C25}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C02FC925-C2C0-4FD8-AB9D-839431954C25}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{C02FC925-C2C0-4FD8-AB9D-839431954C25}.Debug|x64.Build.0 = Debug|Any CPU
+		{C02FC925-C2C0-4FD8-AB9D-839431954C25}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{C02FC925-C2C0-4FD8-AB9D-839431954C25}.Debug|x86.Build.0 = Debug|Any CPU
 		{C02FC925-C2C0-4FD8-AB9D-839431954C25}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{C02FC925-C2C0-4FD8-AB9D-839431954C25}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C02FC925-C2C0-4FD8-AB9D-839431954C25}.Release|x64.ActiveCfg = Release|Any CPU
+		{C02FC925-C2C0-4FD8-AB9D-839431954C25}.Release|x64.Build.0 = Release|Any CPU
+		{C02FC925-C2C0-4FD8-AB9D-839431954C25}.Release|x86.ActiveCfg = Release|Any CPU
+		{C02FC925-C2C0-4FD8-AB9D-839431954C25}.Release|x86.Build.0 = Release|Any CPU
+		{C99215F9-8BA1-4055-A2F1-2443F2C3F4D5}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C99215F9-8BA1-4055-A2F1-2443F2C3F4D5}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C99215F9-8BA1-4055-A2F1-2443F2C3F4D5}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{C99215F9-8BA1-4055-A2F1-2443F2C3F4D5}.Debug|x64.Build.0 = Debug|Any CPU
+		{C99215F9-8BA1-4055-A2F1-2443F2C3F4D5}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{C99215F9-8BA1-4055-A2F1-2443F2C3F4D5}.Debug|x86.Build.0 = Debug|Any CPU
+		{C99215F9-8BA1-4055-A2F1-2443F2C3F4D5}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C99215F9-8BA1-4055-A2F1-2443F2C3F4D5}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C99215F9-8BA1-4055-A2F1-2443F2C3F4D5}.Release|x64.ActiveCfg = Release|Any CPU
+		{C99215F9-8BA1-4055-A2F1-2443F2C3F4D5}.Release|x64.Build.0 = Release|Any CPU
+		{C99215F9-8BA1-4055-A2F1-2443F2C3F4D5}.Release|x86.ActiveCfg = Release|Any CPU
+		{C99215F9-8BA1-4055-A2F1-2443F2C3F4D5}.Release|x86.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
 	EndGlobalSection
 EndGlobal

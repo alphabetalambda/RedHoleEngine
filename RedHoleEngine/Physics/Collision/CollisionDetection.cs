@@ -259,13 +259,20 @@ public static class CollisionDetection
         if (dist > sphere.Radius)
             return false;
         
-        var normal = flip ? -planeNormal : planeNormal;
+        // Contact normal should point from A to B (from collider A toward collider B)
+        // When sphere is A and plane is B: normal points from sphere toward plane = -planeNormal
+        // When flip=true (plane is A, sphere is B): normal points from plane toward sphere = planeNormal
+        var normal = flip ? planeNormal : -planeNormal;
         var depth = sphere.Radius - dist;
+        
+        // Contact points on each collider surface
+        var pointOnSphere = sphereCenter - planeNormal * sphere.Radius;  // Bottom of sphere
+        var pointOnPlane = sphereCenter - planeNormal * dist;            // Closest point on plane
         
         manifold.AddContact(new CollisionContact
         {
-            PointOnA = flip ? sphereCenter - planeNormal * dist : sphereCenter - planeNormal * sphere.Radius,
-            PointOnB = flip ? sphereCenter - planeNormal * sphere.Radius : sphereCenter - planeNormal * dist,
+            PointOnA = flip ? pointOnPlane : pointOnSphere,
+            PointOnB = flip ? pointOnSphere : pointOnPlane,
             Normal = normal,
             Depth = depth
         });

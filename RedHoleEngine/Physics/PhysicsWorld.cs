@@ -407,6 +407,10 @@ public class PhysicsWorld
         var contactVel = Vector3.Dot(relVel, contact.Normal);
         
         // Don't resolve if separating
+        // Normal points from A toward B
+        // relVel = velB - velA (velocity of B relative to A)
+        // If contactVel > 0, B is moving away from A along the normal (separating)
+        // If contactVel < 0, B is moving toward A (or A is pushing into B) - this needs resolution
         if (contactVel > 0)
             return;
         

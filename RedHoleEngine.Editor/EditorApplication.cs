@@ -430,6 +430,10 @@ public class EditorApplication : IDisposable
     private void OnClosing()
     {
         Console.WriteLine("Closing editor...");
+        
+        // Dispose ImGui while OpenGL context is still valid
+        _imguiController?.Dispose();
+        _imguiController = null;
     }
 
     #region Play Mode
@@ -548,10 +552,9 @@ public class EditorApplication : IDisposable
 
     public void Dispose()
     {
-        _imguiController?.Dispose();
+        // ImGui is disposed in OnClosing while GL context is valid
         _input?.Dispose();
-        _gl?.Dispose();
-        _window?.Dispose();
         _world?.Dispose();
+        // Window and GL are managed by Silk.NET, no need to dispose here
     }
 }

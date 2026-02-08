@@ -1,3 +1,5 @@
+using System;
+using System.Numerics;
 using System.Numerics;
 using RedHoleEngine.Engine;
 using RedHoleEngine.Physics;
@@ -7,13 +9,25 @@ namespace RedHoleEngine.Rendering;
 
 public class Renderer : IDisposable
 {
+    public RaytracerSettings RaytracerSettings { get; } = new();
+
     private readonly GL _gl;
-    private readonly int _width;
-    private readonly int _height;
+    private int _width;
+    private int _height;
 
     // Compute shader for raytracing
     private uint _computeProgram;
     private uint _outputTexture;
+    private uint _accumTexture;
+
+    private uint _bvhBuffer;
+    private uint _triBuffer;
+
+    private uint _frameIndex;
+    private Vector3 _lastCameraPos;
+    private Vector3 _lastCameraForward;
+    private float _lastCameraFov;
+    private int _lastSettingsHash;
 
     // Display shader (renders texture to screen)
     private uint _displayProgram;
@@ -30,6 +44,31 @@ public class Renderer : IDisposable
         InitializeDisplayShader();
         InitializeOutputTexture();
         InitializeQuad();
+        InitializeRaytracerBuffers();
+    }
+
+    public uint OutputTextureId => _outputTexture;
+    public int Width => _width;
+    public int Height => _height;
+
+    public void Resize(int width, int height)
+    {
+        if (width <= 0 || height <= 0)
+            return;
+
+        if (_width == width && _height == height)
+            return;
+
+        _width = width;
+        _height = height;
+
+        _gl.DeleteTexture(_outputTexture);
+        _gl.DeleteTexture(_accumTexture);
+
+        InitializeOutputTexture();
+
+        _frameIndex = 0;
+        RaytracerSettings.ResetAccumulation = true;
     }
 
     private void InitializeComputeShader()
@@ -89,6 +128,28 @@ public class Renderer : IDisposable
         _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)GLEnum.Linear);
         _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)GLEnum.ClampToEdge);
         _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, (int)GLEnum.ClampToEdge);
+
+        _accumTexture = _gl.GenTexture();
+        _gl.BindTexture(TextureTarget.Texture2D, _accumTexture);
+        _gl.TexImage2D(TextureTarget.Texture2D, 0, InternalFormat.Rgba32f,
+            (uint)_width, (uint)_height, 0, PixelFormat.Rgba, PixelType.Float, ReadOnlySpan<float>.Empty);
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)GLEnum.Linear);
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)GLEnum.Linear);
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)GLEnum.ClampToEdge);
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, (int)GLEnum.ClampToEdge);
+    }
+
+    private void InitializeRaytracerBuffers()
+    {
+        _bvhBuffer = _gl.GenBuffer();
+        _gl.BindBuffer(BufferTargetARB.ShaderStorageBuffer, _bvhBuffer);
+        _gl.BufferData(BufferTargetARB.ShaderStorageBuffer, (nuint)64, IntPtr.Zero, BufferUsageARB.DynamicDraw);
+
+        _triBuffer = _gl.GenBuffer();
+        _gl.BindBuffer(BufferTargetARB.ShaderStorageBuffer, _triBuffer);
+        _gl.BufferData(BufferTargetARB.ShaderStorageBuffer, (nuint)64, IntPtr.Zero, BufferUsageARB.DynamicDraw);
+
+        _gl.BindBuffer(BufferTargetARB.ShaderStorageBuffer, 0);
     }
 
     private void InitializeQuad()
@@ -178,11 +239,24 @@ public class Renderer : IDisposable
     /// </summary>
     public void Render(Camera camera, BlackHole blackHole, float time)
     {
+        RenderToTexture(camera, blackHole, time);
+        DrawFullscreenQuad();
+    }
+
+    public void RenderToTexture(Camera camera, BlackHole blackHole, float time)
+    {
         // Step 1: Run compute shader to raytrace
         _gl.UseProgram(_computeProgram);
 
         // Bind output texture as image
         _gl.BindImageTexture(0, _outputTexture, 0, false, 0, BufferAccessARB.WriteOnly, InternalFormat.Rgba32f);
+
+        // Bind accumulation texture
+        _gl.BindImageTexture(3, _accumTexture, 0, false, 0, BufferAccessARB.ReadWrite, InternalFormat.Rgba32f);
+
+        // Bind dummy BVH buffers (raytracer uses zero counts in this backend)
+        _gl.BindBufferBase(BufferTargetARB.ShaderStorageBuffer, 1, _bvhBuffer);
+        _gl.BindBufferBase(BufferTargetARB.ShaderStorageBuffer, 2, _triBuffer);
 
         // Set uniforms
         SetUniform(_computeProgram, "u_Resolution", new Vector2(_width, _height));
@@ -192,6 +266,19 @@ public class Renderer : IDisposable
         SetUniform(_computeProgram, "u_CameraRight", camera.Right);
         SetUniform(_computeProgram, "u_CameraUp", camera.Up);
         SetUniform(_computeProgram, "u_Fov", camera.FieldOfView);
+
+        RaytracerSettings.Clamp();
+        UpdateAccumulationState(camera);
+        SetUniform(_computeProgram, "u_RaySettings", new Vector4(
+            RaytracerSettings.RaysPerPixel,
+            RaytracerSettings.MaxBounces,
+            0f,
+            0f));
+        SetUniform(_computeProgram, "u_FrameSettings", new Vector4(
+            RaytracerSettings.SamplesPerFrame,
+            _frameIndex,
+            RaytracerSettings.Accumulate ? 1f : 0f,
+            RaytracerSettings.Denoise ? 1f : 0f));
         
         // Black hole parameters
         SetUniform(_computeProgram, "u_BlackHolePos", blackHole.Position);
@@ -208,7 +295,18 @@ public class Renderer : IDisposable
         // Wait for compute shader to finish
         _gl.MemoryBarrier(MemoryBarrierMask.ShaderImageAccessBarrierBit);
 
-        // Step 2: Render the texture to screen
+        if (RaytracerSettings.Accumulate)
+        {
+            _frameIndex++;
+        }
+        else
+        {
+            _frameIndex = 0;
+        }
+    }
+
+    private void DrawFullscreenQuad()
+    {
         _gl.Clear(ClearBufferMask.ColorBufferBit);
         _gl.UseProgram(_displayProgram);
 
@@ -244,12 +342,46 @@ public class Renderer : IDisposable
         if (location >= 0) _gl.Uniform3(location, value.X, value.Y, value.Z);
     }
 
+    private void SetUniform(uint program, string name, Vector4 value)
+    {
+        int location = _gl.GetUniformLocation(program, name);
+        if (location >= 0) _gl.Uniform4(location, value.X, value.Y, value.Z, value.W);
+    }
+
     public void Dispose()
     {
         _gl.DeleteProgram(_computeProgram);
         _gl.DeleteProgram(_displayProgram);
         _gl.DeleteTexture(_outputTexture);
+        _gl.DeleteTexture(_accumTexture);
         _gl.DeleteVertexArray(_quadVao);
         _gl.DeleteBuffer(_quadVbo);
+        _gl.DeleteBuffer(_bvhBuffer);
+        _gl.DeleteBuffer(_triBuffer);
+    }
+
+    private void UpdateAccumulationState(Camera camera)
+    {
+        int settingsHash = HashCode.Combine(
+            RaytracerSettings.RaysPerPixel,
+            RaytracerSettings.MaxBounces,
+            RaytracerSettings.SamplesPerFrame,
+            RaytracerSettings.Accumulate,
+            RaytracerSettings.Denoise);
+
+        bool cameraChanged = camera.Position != _lastCameraPos ||
+                             camera.Forward != _lastCameraForward ||
+                             Math.Abs(camera.FieldOfView - _lastCameraFov) > 0.001f;
+
+        if (RaytracerSettings.ResetAccumulation || cameraChanged || settingsHash != _lastSettingsHash || !RaytracerSettings.Accumulate)
+        {
+            _frameIndex = 0;
+            RaytracerSettings.ResetAccumulation = false;
+        }
+
+        _lastCameraPos = camera.Position;
+        _lastCameraForward = camera.Forward;
+        _lastCameraFov = camera.FieldOfView;
+        _lastSettingsHash = settingsHash;
     }
 }

@@ -1,10 +1,12 @@
 using System.Numerics;
+using System;
 using ImGuiNET;
 using RedHoleEngine.Audio;
 using RedHoleEngine.Components;
 using RedHoleEngine.Core.ECS;
 using RedHoleEngine.Physics;
 using RedHoleEngine.Physics.Collision;
+using RedHoleEngine.Rendering;
 
 namespace RedHoleEngine.Editor.UI.Panels;
 
@@ -49,6 +51,7 @@ public class InspectorPanel : EditorPanel
         DrawGravitySourceComponent(entity);
         DrawAudioSourceComponent(entity);
         DrawCollisionSoundComponent(entity);
+        DrawRenderSettingsComponent(entity);
 
         ImGui.Separator();
 
@@ -552,6 +555,127 @@ public class InspectorPanel : EditorPanel
         ImGui.Spacing();
     }
 
+    private void DrawRenderSettingsComponent(Entity entity)
+    {
+        if (!World!.HasComponent<RenderSettingsComponent>(entity)) return;
+
+        bool open = ImGui.CollapsingHeader("Render Settings", ImGuiTreeNodeFlags.DefaultOpen);
+
+        if (ImGui.BeginPopupContextItem("RenderSettingsContext"))
+        {
+            if (ImGui.MenuItem("Remove Component"))
+            {
+                World.RemoveComponent<RenderSettingsComponent>(entity);
+            }
+            ImGui.EndPopup();
+        }
+
+        if (!open) return;
+
+        ref var settings = ref World.GetComponent<RenderSettingsComponent>(entity);
+
+        var enabled = settings.Enabled;
+        if (ImGui.Checkbox("Enabled", ref enabled))
+        {
+            settings.Enabled = enabled;
+        }
+
+        var modes = new[] { "Raytraced", "Rasterized" };
+        int mode = settings.Mode == RenderMode.Rasterized ? 1 : 0;
+        if (ImGui.Combo("Mode", ref mode, modes, modes.Length))
+        {
+            settings.Mode = mode == 1 ? RenderMode.Rasterized : RenderMode.Raytraced;
+        }
+
+        var presets = new[] { "Fast", "Balanced", "Quality", "Custom" };
+        int presetIndex = settings.Preset switch
+        {
+            RaytracerQualityPreset.Fast => 0,
+            RaytracerQualityPreset.Balanced => 1,
+            RaytracerQualityPreset.Quality => 2,
+            _ => 3
+        };
+        if (ImGui.Combo("Preset", ref presetIndex, presets, presets.Length))
+        {
+            settings.Preset = presetIndex switch
+            {
+                0 => RaytracerQualityPreset.Fast,
+                1 => RaytracerQualityPreset.Balanced,
+                2 => RaytracerQualityPreset.Quality,
+                _ => RaytracerQualityPreset.Custom
+            };
+            if (settings.Preset != RaytracerQualityPreset.Custom)
+            {
+                var preset = RaytracerPresetUtilities.GetPresetValues(settings.Preset);
+                settings.RaysPerPixel = preset.RaysPerPixel;
+                settings.MaxBounces = preset.MaxBounces;
+                settings.SamplesPerFrame = preset.SamplesPerFrame;
+                settings.Accumulate = preset.Accumulate;
+                settings.Denoise = preset.Denoise;
+            }
+        }
+
+        int rays = settings.RaysPerPixel;
+        if (ImGui.SliderInt("Rays Per Pixel", ref rays, 1, settings.MaxRaysPerPixelLimit))
+        {
+            settings.RaysPerPixel = rays;
+            settings.Preset = RaytracerQualityPreset.Custom;
+        }
+
+        int bounces = settings.MaxBounces;
+        if (ImGui.SliderInt("Max Bounces", ref bounces, 1, settings.MaxBouncesLimit))
+        {
+            settings.MaxBounces = bounces;
+            settings.Preset = RaytracerQualityPreset.Custom;
+        }
+
+        int samplesPerFrame = settings.SamplesPerFrame;
+        if (ImGui.SliderInt("Samples/Frame", ref samplesPerFrame, 1, settings.MaxSamplesPerFrameLimit))
+        {
+            settings.SamplesPerFrame = samplesPerFrame;
+            settings.Preset = RaytracerQualityPreset.Custom;
+        }
+
+        var accumulate = settings.Accumulate;
+        if (ImGui.Checkbox("Accumulate", ref accumulate))
+        {
+            settings.Accumulate = accumulate;
+            settings.Preset = RaytracerQualityPreset.Custom;
+        }
+
+        var denoise = settings.Denoise;
+        if (ImGui.Checkbox("Denoise", ref denoise))
+        {
+            settings.Denoise = denoise;
+            settings.Preset = RaytracerQualityPreset.Custom;
+        }
+
+        if (ImGui.Button("Reset Accumulation"))
+        {
+            settings.ResetAccumulation = true;
+        }
+
+        int maxRays = settings.MaxRaysPerPixelLimit;
+        if (ImGui.DragInt("RPP Limit", ref maxRays, 1, 1, 256))
+        {
+            settings.MaxRaysPerPixelLimit = Math.Max(1, maxRays);
+        }
+
+        int maxBounces = settings.MaxBouncesLimit;
+        if (ImGui.DragInt("Bounce Limit", ref maxBounces, 1, 1, 32))
+        {
+            settings.MaxBouncesLimit = Math.Max(1, maxBounces);
+        }
+
+        int maxSamples = settings.MaxSamplesPerFrameLimit;
+        if (ImGui.DragInt("Samples Limit", ref maxSamples, 1, 1, 32))
+        {
+            settings.MaxSamplesPerFrameLimit = Math.Max(1, maxSamples);
+        }
+
+        ImGui.Spacing();
+    }
+
     private void DrawAddComponentButton(Entity entity)
     {
         if (ImGui.Button("Add Component", new Vector2(ImGui.GetContentRegionAvail().X, 0)))
@@ -600,6 +724,11 @@ public class InspectorPanel : EditorPanel
             if (!World.HasComponent<CollisionSoundComponent>(entity) && ImGui.MenuItem("Collision Sound"))
             {
                 World.AddComponent(entity, CollisionSoundComponent.Default);
+            }
+
+            if (!World.HasComponent<RenderSettingsComponent>(entity) && ImGui.MenuItem("Render Settings"))
+            {
+                World.AddComponent(entity, new RenderSettingsComponent());
             }
 
             ImGui.EndPopup();

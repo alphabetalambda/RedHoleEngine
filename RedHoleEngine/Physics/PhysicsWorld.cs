@@ -1,5 +1,6 @@
 using System.Numerics;
 using RedHoleEngine.Physics.Collision;
+using RedHoleEngine.Physics.Constraints;
 
 namespace RedHoleEngine.Physics;
 
@@ -74,6 +75,8 @@ public class PhysicsWorld
     private readonly List<Collider> _colliders = new();
     private readonly Dictionary<int, List<Collider>> _bodyColliders = new(); // EntityId -> Colliders
     private readonly Dictionary<int, int> _entityToBody = new(); // EntityId -> Body index
+
+    private readonly ConstraintSolver _constraintSolver = new();
     
     // Collision data
     private readonly HashSet<CollisionPair> _broadphasePairs = new();
@@ -97,6 +100,11 @@ public class PhysicsWorld
     /// Number of rigid bodies in the world
     /// </summary>
     public int BodyCount => _bodies.Count;
+
+    /// <summary>
+    /// The constraint solver for links/chains/meshes
+    /// </summary>
+    public ConstraintSolver ConstraintSolver => _constraintSolver;
 
     /// <summary>
     /// Number of colliders in the world
@@ -158,6 +166,14 @@ public class PhysicsWorld
     }
 
     /// <summary>
+    /// Get a rigid body by entity ID (for constraint solver)
+    /// </summary>
+    public RigidBody? GetBodyByEntityId(int entityId)
+    {
+        return GetBody(entityId);
+    }
+
+    /// <summary>
     /// Add a collider to a rigid body
     /// </summary>
     public void AddCollider(RigidBody body, Collider collider)
@@ -184,6 +200,16 @@ public class PhysicsWorld
         // 2. Integrate velocities
         IntegrateVelocities(deltaTime);
 
+        // 2.5 Solve link constraints (velocity level)
+        if (_constraintSolver.LinkCount > 0 || _constraintSolver.ChainCount > 0 || _constraintSolver.MeshCount > 0)
+        {
+            _constraintSolver.PreSolve(this, deltaTime);
+            for (int i = 0; i < Settings.VelocityIterations; i++)
+            {
+                _constraintSolver.SolveVelocities(deltaTime);
+            }
+        }
+
         // 3. Broadphase collision detection
         BroadphaseDetection();
 
@@ -195,6 +221,16 @@ public class PhysicsWorld
 
         // 6. Integrate positions
         IntegratePositions(deltaTime);
+
+        // 6.5 Solve link constraints (position level)
+        if (_constraintSolver.LinkCount > 0 || _constraintSolver.ChainCount > 0 || _constraintSolver.MeshCount > 0)
+        {
+            for (int i = 0; i < Settings.PositionIterations; i++)
+            {
+                _constraintSolver.SolvePositions(deltaTime);
+            }
+            _constraintSolver.PostSolve();
+        }
 
         // 7. Position correction (reduce penetration)
         ResolvePositions();
@@ -353,14 +389,11 @@ public class PhysicsWorld
                     manifold.BodyB = colliderB.Body;
                     
                     // Calculate combined material properties
-                    var matA = colliderA.Material ?? PhysicsMaterial.Default;
-                    var matB = colliderB.Material ?? PhysicsMaterial.Default;
-                    manifold.Restitution = MathF.Max(
-                        colliderA.Body.Restitution * matA.Restitution,
-                        colliderB.Body.Restitution * matB.Restitution);
+                    // Use geometric mean of body friction values
+                    manifold.Restitution = MathF.Sqrt(
+                        colliderA.Body.Restitution * colliderB.Body.Restitution);
                     manifold.Friction = MathF.Sqrt(
-                        colliderA.Body.Friction * matA.DynamicFriction *
-                        colliderB.Body.Friction * matB.DynamicFriction);
+                        colliderA.Body.Friction * colliderB.Body.Friction);
                     
                     _manifolds.Add(manifold);
                     _currentCollisions.Add(pair);
@@ -406,13 +439,11 @@ public class PhysicsWorld
         
         var contactVel = Vector3.Dot(relVel, contact.Normal);
         
-        // Don't resolve if separating
+        // Check if separating (but still apply friction for sliding contacts)
         // Normal points from A toward B
         // relVel = velB - velA (velocity of B relative to A)
         // If contactVel > 0, B is moving away from A along the normal (separating)
-        // If contactVel < 0, B is moving toward A (or A is pushing into B) - this needs resolution
-        if (contactVel > 0)
-            return;
+        bool isSeparating = contactVel > 0.001f;
         
         // Calculate inverse mass sum with angular contribution
         var invMassA = bodyA.InverseMass;
@@ -426,26 +457,36 @@ public class PhysicsWorld
         var invMassSum = invMassA + invMassB + angularA + angularB;
         if (invMassSum <= 0) return;
         
-        // Normal impulse (with restitution)
-        var e = manifold.Restitution;
-        var j = -(1f + e) * contactVel / invMassSum;
+        float j = 0f;
         
-        var impulse = contact.Normal * j;
-        
-        // Apply normal impulse
-        if (bodyA.Type == RigidBodyType.Dynamic)
+        // Normal impulse (with restitution) - only if approaching
+        if (!isSeparating)
         {
-            bodyA.LinearVelocity -= impulse * invMassA;
-            bodyA.AngularVelocity -= Vector3.Cross(rA, impulse) * bodyA.InverseInertia;
-        }
-        if (bodyB.Type == RigidBodyType.Dynamic)
-        {
-            bodyB.LinearVelocity += impulse * invMassB;
-            bodyB.AngularVelocity += Vector3.Cross(rB, impulse) * bodyB.InverseInertia;
+            var e = manifold.Restitution;
+            j = -(1f + e) * contactVel / invMassSum;
+            
+            var impulse = contact.Normal * j;
+            
+            // Apply normal impulse
+            if (bodyA.Type == RigidBodyType.Dynamic)
+            {
+                bodyA.LinearVelocity -= impulse * invMassA;
+                bodyA.AngularVelocity -= Vector3.Cross(rA, impulse) * bodyA.InverseInertia;
+            }
+            if (bodyB.Type == RigidBodyType.Dynamic)
+            {
+                bodyB.LinearVelocity += impulse * invMassB;
+                bodyB.AngularVelocity += Vector3.Cross(rB, impulse) * bodyB.InverseInertia;
+            }
+            
+            // Recalculate relative velocity after normal impulse for friction
+            velA = bodyA.GetVelocityAtPoint(contact.PointOnA);
+            velB = bodyB.GetVelocityAtPoint(contact.PointOnB);
+            relVel = velB - velA;
         }
         
-        // Friction impulse
-        var tangent = relVel - contact.Normal * contactVel;
+        // Friction impulse - always apply for contacts (sliding friction)
+        var tangent = relVel - contact.Normal * Vector3.Dot(relVel, contact.Normal);
         var tangentLengthSq = tangent.LengthSquared();
         
         if (tangentLengthSq > 0.0001f)
@@ -455,10 +496,27 @@ public class PhysicsWorld
             var tangentVel = Vector3.Dot(relVel, tangent);
             var jt = -tangentVel / invMassSum;
             
-            // Coulomb friction clamp
-            var frictionImpulse = MathF.Abs(jt) < j * manifold.Friction
-                ? tangent * jt
-                : tangent * (-j * manifold.Friction);
+            // For resting/sliding contacts, estimate normal force from mass and gravity
+            // This ensures friction works even for slow-moving sliding contacts
+            float massA = bodyA.Type == RigidBodyType.Dynamic ? bodyA.Mass : 1f;
+            float massB = bodyB.Type == RigidBodyType.Dynamic ? bodyB.Mass : 1f;
+            float effectiveMass = MathF.Min(massA, massB);
+            float gravityForce = effectiveMass * 9.81f * 0.016f; // Approximate per-frame force
+            float normalForceEstimate = MathF.Max(j, gravityForce);
+            
+            // Coulomb friction - directly stop tangential velocity if under friction limit
+            var maxFriction = normalForceEstimate * manifold.Friction;
+            Vector3 frictionImpulse;
+            if (MathF.Abs(jt) < maxFriction)
+            {
+                // Static friction - stop completely
+                frictionImpulse = tangent * jt;
+            }
+            else
+            {
+                // Dynamic friction - apply max force opposing motion
+                frictionImpulse = tangent * (-MathF.Sign(tangentVel) * maxFriction);
+            }
             
             // Apply friction impulse
             if (bodyA.Type == RigidBodyType.Dynamic)
@@ -802,6 +860,7 @@ public class PhysicsWorld
         _colliders.Clear();
         _bodyColliders.Clear();
         _entityToBody.Clear();
+        _constraintSolver.Clear();
         _broadphasePairs.Clear();
         _manifolds.Clear();
         _previousCollisions.Clear();

@@ -7,6 +7,7 @@ using RedHoleEngine.Engine;
 using RedHoleEngine.Particles;
 using RedHoleEngine.Physics;
 using RedHoleEngine.Rendering.Debug;
+using RedHoleEngine.Rendering.UI;
 using RedHoleEngine.Rendering.Particles;
 using RedHoleEngine.Rendering;
 using RedHoleEngine.Rendering.Raytracing;
@@ -65,7 +66,8 @@ public unsafe class VulkanBackend : IGraphicsBackend
     private ImageLayout _outputImageLayout = ImageLayout.Undefined;
 
     // Command buffers
-    private CommandPool _commandPool;
+    private CommandPool _computeCommandPool;
+    private CommandPool _graphicsCommandPool;
     private CommandBuffer _computeCommandBuffer;
     private CommandBuffer _graphicsCommandBuffer;
 
@@ -109,6 +111,7 @@ public unsafe class VulkanBackend : IGraphicsBackend
 
     // Rasterization
     private RenderPass _rasterRenderPass;
+    private RenderPass _overlayRenderPass;
     private Framebuffer[] _rasterFramebuffers = Array.Empty<Framebuffer>();
     private PipelineLayout _rasterPipelineLayout;
     private Pipeline _rasterPipeline;
@@ -120,6 +123,12 @@ public unsafe class VulkanBackend : IGraphicsBackend
     private ulong _rasterIndexBufferSize;
     private int _rasterVertexCount;
     private int _rasterIndexCount;
+    
+    // Depth buffer
+    private Image _depthImage;
+    private DeviceMemory _depthImageMemory;
+    private ImageView _depthImageView;
+    private const Format DepthFormat = Format.D32Sfloat;
 
     private uint _computeQueueFamily;
     private uint _graphicsQueueFamily;
@@ -131,10 +140,15 @@ public unsafe class VulkanBackend : IGraphicsBackend
     // Particle renderer
     private ParticleRenderer? _particleRenderer;
 
+    // UI renderer
+    private UiRenderer? _uiRenderer;
+    private UiDrawData _uiDrawData = new();
+
     public GraphicsBackendType BackendType => GraphicsBackendType.Vulkan;
     public bool SupportsComputeShaders => true;
     public bool SupportsDebugRendering => _debugRenderer?.IsInitialized ?? false;
     public bool SupportsParticleRendering => _particleRenderer?.IsInitialized ?? false;
+    public void SetUiDrawData(UiDrawData drawData) => _uiDrawData = drawData;
 
     public VulkanBackend(IWindow window, int width, int height)
     {
@@ -155,6 +169,7 @@ public unsafe class VulkanBackend : IGraphicsBackend
         CreateImageViews();
         CreateOutputImage();
         CreateRasterRenderPass();
+        CreateDepthResources();
         CreateRasterFramebuffers();
         CreateRasterPipeline();
         CreateDescriptorSetLayout();
@@ -162,10 +177,11 @@ public unsafe class VulkanBackend : IGraphicsBackend
         CreateDescriptorPool();
         CreateDescriptorSets();
         CreateUniformBuffer();
-        CreateCommandPool();
+        CreateCommandPools();
         CreateCommandBuffers();
         CreateSyncObjects();
         InitializeDebugRenderer();
+        InitializeUiRenderer();
 
         Console.WriteLine("Vulkan initialized successfully!");
         Console.WriteLine($"Using device: {GetDeviceName()}");
@@ -674,38 +690,62 @@ public unsafe class VulkanBackend : IGraphicsBackend
             FinalLayout = ImageLayout.PresentSrcKhr
         };
 
+        var depthAttachment = new AttachmentDescription
+        {
+            Format = DepthFormat,
+            Samples = SampleCountFlags.Count1Bit,
+            LoadOp = AttachmentLoadOp.Clear,
+            StoreOp = AttachmentStoreOp.DontCare,
+            StencilLoadOp = AttachmentLoadOp.DontCare,
+            StencilStoreOp = AttachmentStoreOp.DontCare,
+            InitialLayout = ImageLayout.Undefined,
+            FinalLayout = ImageLayout.DepthStencilAttachmentOptimal
+        };
+
+        var attachments = stackalloc AttachmentDescription[] { colorAttachment, depthAttachment };
+
         var colorAttachmentRef = new AttachmentReference
         {
             Attachment = 0,
             Layout = ImageLayout.ColorAttachmentOptimal
         };
 
+        var depthAttachmentRef = new AttachmentReference
+        {
+            Attachment = 1,
+            Layout = ImageLayout.DepthStencilAttachmentOptimal
+        };
+
         var subpass = new SubpassDescription
         {
             PipelineBindPoint = PipelineBindPoint.Graphics,
             ColorAttachmentCount = 1,
-            PColorAttachments = &colorAttachmentRef
+            PColorAttachments = &colorAttachmentRef,
+            PDepthStencilAttachment = &depthAttachmentRef
         };
 
-        var dependency = new SubpassDependency
+        var dependencies = stackalloc SubpassDependency[]
         {
-            SrcSubpass = Vk.SubpassExternal,
-            DstSubpass = 0,
-            SrcStageMask = PipelineStageFlags.ColorAttachmentOutputBit,
-            DstStageMask = PipelineStageFlags.ColorAttachmentOutputBit,
-            SrcAccessMask = 0,
-            DstAccessMask = AccessFlags.ColorAttachmentWriteBit
+            new SubpassDependency
+            {
+                SrcSubpass = Vk.SubpassExternal,
+                DstSubpass = 0,
+                SrcStageMask = PipelineStageFlags.ColorAttachmentOutputBit | PipelineStageFlags.EarlyFragmentTestsBit,
+                DstStageMask = PipelineStageFlags.ColorAttachmentOutputBit | PipelineStageFlags.EarlyFragmentTestsBit,
+                SrcAccessMask = 0,
+                DstAccessMask = AccessFlags.ColorAttachmentWriteBit | AccessFlags.DepthStencilAttachmentWriteBit
+            }
         };
 
         var renderPassInfo = new RenderPassCreateInfo
         {
             SType = StructureType.RenderPassCreateInfo,
-            AttachmentCount = 1,
-            PAttachments = &colorAttachment,
+            AttachmentCount = 2,
+            PAttachments = attachments,
             SubpassCount = 1,
             PSubpasses = &subpass,
             DependencyCount = 1,
-            PDependencies = &dependency
+            PDependencies = dependencies
         };
 
         fixed (RenderPass* rpPtr = &_rasterRenderPass)
@@ -713,6 +753,121 @@ public unsafe class VulkanBackend : IGraphicsBackend
             if (_vk!.CreateRenderPass(_device, &renderPassInfo, null, rpPtr) != Result.Success)
             {
                 throw new Exception("Failed to create raster render pass");
+            }
+        }
+        
+        // Create overlay render pass (loads existing content, doesn't clear)
+        var overlayColorAttachment = new AttachmentDescription
+        {
+            Format = _swapchainFormat,
+            Samples = SampleCountFlags.Count1Bit,
+            LoadOp = AttachmentLoadOp.Load,  // Load existing content
+            StoreOp = AttachmentStoreOp.Store,
+            StencilLoadOp = AttachmentLoadOp.DontCare,
+            StencilStoreOp = AttachmentStoreOp.DontCare,
+            InitialLayout = ImageLayout.ColorAttachmentOptimal,
+            FinalLayout = ImageLayout.ColorAttachmentOptimal
+        };
+
+        var overlayDepthAttachment = new AttachmentDescription
+        {
+            Format = DepthFormat,
+            Samples = SampleCountFlags.Count1Bit,
+            LoadOp = AttachmentLoadOp.Clear,  // Clear depth for proper overlay
+            StoreOp = AttachmentStoreOp.DontCare,
+            StencilLoadOp = AttachmentLoadOp.DontCare,
+            StencilStoreOp = AttachmentStoreOp.DontCare,
+            InitialLayout = ImageLayout.Undefined,
+            FinalLayout = ImageLayout.DepthStencilAttachmentOptimal
+        };
+
+        var overlayAttachments = stackalloc AttachmentDescription[] { overlayColorAttachment, overlayDepthAttachment };
+
+        var overlayRenderPassInfo = new RenderPassCreateInfo
+        {
+            SType = StructureType.RenderPassCreateInfo,
+            AttachmentCount = 2,
+            PAttachments = overlayAttachments,
+            SubpassCount = 1,
+            PSubpasses = &subpass,
+            DependencyCount = 1,
+            PDependencies = dependencies
+        };
+
+        fixed (RenderPass* rpPtr = &_overlayRenderPass)
+        {
+            if (_vk!.CreateRenderPass(_device, &overlayRenderPassInfo, null, rpPtr) != Result.Success)
+            {
+                throw new Exception("Failed to create overlay render pass");
+            }
+        }
+    }
+
+    private void CreateDepthResources()
+    {
+        var imageInfo = new ImageCreateInfo
+        {
+            SType = StructureType.ImageCreateInfo,
+            ImageType = ImageType.Type2D,
+            Extent = new Extent3D(_swapchainExtent.Width, _swapchainExtent.Height, 1),
+            MipLevels = 1,
+            ArrayLayers = 1,
+            Format = DepthFormat,
+            Tiling = ImageTiling.Optimal,
+            InitialLayout = ImageLayout.Undefined,
+            Usage = ImageUsageFlags.DepthStencilAttachmentBit,
+            Samples = SampleCountFlags.Count1Bit,
+            SharingMode = SharingMode.Exclusive
+        };
+
+        fixed (Image* imagePtr = &_depthImage)
+        {
+            if (_vk!.CreateImage(_device, &imageInfo, null, imagePtr) != Result.Success)
+            {
+                throw new Exception("Failed to create depth image");
+            }
+        }
+
+        _vk!.GetImageMemoryRequirements(_device, _depthImage, out var memRequirements);
+
+        var allocInfo = new MemoryAllocateInfo
+        {
+            SType = StructureType.MemoryAllocateInfo,
+            AllocationSize = memRequirements.Size,
+            MemoryTypeIndex = FindMemoryType(memRequirements.MemoryTypeBits, MemoryPropertyFlags.DeviceLocalBit)
+        };
+
+        fixed (DeviceMemory* memPtr = &_depthImageMemory)
+        {
+            if (_vk.AllocateMemory(_device, &allocInfo, null, memPtr) != Result.Success)
+            {
+                throw new Exception("Failed to allocate depth image memory");
+            }
+        }
+
+        _vk.BindImageMemory(_device, _depthImage, _depthImageMemory, 0);
+
+        var viewInfo = new ImageViewCreateInfo
+        {
+            SType = StructureType.ImageViewCreateInfo,
+            Image = _depthImage,
+            ViewType = ImageViewType.Type2D,
+            Format = DepthFormat,
+            SubresourceRange = new ImageSubresourceRange
+            {
+                AspectMask = ImageAspectFlags.DepthBit,
+                BaseMipLevel = 0,
+                LevelCount = 1,
+                BaseArrayLayer = 0,
+                LayerCount = 1
+            }
+        };
+
+        fixed (ImageView* viewPtr = &_depthImageView)
+        {
+            if (_vk.CreateImageView(_device, &viewInfo, null, viewPtr) != Result.Success)
+            {
+                throw new Exception("Failed to create depth image view");
             }
         }
     }
@@ -723,14 +878,14 @@ public unsafe class VulkanBackend : IGraphicsBackend
 
         for (int i = 0; i < _swapchainImageViews.Length; i++)
         {
-            var attachment = _swapchainImageViews[i];
+            var attachments = stackalloc ImageView[] { _swapchainImageViews[i], _depthImageView };
 
             var framebufferInfo = new FramebufferCreateInfo
             {
                 SType = StructureType.FramebufferCreateInfo,
                 RenderPass = _rasterRenderPass,
-                AttachmentCount = 1,
-                PAttachments = &attachment,
+                AttachmentCount = 2,
+                PAttachments = attachments,
                 Width = _swapchainExtent.Width,
                 Height = _swapchainExtent.Height,
                 Layers = 1
@@ -822,8 +977,8 @@ public unsafe class VulkanBackend : IGraphicsBackend
         {
             SType = StructureType.PipelineRasterizationStateCreateInfo,
             PolygonMode = PolygonMode.Fill,
-            CullMode = CullModeFlags.BackBit,
-            FrontFace = FrontFace.CounterClockwise,
+            CullMode = CullModeFlags.None, // Disabled for debugging
+            FrontFace = FrontFace.Clockwise, // Flipped for Vulkan Y-flip
             LineWidth = 1f
         };
 
@@ -831,6 +986,16 @@ public unsafe class VulkanBackend : IGraphicsBackend
         {
             SType = StructureType.PipelineMultisampleStateCreateInfo,
             RasterizationSamples = SampleCountFlags.Count1Bit
+        };
+
+        var depthStencil = new PipelineDepthStencilStateCreateInfo
+        {
+            SType = StructureType.PipelineDepthStencilStateCreateInfo,
+            DepthTestEnable = true,
+            DepthWriteEnable = true,
+            DepthCompareOp = CompareOp.Less,
+            DepthBoundsTestEnable = false,
+            StencilTestEnable = false
         };
 
         var colorBlendAttachment = new PipelineColorBlendAttachmentState
@@ -886,6 +1051,7 @@ public unsafe class VulkanBackend : IGraphicsBackend
             PViewportState = &viewportState,
             PRasterizationState = &rasterizer,
             PMultisampleState = &multisampling,
+            PDepthStencilState = &depthStencil,
             PColorBlendState = &colorBlending,
             PDynamicState = &dynamicState,
             Layout = _rasterPipelineLayout,
@@ -1565,7 +1731,7 @@ public unsafe class VulkanBackend : IGraphicsBackend
         var allocInfo = new CommandBufferAllocateInfo
         {
             SType = StructureType.CommandBufferAllocateInfo,
-            CommandPool = _commandPool,
+            CommandPool = _graphicsCommandPool,
             Level = CommandBufferLevel.Primary,
             CommandBufferCount = 1
         };
@@ -1596,51 +1762,78 @@ public unsafe class VulkanBackend : IGraphicsBackend
         _vk.QueueSubmit(_graphicsQueue, 1, &submitInfo, default);
         _vk.QueueWaitIdle(_graphicsQueue);
 
-        _vk.FreeCommandBuffers(_device, _commandPool, 1, &commandBuffer);
+        _vk.FreeCommandBuffers(_device, _graphicsCommandPool, 1, &commandBuffer);
 
         _vk.DestroyBuffer(_device, stagingBuffer, null);
         _vk.FreeMemory(_device, stagingMemory, null);
     }
 
-    private void CreateCommandPool()
+    private void CreateCommandPools()
     {
-        var poolInfo = new CommandPoolCreateInfo
+        var graphicsPoolInfo = new CommandPoolCreateInfo
+        {
+            SType = StructureType.CommandPoolCreateInfo,
+            QueueFamilyIndex = _graphicsQueueFamily,
+            Flags = CommandPoolCreateFlags.ResetCommandBufferBit
+        };
+
+        fixed (CommandPool* pool = &_graphicsCommandPool)
+        {
+            if (_vk!.CreateCommandPool(_device, &graphicsPoolInfo, null, pool) != Result.Success)
+            {
+                throw new Exception("Failed to create graphics command pool");
+            }
+        }
+
+        var computePoolInfo = new CommandPoolCreateInfo
         {
             SType = StructureType.CommandPoolCreateInfo,
             QueueFamilyIndex = _computeQueueFamily,
             Flags = CommandPoolCreateFlags.ResetCommandBufferBit
         };
 
-        fixed (CommandPool* pool = &_commandPool)
+        fixed (CommandPool* pool = &_computeCommandPool)
         {
-            if (_vk!.CreateCommandPool(_device, &poolInfo, null, pool) != Result.Success)
+            if (_vk!.CreateCommandPool(_device, &computePoolInfo, null, pool) != Result.Success)
             {
-                throw new Exception("Failed to create command pool");
+                throw new Exception("Failed to create compute command pool");
             }
         }
     }
 
     private void CreateCommandBuffers()
     {
-        var allocInfo = new CommandBufferAllocateInfo
+        var computeAlloc = new CommandBufferAllocateInfo
         {
             SType = StructureType.CommandBufferAllocateInfo,
-            CommandPool = _commandPool,
+            CommandPool = _computeCommandPool,
             Level = CommandBufferLevel.Primary,
-            CommandBufferCount = 2
+            CommandBufferCount = 1
         };
 
-        var buffers = new CommandBuffer[2];
-        fixed (CommandBuffer* buffersPtr = buffers)
+        var graphicsAlloc = new CommandBufferAllocateInfo
         {
-            if (_vk!.AllocateCommandBuffers(_device, &allocInfo, buffersPtr) != Result.Success)
+            SType = StructureType.CommandBufferAllocateInfo,
+            CommandPool = _graphicsCommandPool,
+            Level = CommandBufferLevel.Primary,
+            CommandBufferCount = 1
+        };
+
+        fixed (CommandBuffer* computeCmdPtr = &_computeCommandBuffer)
+        {
+            if (_vk!.AllocateCommandBuffers(_device, &computeAlloc, computeCmdPtr) != Result.Success)
             {
-                throw new Exception("Failed to allocate command buffers");
+                throw new Exception("Failed to allocate compute command buffer");
             }
         }
 
-        _computeCommandBuffer = buffers[0];
-        _graphicsCommandBuffer = buffers[1];
+        fixed (CommandBuffer* graphicsCmdPtr = &_graphicsCommandBuffer)
+        {
+            if (_vk!.AllocateCommandBuffers(_device, &graphicsAlloc, graphicsCmdPtr) != Result.Success)
+            {
+                throw new Exception("Failed to allocate graphics command buffer");
+            }
+        }
     }
 
     private void CreateSyncObjects()
@@ -1692,6 +1885,21 @@ public unsafe class VulkanBackend : IGraphicsBackend
             Console.WriteLine($"Warning: Particle renderer initialization failed: {ex.Message}");
             Console.WriteLine("Particle rendering will be disabled.");
             _particleRenderer = null;
+        }
+    }
+
+    private void InitializeUiRenderer()
+    {
+        try
+        {
+            _uiRenderer = new UiRenderer(_vk!, _device, _physicalDevice, _graphicsQueueFamily);
+            _uiRenderer.Initialize(_swapchainFormat, _swapchainExtent, _swapchainImageViews);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Warning: UI renderer initialization failed: {ex.Message}");
+            Console.WriteLine("UI overlay will be disabled.");
+            _uiRenderer = null;
         }
     }
 
@@ -1806,7 +2014,7 @@ public unsafe class VulkanBackend : IGraphicsBackend
 
         // Record and submit graphics commands
         RecordGraphicsCommands(imageIndex, camera, time, debugDraw, particles);
-        SubmitGraphics();
+        SubmitGraphics(useRaytracer);
 
         // Present
         var swapchain = _swapchain;
@@ -2015,9 +2223,10 @@ public unsafe class VulkanBackend : IGraphicsBackend
 
         if (RenderSettings.Mode == RenderMode.Rasterized)
         {
-            var clearValue = new ClearValue
+            var clearValues = stackalloc ClearValue[]
             {
-                Color = new ClearColorValue(0.02f, 0.02f, 0.03f, 1f)
+                new ClearValue { Color = new ClearColorValue(0.02f, 0.02f, 0.03f, 1f) },
+                new ClearValue { DepthStencil = new ClearDepthStencilValue(1.0f, 0) }
             };
 
             var renderPassInfo = new RenderPassBeginInfo
@@ -2030,8 +2239,8 @@ public unsafe class VulkanBackend : IGraphicsBackend
                     Offset = new Offset2D(0, 0),
                     Extent = _swapchainExtent
                 },
-                ClearValueCount = 1,
-                PClearValues = &clearValue
+                ClearValueCount = 2,
+                PClearValues = clearValues
             };
 
             _vk.CmdBeginRenderPass(_graphicsCommandBuffer, &renderPassInfo, SubpassContents.Inline);
@@ -2071,6 +2280,9 @@ public unsafe class VulkanBackend : IGraphicsBackend
                     aspectRaster,
                     0.1f,
                     10000f);
+                
+                // Flip Y for Vulkan's coordinate system (Y points down in clip space)
+                projectionRaster.M22 *= -1;
 
                 var viewProj = viewRaster * projectionRaster;
                 void* viewProjPtr = Unsafe.AsPointer(ref viewProj);
@@ -2119,7 +2331,7 @@ public unsafe class VulkanBackend : IGraphicsBackend
                 _swapchainImages[imageIndex], ImageLayout.TransferDstOptimal,
                 1, &blitRegion, Filter.Linear);
 
-            // Transition to present layout (required by particle and debug renderers)
+            // Transition to present layout
             TransitionImageLayout(_graphicsCommandBuffer, _swapchainImages[imageIndex], ImageLayout.TransferDstOptimal, ImageLayout.PresentSrcKhr);
         }
         
@@ -2144,6 +2356,11 @@ public unsafe class VulkanBackend : IGraphicsBackend
         if (debugDraw != null && debugDraw.HasContent && _debugRenderer?.IsInitialized == true)
         {
             _debugRenderer.RecordCommands(_graphicsCommandBuffer, imageIndex, debugDraw, view, projection);
+        }
+
+        if (_uiRenderer?.IsInitialized == true && _uiDrawData.VertexCount > 0)
+        {
+            _uiRenderer.RecordCommands(_graphicsCommandBuffer, imageIndex, _uiDrawData);
         }
 
         _vk.EndCommandBuffer(_graphicsCommandBuffer);
@@ -2206,6 +2423,20 @@ public unsafe class VulkanBackend : IGraphicsBackend
             srcStage = PipelineStageFlags.TransferBit;
             dstStage = PipelineStageFlags.BottomOfPipeBit;
         }
+        else if (oldLayout == ImageLayout.TransferDstOptimal && newLayout == ImageLayout.ColorAttachmentOptimal)
+        {
+            barrier.SrcAccessMask = AccessFlags.TransferWriteBit;
+            barrier.DstAccessMask = AccessFlags.ColorAttachmentWriteBit;
+            srcStage = PipelineStageFlags.TransferBit;
+            dstStage = PipelineStageFlags.ColorAttachmentOutputBit;
+        }
+        else if (oldLayout == ImageLayout.ColorAttachmentOptimal && newLayout == ImageLayout.PresentSrcKhr)
+        {
+            barrier.SrcAccessMask = AccessFlags.ColorAttachmentWriteBit;
+            barrier.DstAccessMask = 0;
+            srcStage = PipelineStageFlags.ColorAttachmentOutputBit;
+            dstStage = PipelineStageFlags.BottomOfPipeBit;
+        }
         else
         {
             throw new Exception($"Unsupported layout transition: {oldLayout} -> {newLayout}");
@@ -2238,25 +2469,50 @@ public unsafe class VulkanBackend : IGraphicsBackend
         }
     }
 
-    private void SubmitGraphics()
+    private void SubmitGraphics(bool waitForCompute)
     {
-        var waitSemaphore = _computeFinishedSemaphore;
         var signalSemaphore = _renderFinishedSemaphore;
-        var waitStage = PipelineStageFlags.TransferBit;
 
         fixed (CommandBuffer* cmd = &_graphicsCommandBuffer)
         {
-            var submitInfo = new SubmitInfo
+            SubmitInfo submitInfo;
+            
+            if (waitForCompute)
             {
-                SType = StructureType.SubmitInfo,
-                WaitSemaphoreCount = 1,
-                PWaitSemaphores = &waitSemaphore,
-                PWaitDstStageMask = &waitStage,
-                CommandBufferCount = 1,
-                PCommandBuffers = cmd,
-                SignalSemaphoreCount = 1,
-                PSignalSemaphores = &signalSemaphore
-            };
+                // Raytraced mode: wait for compute shader to finish
+                var waitSemaphore = _computeFinishedSemaphore;
+                var waitStage = PipelineStageFlags.TransferBit;
+                
+                submitInfo = new SubmitInfo
+                {
+                    SType = StructureType.SubmitInfo,
+                    WaitSemaphoreCount = 1,
+                    PWaitSemaphores = &waitSemaphore,
+                    PWaitDstStageMask = &waitStage,
+                    CommandBufferCount = 1,
+                    PCommandBuffers = cmd,
+                    SignalSemaphoreCount = 1,
+                    PSignalSemaphores = &signalSemaphore
+                };
+            }
+            else
+            {
+                // Rasterized mode: wait for image acquisition only
+                var waitSemaphore = _imageAvailableSemaphore;
+                var waitStage = PipelineStageFlags.ColorAttachmentOutputBit;
+                
+                submitInfo = new SubmitInfo
+                {
+                    SType = StructureType.SubmitInfo,
+                    WaitSemaphoreCount = 1,
+                    PWaitSemaphores = &waitSemaphore,
+                    PWaitDstStageMask = &waitStage,
+                    CommandBufferCount = 1,
+                    PCommandBuffers = cmd,
+                    SignalSemaphoreCount = 1,
+                    PSignalSemaphores = &signalSemaphore
+                };
+            }
 
             _vk!.QueueSubmit(_graphicsQueue, 1, &submitInfo, _inFlightFence);
         }
@@ -2285,6 +2541,7 @@ public unsafe class VulkanBackend : IGraphicsBackend
 
         _particleRenderer?.Dispose();
         _debugRenderer?.Dispose();
+        _uiRenderer?.Dispose();
         
         if (_device.Handle != 0)
         {
@@ -2292,7 +2549,8 @@ public unsafe class VulkanBackend : IGraphicsBackend
             _vk.DestroySemaphore(_device, _renderFinishedSemaphore, null);
             _vk.DestroySemaphore(_device, _computeFinishedSemaphore, null);
             _vk.DestroyFence(_device, _inFlightFence, null);
-            _vk.DestroyCommandPool(_device, _commandPool, null);
+            _vk.DestroyCommandPool(_device, _computeCommandPool, null);
+            _vk.DestroyCommandPool(_device, _graphicsCommandPool, null);
         }
         if (_device.Handle != 0 && _rasterPipeline.Handle != 0)
         {
@@ -2305,6 +2563,19 @@ public unsafe class VulkanBackend : IGraphicsBackend
         if (_device.Handle != 0 && _rasterRenderPass.Handle != 0)
         {
             _vk.DestroyRenderPass(_device, _rasterRenderPass, null);
+        }
+        if (_device.Handle != 0 && _overlayRenderPass.Handle != 0)
+        {
+            _vk.DestroyRenderPass(_device, _overlayRenderPass, null);
+        }
+        if (_device.Handle != 0 && _depthImageView.Handle != 0)
+        {
+            _vk.DestroyImageView(_device, _depthImageView, null);
+        }
+        if (_device.Handle != 0 && _depthImage.Handle != 0)
+        {
+            _vk.DestroyImage(_device, _depthImage, null);
+            _vk.FreeMemory(_device, _depthImageMemory, null);
         }
         if (_device.Handle != 0 && _rasterFramebuffers.Length > 0)
         {

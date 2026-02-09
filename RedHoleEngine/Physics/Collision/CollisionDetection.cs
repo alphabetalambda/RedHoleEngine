@@ -483,7 +483,11 @@ public static class CollisionDetection
         corners[6] = new Vector3(-he.X, +he.Y, +he.Z);
         corners[7] = new Vector3(+he.X, +he.Y, +he.Z);
         
-        var normal = flip ? -planeNormal : planeNormal;
+        // Normal should point from A (box) toward B (plane)
+        // The plane normal points away from the solid side (up)
+        // So from box to plane surface is the opposite direction: -planeNormal
+        // When flip=true, A and B are swapped, so we use planeNormal
+        var normal = flip ? planeNormal : -planeNormal;
         
         foreach (var localCorner in corners)
         {
@@ -492,10 +496,13 @@ public static class CollisionDetection
             
             if (dist < 0)
             {
+                // PointOnA = point on box (the penetrating corner)
+                // PointOnB = point on plane surface (project corner onto plane)
+                var pointOnPlane = worldCorner - planeNormal * dist;
                 manifold.AddContact(new CollisionContact
                 {
-                    PointOnA = flip ? worldCorner - planeNormal * dist : worldCorner,
-                    PointOnB = flip ? worldCorner : worldCorner - planeNormal * dist,
+                    PointOnA = flip ? pointOnPlane : worldCorner,
+                    PointOnB = flip ? worldCorner : pointOnPlane,
                     Normal = normal,
                     Depth = -dist
                 });
@@ -550,7 +557,10 @@ public static class CollisionDetection
         var planeNormal = Vector3.Transform(plane.Normal, rotPlane);
         var planePoint = posPlane + planeNormal * plane.Distance;
         
-        var normal = flip ? -planeNormal : planeNormal;
+        // Normal should point from A (capsule) toward B (plane)
+        // From capsule to plane surface is -planeNormal
+        // When flip=true, A and B are swapped, so we use planeNormal
+        var normal = flip ? planeNormal : -planeNormal;
         bool hasContact = false;
         
         // Check both endpoints
@@ -560,10 +570,12 @@ public static class CollisionDetection
         if (dist0 < capsule.Radius)
         {
             hasContact = true;
+            var pointOnCapsule = p0 - planeNormal * capsule.Radius;  // Bottom of sphere at p0
+            var pointOnPlane = p0 - planeNormal * dist0;             // Closest point on plane
             manifold.AddContact(new CollisionContact
             {
-                PointOnA = flip ? p0 - planeNormal * dist0 : p0 - planeNormal * capsule.Radius,
-                PointOnB = flip ? p0 - planeNormal * capsule.Radius : p0 - planeNormal * dist0,
+                PointOnA = flip ? pointOnPlane : pointOnCapsule,
+                PointOnB = flip ? pointOnCapsule : pointOnPlane,
                 Normal = normal,
                 Depth = capsule.Radius - dist0
             });
@@ -572,10 +584,12 @@ public static class CollisionDetection
         if (dist1 < capsule.Radius)
         {
             hasContact = true;
+            var pointOnCapsule = p1 - planeNormal * capsule.Radius;  // Bottom of sphere at p1
+            var pointOnPlane = p1 - planeNormal * dist1;             // Closest point on plane
             manifold.AddContact(new CollisionContact
             {
-                PointOnA = flip ? p1 - planeNormal * dist1 : p1 - planeNormal * capsule.Radius,
-                PointOnB = flip ? p1 - planeNormal * capsule.Radius : p1 - planeNormal * dist1,
+                PointOnA = flip ? pointOnPlane : pointOnCapsule,
+                PointOnB = flip ? pointOnCapsule : pointOnPlane,
                 Normal = normal,
                 Depth = capsule.Radius - dist1
             });

@@ -1,6 +1,9 @@
+using System.Collections.Generic;
 using System.Numerics;
 using RedHoleEngine.Core.ECS;
 using RedHoleEngine.Physics;
+using RedHoleEngine.Physics.Constraints;
+using RedHoleEngine.Resources;
 using RedHoleEngine.Physics.Collision;
 
 namespace RedHoleEngine.Components;
@@ -134,6 +137,105 @@ public struct RigidBodyComponent : IComponent
     public readonly void Wake() => Body?.Wake();
 
     #endregion
+}
+
+/// <summary>
+/// Component for link constraints between entities
+/// </summary>
+public struct LinkComponent : IComponent
+{
+    /// <summary>Reference to the link constraint definition</summary>
+    public LinkConstraint? Constraint;
+
+    /// <summary>Whether the LinkSystem should auto-register this link</summary>
+    public bool AutoRegister;
+
+    /// <summary>Assigned link ID after registration</summary>
+    public int LinkId;
+
+    /// <summary>Assigned chain ID if the link belongs to a chain</summary>
+    public int ChainId;
+
+    /// <summary>Assigned mesh ID if the link belongs to a mesh</summary>
+    public int MeshId;
+
+    public LinkComponent(LinkConstraint constraint, bool autoRegister = true)
+    {
+        Constraint = constraint;
+        AutoRegister = autoRegister;
+        LinkId = -1;
+        ChainId = -1;
+        MeshId = -1;
+    }
+}
+
+/// <summary>
+/// Component that enables mesh relaxation (elastic/plastic deformation) via link constraints
+/// </summary>
+public struct MeshRelComponent : IComponent
+{
+    public bool AutoRegister;
+    public LinkType DeformationType;
+
+    // Link properties
+    public float Stiffness;
+    public float Damping;
+    public float YieldThreshold;
+    public float BreakThreshold;
+    public float PlasticRate;
+    public bool IncludeBendLinks;
+    public float BendStiffnessMultiplier;
+
+    // Node properties
+    public float NodeMass;
+    public float NodeLinearDamping;
+    public float NodeAngularDamping;
+    public bool UseGravity;
+    public List<int> PinnedVertexIndices;
+
+    // Mesh update options
+    public bool CloneMeshOnStart;
+    public bool RecalculateNormals;
+    public bool RecalculateTangents;
+    public float NormalUpdateInterval;
+
+    // Runtime state
+    internal bool Initialized;
+    internal int MeshId;
+    internal List<int> NodeEntities;
+    internal Mesh? RuntimeMesh;
+    internal float NormalUpdateTimer;
+
+    public MeshRelComponent(LinkType deformationType = LinkType.Elastic)
+    {
+        AutoRegister = true;
+        DeformationType = deformationType;
+
+        Stiffness = 800f;
+        Damping = 10f;
+        YieldThreshold = 1.1f;
+        BreakThreshold = 1.6f;
+        PlasticRate = 0.5f;
+        IncludeBendLinks = true;
+        BendStiffnessMultiplier = 0.5f;
+
+        NodeMass = 1f;
+        NodeLinearDamping = 0.02f;
+        NodeAngularDamping = 0.1f;
+        UseGravity = false;
+        PinnedVertexIndices = new List<int>();
+
+        CloneMeshOnStart = false;
+        RecalculateNormals = true;
+        RecalculateTangents = false;
+        NormalUpdateInterval = 0.1f;
+
+        Initialized = false;
+        MeshId = -1;
+        NodeEntities = new List<int>();
+        RuntimeMesh = null;
+        NormalUpdateTimer = 0f;
+    }
 }
 
 /// <summary>

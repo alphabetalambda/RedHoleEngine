@@ -9,6 +9,9 @@ using RedHoleEngine.Physics.Collision;
 using RedHoleEngine.Rendering;
 using RedHoleEngine.Rendering.Backends;
 using RedHoleEngine.Rendering.Debug;
+using RedHoleEngine.Rendering.Raytracing;
+using RedHoleEngine.Rendering.Rasterization;
+using RedHoleEngine.Rendering.UI;
 using RedHoleEngine.Resources;
 using Silk.NET.Input;
 using Silk.NET.Maths;
@@ -37,10 +40,21 @@ public class Application : IDisposable
     // Physics
     private PhysicsSystem? _physicsSystem;
     private GravitySystem? _gravitySystem;
+
+    // Raytracing
+    private RaytracerMeshSystem? _raytracerMeshSystem;
+    private RasterMeshSystem? _rasterMeshSystem;
+    private RenderSettingsSystem? _renderSettingsSystem;
+    private UiSystem? _uiSystem;
+    private UnpixSystem? _unpixSystem;
+    private LaserSystem? _laserSystem;
+    private LaserRenderSystem? _laserRenderSystem;
     
     // Rendering
     private IGraphicsBackend? _backend;
     private GraphicsBackendType _backendType;
+    private readonly RaytracerSettings _raytracerSettings = new();
+    private readonly RenderSettings _renderSettings = new();
     
     // Legacy compatibility (will be migrated to ECS)
     private Camera? _legacyCamera;
@@ -91,6 +105,16 @@ public class Application : IDisposable
     /// The ECS world of the active scene
     /// </summary>
     public World? World => ActiveScene?.World;
+
+    /// <summary>
+    /// Raytracer quality settings (rays per pixel, bounces)
+    /// </summary>
+    public RaytracerSettings RaytracerSettings => _backend?.RaytracerSettings ?? _raytracerSettings;
+
+    /// <summary>
+    /// Render mode settings
+    /// </summary>
+    public RenderSettings RenderSettings => _backend?.RenderSettings ?? _renderSettings;
 
     /// <summary>
     /// Event fired when the application is initialized
@@ -201,6 +225,66 @@ public class Application : IDisposable
         scene.World.AddSystem(_physicsSystem);
         _physicsSystem.SetDebugDraw(_debugDraw);
         Console.WriteLine("Physics system initialized");
+
+        // Initialize raytracer mesh system (static BVH)
+        _raytracerMeshSystem = new RaytracerMeshSystem();
+        scene.World.AddSystem(_raytracerMeshSystem);
+        if (_backend != null)
+        {
+            _raytracerMeshSystem.SetBackend(_backend);
+        }
+        if (_legacyCamera != null)
+        {
+            _raytracerMeshSystem.SetCamera(_legacyCamera);
+        }
+
+        // Initialize raster mesh system (primitive mode)
+        _rasterMeshSystem = new RasterMeshSystem();
+        scene.World.AddSystem(_rasterMeshSystem);
+        if (_backend != null)
+        {
+            _rasterMeshSystem.SetBackend(_backend);
+        }
+        if (_legacyCamera != null)
+        {
+            _rasterMeshSystem.SetCamera(_legacyCamera);
+        }
+
+        // Render settings override system
+        _renderSettingsSystem = new RenderSettingsSystem();
+        scene.World.AddSystem(_renderSettingsSystem);
+        if (_backend != null)
+        {
+            _renderSettingsSystem.SetBackend(_backend);
+        }
+
+        // UI system (2D overlay)
+        _uiSystem = new UiSystem();
+        scene.World.AddSystem(_uiSystem);
+        _uiSystem.SetViewportSize(WindowWidth, WindowHeight);
+        _uiSystem.ResourceBasePath = _resourceManager.BasePath;
+
+        // Unpix system (mesh voxel dissolve)
+        _unpixSystem = new UnpixSystem();
+        _unpixSystem.Initialize(_resourceManager);
+        scene.World.AddSystem(_unpixSystem);
+        
+        // Laser system
+        _laserSystem = new LaserSystem();
+        _laserSystem.Initialize(_physicsSystem!);
+        scene.World.AddSystem(_laserSystem);
+        
+        // Laser render system
+        _laserRenderSystem = new LaserRenderSystem();
+        if (_backend != null)
+        {
+            _laserRenderSystem.SetBackend(_backend);
+        }
+        if (_legacyCamera != null)
+        {
+            _laserRenderSystem.SetCamera(_legacyCamera);
+        }
+        scene.World.AddSystem(_laserRenderSystem);
         
         // Initialize audio engine
         _audioEngine = new AudioEngine(scene.World, AudioQuality);
@@ -267,6 +351,10 @@ public class Application : IDisposable
         // Fallback to default if no black hole in scene
         blackHole ??= BlackHole.CreateDefault();
         
+        if (_uiSystem != null)
+        {
+            _backend?.SetUiDrawData(_uiSystem.DrawData);
+        }
         _backend?.Render(_legacyCamera!, blackHole, Time.TotalTime, _debugDraw);
     }
 
@@ -275,6 +363,7 @@ public class Application : IDisposable
         WindowWidth = newSize.X;
         WindowHeight = newSize.Y;
         _backend?.Resize(newSize.X, newSize.Y);
+        _uiSystem?.SetViewportSize(newSize.X, newSize.Y);
     }
 
     private void OnClose()

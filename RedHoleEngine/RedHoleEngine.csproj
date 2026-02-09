@@ -25,6 +25,7 @@
       <PackageReference Include="Silk.NET.Windowing" Version="2.23.0" />
       <PackageReference Include="Silk.NET.Windowing.Glfw" Version="2.23.0" />
       <PackageReference Include="Silk.NET.Windowing.Sdl" Version="2.23.0" />
+      <PackageReference Include="SixLabors.ImageSharp" Version="3.1.4" />
     </ItemGroup>
 
     <!-- Copy shader files to output directory -->

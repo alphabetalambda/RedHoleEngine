@@ -2,6 +2,7 @@
 
 layout(local_size_x = 16, local_size_y = 16) in;
 layout(set = 0, binding = 0, rgba32f) uniform image2D outputImage;
+layout(set = 0, binding = 4, rgba32f) uniform image2D accumImage;
 
 layout(set = 0, binding = 1) uniform UniformBlock {
     vec2 u_Resolution;
@@ -20,13 +21,43 @@ layout(set = 0, binding = 1) uniform UniformBlock {
     float u_SchwarzschildRadius;
     float u_DiskInnerRadius;
     float u_DiskOuterRadius;
-    float _pad5;
+    vec4 u_RaySettings;
+    vec4 u_FrameSettings;
+};
+
+struct BvhNode {
+    vec3 boundsMin;
+    int leftFirst;
+    vec3 boundsMax;
+    int triCount;
+};
+
+struct GpuTriangle {
+    vec3 v0;
+    int materialIndex;
+    vec3 v1;
+    int pad1;
+    vec3 v2;
+    int pad2;
+    vec3 normal;
+    int pad3;
+    vec4 albedo;
+    vec4 emissive;
+};
+
+layout(std430, set = 0, binding = 2) buffer BvhNodes {
+    BvhNode bvhNodes[];
+};
+
+layout(std430, set = 0, binding = 3) buffer Triangles {
+    GpuTriangle triangles[];
 };
 
 // Constants
 const float PI = 3.14159265359;
-const int MAX_STEPS = 300;
-const float STEP_SIZE = 0.1;
+const int MAX_STEPS = 128;      // Reduced from 300 for performance
+const float STEP_SIZE = 0.25;   // Increased from 0.1 for performance
+const int BVH_CHECK_INTERVAL = 4; // Only check BVH every N steps
 
 // ============================================
 // Schwarzschild Geodesic Integration
@@ -97,6 +128,90 @@ float hash(vec2 p) {
     return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
 }
 
+vec2 rand2(vec2 p) {
+    return vec2(
+        hash(p + vec2(11.3, 17.7)),
+        hash(p + vec2(31.7, 47.9))
+    );
+}
+
+bool intersectAabb(vec3 ro, vec3 rd, vec3 bmin, vec3 bmax, out float tmin, out float tmax) {
+    vec3 inv = 1.0 / rd;
+    vec3 t0 = (bmin - ro) * inv;
+    vec3 t1 = (bmax - ro) * inv;
+    vec3 tmin3 = min(t0, t1);
+    vec3 tmax3 = max(t0, t1);
+    tmin = max(max(tmin3.x, tmin3.y), max(tmin3.z, 0.0));
+    tmax = min(min(tmax3.x, tmax3.y), tmax3.z);
+    return tmax >= tmin;
+}
+
+bool intersectTriangle(vec3 ro, vec3 rd, GpuTriangle tri, out float t) {
+    vec3 v0v1 = tri.v1 - tri.v0;
+    vec3 v0v2 = tri.v2 - tri.v0;
+    vec3 pvec = cross(rd, v0v2);
+    float det = dot(v0v1, pvec);
+    if (abs(det) < 1e-6) return false;
+    float invDet = 1.0 / det;
+    vec3 tvec = ro - tri.v0;
+    float u = dot(tvec, pvec) * invDet;
+    if (u < 0.0 || u > 1.0) return false;
+    vec3 qvec = cross(tvec, v0v1);
+    float v = dot(rd, qvec) * invDet;
+    if (v < 0.0 || u + v > 1.0) return false;
+    t = dot(v0v2, qvec) * invDet;
+    return t > 0.0001;
+}
+
+bool intersectBvh(vec3 ro, vec3 rd, int nodeCount, int triCount, out vec3 hitPos, out vec3 hitNormal, out vec3 hitColor) {
+    if (nodeCount == 0 || triCount == 0) return false;
+
+    float tClosest = 1e20;
+    bool hit = false;
+
+    int stack[64];
+    int stackPtr = 0;
+    stack[stackPtr++] = 0;
+
+    while (stackPtr > 0) {
+        int nodeIndex = stack[--stackPtr];
+        if (nodeIndex < 0 || nodeIndex >= nodeCount) continue;
+        BvhNode node = bvhNodes[nodeIndex];
+
+        float tmin;
+        float tmax;
+        if (!intersectAabb(ro, rd, node.boundsMin, node.boundsMax, tmin, tmax) || tmin > tClosest) {
+            continue;
+        }
+
+        if (node.triCount > 0) {
+            int first = node.leftFirst;
+            for (int i = 0; i < node.triCount; i++) {
+                int triIndex = first + i;
+                if (triIndex < 0 || triIndex >= triCount) continue;
+                GpuTriangle tri = triangles[triIndex];
+                float t;
+                if (intersectTriangle(ro, rd, tri, t) && t < tClosest) {
+                    tClosest = t;
+                    hit = true;
+                    hitNormal = tri.normal;
+                    hitColor = tri.albedo.rgb + tri.emissive.rgb;
+                }
+            }
+        } else {
+            int left = node.leftFirst;
+            int right = left + 1;
+            if (right < nodeCount && stackPtr < 63) stack[stackPtr++] = right;
+            if (left < nodeCount && stackPtr < 63) stack[stackPtr++] = left;
+        }
+    }
+
+    if (hit) {
+        hitPos = ro + rd * tClosest;
+    }
+    return hit;
+}
+
 // Procedural starfield on unit sphere
 vec3 starfield(vec3 dir) {
     // Normalize direction
@@ -155,61 +270,184 @@ float intersectSphere(vec3 ro, vec3 rd, vec3 center, float radius) {
     return -b - sqrt(h);
 }
 
-vec3 trace(vec3 rayOrigin, vec3 rayDir) {
-    vec3 pos = rayOrigin;
-    vec3 vel = normalize(rayDir);
+// Check BVH intersection for a short ray segment (used during geodesic tracing)
+bool intersectBvhSegment(vec3 ro, vec3 rd, float maxDist, int nodeCount, int triCount, 
+                          out float hitT, out vec3 hitNormal, out vec3 hitColor) {
+    if (nodeCount == 0 || triCount == 0) return false;
+
+    float tClosest = maxDist;
+    bool hit = false;
+
+    int stack[64];
+    int stackPtr = 0;
+    stack[stackPtr++] = 0;
+
+    while (stackPtr > 0) {
+        int nodeIndex = stack[--stackPtr];
+        if (nodeIndex < 0 || nodeIndex >= nodeCount) continue;
+        BvhNode node = bvhNodes[nodeIndex];
+
+        float tmin, tmax;
+        if (!intersectAabb(ro, rd, node.boundsMin, node.boundsMax, tmin, tmax) || tmin > tClosest) {
+            continue;
+        }
+
+        if (node.triCount > 0) {
+            int first = node.leftFirst;
+            for (int i = 0; i < node.triCount; i++) {
+                int triIndex = first + i;
+                if (triIndex < 0 || triIndex >= triCount) continue;
+                GpuTriangle tri = triangles[triIndex];
+                float t;
+                if (intersectTriangle(ro, rd, tri, t) && t < tClosest && t > 0.001) {
+                    tClosest = t;
+                    hit = true;
+                    hitNormal = tri.normal;
+                    hitColor = tri.albedo.rgb + tri.emissive.rgb;
+                }
+            }
+        } else {
+            int left = node.leftFirst;
+            int right = left + 1;
+            if (right < nodeCount && stackPtr < 63) stack[stackPtr++] = right;
+            if (left < nodeCount && stackPtr < 63) stack[stackPtr++] = left;
+        }
+    }
+
+    if (hit) {
+        hitT = tClosest;
+    }
+    return hit;
+}
+
+bool traceOnce(vec3 rayOrigin, vec3 rayDir, out vec3 outColor, out vec3 hitPos, out vec3 hitNormal) {
+    int nodeCount = int(u_RaySettings.z + 0.5);
+    int triCount = int(u_RaySettings.w + 0.5);
     
     float rs = u_SchwarzschildRadius;
+    
+    // If no black hole (rs <= 0), use simple straight-line BVH intersection
+    if (rs <= 0.0) {
+        vec3 hitColor;
+        if (intersectBvh(rayOrigin, rayDir, nodeCount, triCount, hitPos, hitNormal, hitColor)) {
+            outColor = hitColor;
+            return true;
+        }
+        outColor = starfield(rayDir);
+        hitPos = rayOrigin + rayDir * 100.0;
+        hitNormal = vec3(0.0, 1.0, 0.0);
+        return false;
+    }
+
+    // Quick distance check - if ray starts far from black hole and points away, use simple trace
+    vec3 toBH = u_BlackHolePos - rayOrigin;
+    float distToBH = length(toBH);
+    float dotDir = dot(normalize(toBH), rayDir);
+    
+    // If far from black hole and not pointing toward it, skip geodesic tracing
+    if (distToBH > rs * 20.0 && dotDir < 0.3) {
+        vec3 hitColor;
+        if (intersectBvh(rayOrigin, rayDir, nodeCount, triCount, hitPos, hitNormal, hitColor)) {
+            outColor = hitColor;
+            return true;
+        }
+        outColor = starfield(rayDir);
+        hitPos = rayOrigin + rayDir * 100.0;
+        hitNormal = vec3(0.0, 1.0, 0.0);
+        return false;
+    }
+
+    // Trace ray along curved geodesic path
+    vec3 pos = rayOrigin;
+    vec3 vel = normalize(rayDir);
+    float totalDist = 0.0;
     
     for (int i = 0; i < MAX_STEPS; i++) {
         // Distance from current position to black hole center
         vec3 relPos = pos - u_BlackHolePos;
         float dist = length(relPos);
         
-        // Adaptive step size (smaller when closer to black hole for accuracy)
-        float step = STEP_SIZE * clamp(dist / (rs * 3.0), 0.02, 1.0);
+        // Adaptive step size - larger when far from black hole
+        float step = STEP_SIZE * clamp(dist / (rs * 2.0), 0.1, 2.0);
         
         // Check if fallen into event horizon
         if (dist < rs) {
-            return vec3(0.0); // Black - absorbed by black hole
+            outColor = vec3(0.0); // Black - absorbed by black hole
+            hitPos = pos;
+            hitNormal = vec3(0.0, 1.0, 0.0);
+            return false;
+        }
+        
+        // Only check BVH periodically to save performance (every N steps or when close to geometry)
+        bool checkBvh = (i % BVH_CHECK_INTERVAL == 0) || (dist > rs * 8.0);
+        
+        if (checkBvh) {
+            float hitT;
+            vec3 segHitNormal, segHitColor;
+            float checkDist = step * float(BVH_CHECK_INTERVAL) * 1.2;
+            if (intersectBvhSegment(pos, vel, checkDist, nodeCount, triCount, hitT, segHitNormal, segHitColor)) {
+                hitPos = pos + vel * hitT;
+                hitNormal = segHitNormal;
+                outColor = segHitColor;
+                return true;
+            }
         }
         
         // Store old position for disk intersection test
         vec3 oldPos = pos;
         
-        // Integrate geodesic using position relative to black hole
-        vec3 h = cross(relPos, vel);
-        float h2 = dot(h, h);
-        float r5 = dist * dist * dist * dist * dist;
-        vec3 accel = -1.5 * rs * h2 / r5 * relPos;
+        // Integrate geodesic - gravitational light bending toward mass
+        vec3 towardMass = -normalize(relPos);
+        float bendStrength = rs * 1.5 / (dist * dist);
+        bendStrength = min(bendStrength, 0.5);
+        vec3 accel = towardMass * bendStrength;
         
         vel += accel * step;
         vel = normalize(vel);
         pos = pos + vel * step;
+        totalDist += step;
         
-        // Check for disk intersection (ray crosses y=0 plane)
+        // Check for accretion disk intersection (ray crosses disk plane at black hole Y)
         float y1 = oldPos.y - u_BlackHolePos.y;
         float y2 = pos.y - u_BlackHolePos.y;
         
         if (y1 * y2 < 0.0) {
             // Ray crossed the disk plane
             float t = abs(y1) / (abs(y1) + abs(y2));
-            vec3 hitPos = mix(oldPos, pos, t);
-            float distFromCenter = length(hitPos.xz - u_BlackHolePos.xz);
+            vec3 diskHitPos = mix(oldPos, pos, t);
+            float distFromCenter = length(diskHitPos.xz - u_BlackHolePos.xz);
             
             if (distFromCenter >= u_DiskInnerRadius && distFromCenter <= u_DiskOuterRadius) {
-                return diskColor(hitPos, rs);
+                outColor = diskColor(diskHitPos, rs);
+                hitPos = diskHitPos;
+                hitNormal = vel.y > 0.0 ? vec3(0.0, -1.0, 0.0) : vec3(0.0, 1.0, 0.0);
+                return true;
             }
         }
         
-        // Check if ray escaped to infinity
-        if (dist > 60.0) {
-            return starfield(vel);
+        // Check if ray escaped (far from black hole or traveled far enough)
+        if (dist > rs * 25.0 || totalDist > 100.0) {
+            // Do one final BVH check before returning starfield
+            float hitT;
+            vec3 segHitNormal, segHitColor;
+            if (intersectBvhSegment(pos, vel, 50.0, nodeCount, triCount, hitT, segHitNormal, segHitColor)) {
+                hitPos = pos + vel * hitT;
+                hitNormal = segHitNormal;
+                outColor = segHitColor;
+                return true;
+            }
+            outColor = starfield(vel);
+            hitPos = pos;
+            hitNormal = vec3(0.0, 1.0, 0.0);
+            return false;
         }
     }
     
     // Max iterations reached - return starfield based on final direction
-    return starfield(vel);
+    outColor = starfield(vel);
+    hitPos = pos;
+    hitNormal = vec3(0.0, 1.0, 0.0);
+    return false;
 }
 
 void main() {
@@ -222,28 +460,93 @@ void main() {
         return;
     }
     
-    // Convert pixel to normalized coordinates (-1 to 1)
-    vec2 uv = (vec2(pixelCoord) / u_Resolution) * 2.0 - 1.0;
-    uv.x *= u_Resolution.x / u_Resolution.y; // Aspect ratio correction
+    int raysPerPixel = clamp(int(u_RaySettings.x + 0.5), 1, 64);
+    int maxBounces = clamp(int(u_RaySettings.y + 0.5), 1, 8);
+    int samplesPerFrame = clamp(int(u_FrameSettings.x + 0.5), 1, 8);
+    int frameIndex = int(u_FrameSettings.y + 0.5);
+    bool accumulateEnabled = u_FrameSettings.z > 0.5;
+    bool denoiseEnabled = u_FrameSettings.w > 0.5;
+    bool resetAccum = !accumulateEnabled || frameIndex == 0;
+
+    vec3 color = vec3(0.0);
     
     // Calculate ray direction based on camera and FOV
     float fovRad = u_Fov * PI / 180.0;
     float tanHalfFov = tan(fovRad * 0.5);
-    
-    vec3 rayDir = normalize(
-        u_CameraForward + 
-        uv.x * tanHalfFov * u_CameraRight + 
-        uv.y * tanHalfFov * u_CameraUp
-    );
-    
-    // Trace the ray
-    vec3 color = trace(u_CameraPos, rayDir);
+
+    int totalSamples = raysPerPixel * samplesPerFrame;
+    for (int sampleIndex = 0; sampleIndex < totalSamples; sampleIndex++) {
+        vec2 jitter = (rand2(vec2(pixelCoord) + vec2(sampleIndex + frameIndex * 13, u_Time * 10.0)) - 0.5) / u_Resolution;
+        vec2 uv = ((vec2(pixelCoord) + jitter) / u_Resolution) * 2.0 - 1.0;
+        uv.y = -uv.y; // Flip Y for Vulkan coordinate system (origin at top-left)
+        uv.x *= u_Resolution.x / u_Resolution.y; // Aspect ratio correction
+        
+        vec3 rayDir = normalize(
+            u_CameraForward + 
+            uv.x * tanHalfFov * u_CameraRight + 
+            uv.y * tanHalfFov * u_CameraUp
+        );
+
+        vec3 sampleColor = vec3(0.0);
+        vec3 throughput = vec3(1.0);
+        vec3 origin = u_CameraPos;
+        vec3 dir = rayDir;
+
+        for (int bounce = 0; bounce < maxBounces; bounce++) {
+            vec3 hitColor;
+            vec3 hitPos;
+            vec3 hitNormal;
+            bool hitDisk = traceOnce(origin, dir, hitColor, hitPos, hitNormal);
+
+            sampleColor += throughput * hitColor;
+
+            if (!hitDisk) {
+                break;
+            }
+
+            throughput *= 0.6;
+            origin = hitPos + hitNormal * 0.02;
+            dir = reflect(dir, hitNormal);
+        }
+
+        color += sampleColor;
+    }
+
+    color /= float(totalSamples);
+
+    vec4 accum = resetAccum ? vec4(0.0) : imageLoad(accumImage, pixelCoord);
+    if (accumulateEnabled) {
+        accum.rgb += color;
+        accum.a += 1.0;
+    } else {
+        accum = vec4(color, 1.0);
+    }
+    imageStore(accumImage, pixelCoord, accum);
+
+    vec3 finalColor = accum.rgb / max(accum.a, 1.0);
+
+    if (denoiseEnabled) {
+        vec3 sum = finalColor;
+        int count = 1;
+        for (int oy = -1; oy <= 1; oy++) {
+            for (int ox = -1; ox <= 1; ox++) {
+                if (ox == 0 && oy == 0) continue;
+                ivec2 np = pixelCoord + ivec2(ox, oy);
+                if (np.x < 0 || np.y < 0 || np.x >= resolution.x || np.y >= resolution.y) continue;
+                vec4 nacc = imageLoad(accumImage, np);
+                vec3 ncol = nacc.rgb / max(nacc.a, 1.0);
+                sum += ncol;
+                count++;
+            }
+        }
+        finalColor = sum / float(count);
+    }
     
     // Simple tone mapping
-    color = color / (color + vec3(1.0));
+    finalColor = finalColor / (finalColor + vec3(1.0));
     
     // Gamma correction
-    color = pow(color, vec3(0.4545)); // 1.0/2.2 = 0.4545
+    finalColor = pow(finalColor, vec3(0.4545)); // 1.0/2.2 = 0.4545
     
-    imageStore(outputImage, pixelCoord, vec4(color, 1.0));
+    imageStore(outputImage, pixelCoord, vec4(finalColor, 1.0));
 }

@@ -72,6 +72,32 @@ public class GameModule : IGameModule
         world.AddComponent(emissiveSun, MaterialComponent.CreateEmissive(new Vector3(1f, 0.7f, 0.3f), 5f));
         world.AddComponent(emissiveSun, new RaytracerMeshComponent(enabled: true) { StaticOnly = true });
 
+        var unpixTarget = world.CreateEntity();
+        world.AddComponent(unpixTarget, new TransformComponent(
+            new Vector3(0f, 2.5f, -4f),
+            Quaternion.Identity,
+            new Vector3(2f)
+        ));
+        world.AddComponent(unpixTarget, new MeshComponent(sphereHandle));
+        world.AddComponent(unpixTarget, new MaterialComponent
+        {
+            BaseColor = new Vector4(0.8f, 0.9f, 1f, 1f),
+            Metallic = 0.05f,
+            Roughness = 0.2f,
+            EmissiveColor = Vector3.Zero,
+            UseRaytracing = true
+        });
+        world.AddComponent(unpixTarget, new RaytracerMeshComponent(enabled: true) { StaticOnly = false });
+        world.AddComponent(unpixTarget, new UnpixComponent
+        {
+            CubeSize = 0.35f,
+            DissolveDuration = 2.5f,
+            StartDelay = 1.0f,
+            VelocityScale = 1.0f,
+            HideSource = true,
+            MaxCubes = 2000
+        });
+
         CreateStaticColumn(world, cubeHandle, new Vector3(-8f, -2f, -8f), new Vector3(2f, 5f, 2f), new Vector4(0.35f, 0.4f, 0.45f, 1f));
         CreateStaticColumn(world, cubeHandle, new Vector3(8f, -2f, -8f), new Vector3(2f, 4f, 2f), new Vector4(0.45f, 0.35f, 0.25f, 1f));
         CreateStaticColumn(world, cubeHandle, new Vector3(0f, -2f, 10f), new Vector3(3f, 3f, 3f), new Vector4(0.3f, 0.5f, 0.35f, 1f));

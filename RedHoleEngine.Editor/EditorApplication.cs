@@ -15,6 +15,7 @@ using RedHoleEngine.Physics;
 using RedHoleEngine.Rendering;
 using RedHoleEngine.Rendering.Backends;
 using RedHoleEngine.Resources;
+using RedHoleEngine.Terminal;
 using Silk.NET.Input;
 using Silk.NET.Maths;
 using Silk.NET.OpenGL;
@@ -47,6 +48,7 @@ public class EditorApplication : IDisposable
     private RaytracerSettingsPanel? _raytracerPanel;
     private RenderSettingsPanel? _renderPanel;
     private GameProjectPanel? _gameProjectPanel;
+    private TerminalPanel? _terminalPanel;
 
     private readonly RaytracerSettings _raytracerSettings = new();
     private readonly RenderSettings _renderSettings = new();
@@ -55,6 +57,9 @@ public class EditorApplication : IDisposable
     private IGameModule? _gameModule;
     private string _gameProjectPath = string.Empty;
     private string _gameProjectStatus = string.Empty;
+    private VirtualFileSystem _terminalFileSystem = new();
+    private TerminalSession _terminalSession;
+    private GameSaveManager _terminalSaveManager;
 
     // Viewport state
     private Renderer? _viewportRenderer;
@@ -100,6 +105,9 @@ public class EditorApplication : IDisposable
 
     public EditorApplication()
     {
+        _terminalSession = new TerminalSession(_terminalFileSystem);
+        _terminalSaveManager = new GameSaveManager("Editor");
+
         // Create panels
         _hierarchyPanel = new SceneHierarchyPanel();
         _inspectorPanel = new InspectorPanel();
@@ -111,6 +119,7 @@ public class EditorApplication : IDisposable
             path => _gameProjectPath = path,
             () => _gameProjectStatus,
             LoadGameProjectFromSettings);
+        _terminalPanel = new TerminalPanel(_terminalSession, () => _terminalSaveManager);
 
         _panels.Add(_hierarchyPanel);
         _panels.Add(_inspectorPanel);
@@ -118,6 +127,7 @@ public class EditorApplication : IDisposable
         _panels.Add(_raytracerPanel);
         _panels.Add(_renderPanel);
         _panels.Add(_gameProjectPanel);
+        _panels.Add(_terminalPanel);
     }
 
     /// <summary>
@@ -1118,11 +1128,13 @@ public class EditorApplication : IDisposable
         {
             _gameModule = module;
             _gameProjectStatus = status;
+            _terminalSaveManager = new GameSaveManager(_gameModule.Name);
         }
         else
         {
             _gameModule = null;
             _gameProjectStatus = status;
+            _terminalSaveManager = new GameSaveManager("Editor");
         }
     }
 
@@ -1135,7 +1147,8 @@ public class EditorApplication : IDisposable
         if (_world == null)
             return false;
 
-        var context = new GameContext(_world, _gameResources, _renderSettings, _raytracerSettings, application: null, isEditor: true);
+        var saveManager = new GameSaveManager(_gameModule.Name);
+        var context = new GameContext(_world, _gameResources, _renderSettings, _raytracerSettings, saveManager, application: null, isEditor: true);
         _gameModule.BuildScene(context);
         Console.WriteLine($"Loaded game scene from {_gameModule.Name}");
         return true;

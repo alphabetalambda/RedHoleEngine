@@ -1,0 +1,64 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\RedHoleEngine\RedHoleEngine.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="..\RedHoleEngine\Rendering\Shaders\**\*.*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\RedHoleEngine\Audio\Clips\**\*.*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <!-- macOS: Copy Vulkan loader and compile native launcher -->
+  <Target Name="MacOSSetup" AfterTargets="Build" Condition="$([MSBuild]::IsOSPlatform('OSX'))">
+    <PropertyGroup>
+      <HomebrewVulkanLoader>/opt/homebrew/lib/libvulkan.dylib</HomebrewVulkanLoader>
+      <HomebrewVulkanLoader1>/opt/homebrew/lib/libvulkan.1.dylib</HomebrewVulkanLoader1>
+      <MoltenVKIcd>$(NuGetPackageRoot)silk.net.moltenvk.native/2.23.0/runtimes/osx/native/MoltenVK_icd.json</MoltenVKIcd>
+      <LauncherSource>$(MSBuildProjectDirectory)/Launcher/macos_launcher.c</LauncherSource>
+      <LauncherOutput>$(OutputPath)RedHoleLaserDemo</LauncherOutput>
+    </PropertyGroup>
+
+    <!-- Copy Vulkan loader -->
+    <Copy SourceFiles="$(HomebrewVulkanLoader)"
+          DestinationFiles="$(OutputPath)libvulkan.dylib"
+          Condition="Exists('$(HomebrewVulkanLoader)')"
+          SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(HomebrewVulkanLoader1)"
+          DestinationFiles="$(OutputPath)libvulkan.1.dylib"
+          Condition="Exists('$(HomebrewVulkanLoader1)')"
+          SkipUnchangedFiles="true" />
+
+    <MakeDir Directories="$(OutputPath)runtimes/osx/native" />
+    <Copy SourceFiles="$(MoltenVKIcd)"
+          DestinationFiles="$(OutputPath)runtimes/osx/native/MoltenVK_icd.json"
+          Condition="Exists('$(MoltenVKIcd)')"
+          SkipUnchangedFiles="true" />
+
+    <!-- Compile native launcher -->
+    <Exec Command="clang -O2 -o '$(LauncherOutput)' '$(LauncherSource)' -framework Foundation"
+          Condition="Exists('$(LauncherSource)')"
+          IgnoreExitCode="false" />
+
+    <Message Text="macOS: Compiled native launcher and copied Vulkan loader" Importance="high" />
+
+    <Warning Text="Vulkan loader not found. Install via: brew install vulkan-loader"
+             Condition="!Exists('$(HomebrewVulkanLoader)')" />
+
+    <Warning Text="MoltenVK ICD not found in NuGet cache."
+             Condition="!Exists('$(MoltenVKIcd)')" />
+  </Target>
+
+</Project>

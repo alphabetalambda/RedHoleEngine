@@ -12,6 +12,26 @@ public class Camera
     private float _yaw;   // Rotation around Y axis (left/right)
     private float _pitch; // Rotation around X axis (up/down)
 
+    public float Yaw
+    {
+        get => _yaw;
+        set
+        {
+            _yaw = value;
+            UpdateVectors();
+        }
+    }
+
+    public float Pitch
+    {
+        get => _pitch;
+        set
+        {
+            _pitch = Math.Clamp(value, -89.0f, 89.0f);
+            UpdateVectors();
+        }
+    }
+
     public float MovementSpeed { get; set; } = 5.0f;
     public float MouseSensitivity { get; set; } = 0.1f;
     public float FieldOfView { get; set; } = 60.0f;

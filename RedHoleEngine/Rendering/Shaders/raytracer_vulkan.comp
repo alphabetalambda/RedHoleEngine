@@ -24,6 +24,13 @@ layout(set = 0, binding = 1) uniform UniformBlock {
     vec4 u_RaySettings;
     vec4 u_FrameSettings;
     vec4 u_LensingSettings;  // x=maxSteps, y=stepSize, z=bvhCheckInterval, w=quality(0-2)
+    // Kerr black hole parameters (rotating black holes)
+    float u_BlackHoleSpin;       // Dimensionless spin parameter a* (0 to 0.998)
+    float u_KerrParameter;       // a = a* * M (spin in geometric units)
+    float u_OuterHorizonRadius;  // r+ = M + sqrt(M^2 - a^2)
+    float u_ErgosphereRadius;    // Equatorial ergosphere radius
+    vec3 u_BlackHoleSpinAxis;    // Spin axis direction (normalized)
+    float _padKerr;
 };
 
 struct BvhNode {
@@ -86,6 +93,106 @@ vec3 schwarzschildAcceleration(vec3 pos, vec3 vel, float rs) {
     vec3 accel = -1.5 * rs * h2 / r5 * r;
     
     return accel;
+}
+
+// ============================================
+// Kerr (Rotating) Black Hole Geodesic
+// ============================================
+
+// Calculate frame dragging angular velocity (omega) for Kerr metric
+// omega = 2Mar / ((r^2 + a^2)^2 - a^2 * Delta * sin^2(theta))
+// where Delta = r^2 - 2Mr + a^2
+float frameDraggingOmega(float r, float theta, float M, float a) {
+    if (r < M * 0.5) return 0.0; // Inside singularity region
+    
+    float r2 = r * r;
+    float a2 = a * a;
+    float Delta = r2 - 2.0 * M * r + a2;
+    float sinTheta = sin(theta);
+    float sin2Theta = sinTheta * sinTheta;
+    
+    // Sigma = r^2 + a^2 * cos^2(theta)
+    float cosTheta = cos(theta);
+    float Sigma = r2 + a2 * cosTheta * cosTheta;
+    
+    // Denominator: (r^2 + a^2)^2 - a^2 * Delta * sin^2(theta)
+    float rpa2 = r2 + a2;
+    float denom = rpa2 * rpa2 - a2 * Delta * sin2Theta;
+    
+    if (abs(denom) < 1e-10) return 0.0;
+    
+    return 2.0 * M * a * r / denom;
+}
+
+// Calculate gravitational acceleration for Kerr metric with frame dragging
+// This combines the Schwarzschild-like radial attraction with azimuthal frame dragging
+vec3 kerrAcceleration(vec3 pos, vec3 vel, float rs, float a, vec3 spinAxis) {
+    vec3 r = pos - u_BlackHolePos;
+    float rMag = length(r);
+    float M = rs * 0.5; // Mass in geometric units (rs = 2M)
+    
+    // Use outer horizon radius if available, else compute from rs and a
+    float rPlus = u_OuterHorizonRadius > 0.0 ? u_OuterHorizonRadius : (M + sqrt(max(M*M - a*a, 0.0)));
+    
+    if (rMag < rPlus * 0.5) {
+        return vec3(0.0); // Inside event horizon
+    }
+    
+    // Start with Schwarzschild-like acceleration
+    vec3 h = cross(r, vel);
+    float h2 = dot(h, h);
+    float r5 = rMag * rMag * rMag * rMag * rMag;
+    vec3 accelRadial = -1.5 * rs * h2 / r5 * r;
+    
+    // If no spin, return pure Schwarzschild
+    if (abs(a) < 1e-10) {
+        return accelRadial;
+    }
+    
+    // Calculate theta (angle from spin axis)
+    vec3 rNorm = r / rMag;
+    float cosTheta = dot(rNorm, spinAxis);
+    float theta = acos(clamp(cosTheta, -1.0, 1.0));
+    
+    // Frame dragging angular velocity
+    float omega = frameDraggingOmega(rMag, theta, M, a);
+    
+    // Frame dragging velocity: v_drag = omega * (spinAxis x r)
+    // This is the velocity that local inertial frames are dragged with
+    vec3 dragDirection = cross(spinAxis, rNorm);
+    float dragDirLen = length(dragDirection);
+    
+    if (dragDirLen > 1e-6) {
+        dragDirection /= dragDirLen;
+        
+        // The frame dragging "pulls" the light ray azimuthally
+        // Acceleration toward the dragging direction
+        float dragStrength = omega * rMag * sin(theta);
+        
+        // Scale by distance factor (stronger closer to black hole)
+        float distFactor = rs / (rMag * rMag);
+        distFactor = min(distFactor, 1.0);
+        
+        vec3 accelDrag = dragDirection * dragStrength * distFactor;
+        
+        return accelRadial + accelDrag;
+    }
+    
+    return accelRadial;
+}
+
+// Check if position is inside the ergosphere
+// Ergosphere radius: r_ergo = M + sqrt(M^2 - a^2 * cos^2(theta))
+bool isInsideErgosphere(vec3 pos, float M, float a, vec3 spinAxis) {
+    vec3 r = pos - u_BlackHolePos;
+    float rMag = length(r);
+    
+    vec3 rNorm = r / rMag;
+    float cosTheta = dot(rNorm, spinAxis);
+    float cos2Theta = cosTheta * cosTheta;
+    
+    float ergoRadius = M + sqrt(max(M*M - a*a * cos2Theta, 0.0));
+    return rMag < ergoRadius;
 }
 
 // ============================================
@@ -329,6 +436,13 @@ bool traceOnce(vec3 rayOrigin, vec3 rayDir, out vec3 outColor, out vec3 hitPos, 
     
     float rs = u_SchwarzschildRadius;
     
+    // Kerr black hole parameters
+    float a = u_KerrParameter;                    // Kerr parameter (spin in geometric units)
+    float spin = u_BlackHoleSpin;                 // Dimensionless spin (0 to ~1)
+    vec3 spinAxis = normalize(u_BlackHoleSpinAxis);
+    float eventHorizon = u_OuterHorizonRadius > 0.0 ? u_OuterHorizonRadius : rs;
+    bool useKerr = abs(spin) > 0.001;             // Use Kerr geodesics if spinning
+    
     // If no black hole (rs <= 0), use simple straight-line BVH intersection
     if (rs <= 0.0) {
         vec3 hitColor;
@@ -378,8 +492,8 @@ bool traceOnce(vec3 rayOrigin, vec3 rayDir, out vec3 outColor, out vec3 hitPos, 
         // Adaptive step size - larger when far from black hole
         float step = baseStepSize * clamp(dist / (rs * 2.0), 0.1, 2.0);
         
-        // Check if fallen into event horizon
-        if (dist < rs) {
+        // Check if fallen into event horizon (use outer horizon for Kerr)
+        if (dist < eventHorizon) {
             outColor = vec3(0.0); // Black - absorbed by black hole
             hitPos = pos;
             hitNormal = vec3(0.0, 1.0, 0.0);
@@ -404,31 +518,47 @@ bool traceOnce(vec3 rayOrigin, vec3 rayDir, out vec3 outColor, out vec3 hitPos, 
         // Store old position for disk intersection test
         vec3 oldPos = pos;
         
-        // Integrate geodesic - gravitational light bending toward mass
-        vec3 towardMass = -normalize(relPos);
-        float bendStrength = rs * 1.5 / (dist * dist);
-        bendStrength = min(bendStrength, 0.5);
-        vec3 accel = towardMass * bendStrength;
+        // Calculate acceleration based on black hole type
+        vec3 accel;
+        if (useKerr) {
+            // Use Kerr geodesic with frame dragging
+            accel = kerrAcceleration(pos, vel, rs, a, spinAxis);
+        } else {
+            // Use simpler Schwarzschild approximation
+            vec3 towardMass = -normalize(relPos);
+            float bendStrength = rs * 1.5 / (dist * dist);
+            bendStrength = min(bendStrength, 0.5);
+            accel = towardMass * bendStrength;
+        }
         
         vel += accel * step;
         vel = normalize(vel);
         pos = pos + vel * step;
         totalDist += step;
         
-        // Check for accretion disk intersection (ray crosses disk plane at black hole Y)
-        float y1 = oldPos.y - u_BlackHolePos.y;
-        float y2 = pos.y - u_BlackHolePos.y;
+        // Check for accretion disk intersection
+        // For Kerr black holes, disk is perpendicular to spin axis
+        // For Schwarzschild, use Y-axis (spinAxis defaults to (0,1,0))
+        vec3 diskNormal = useKerr ? spinAxis : vec3(0.0, 1.0, 0.0);
         
-        if (y1 * y2 < 0.0) {
+        // Signed distance from disk plane (plane passes through black hole center)
+        float d1 = dot(oldPos - u_BlackHolePos, diskNormal);
+        float d2 = dot(pos - u_BlackHolePos, diskNormal);
+        
+        if (d1 * d2 < 0.0) {
             // Ray crossed the disk plane
-            float t = abs(y1) / (abs(y1) + abs(y2));
+            float t = abs(d1) / (abs(d1) + abs(d2));
             vec3 diskHitPos = mix(oldPos, pos, t);
-            float distFromCenter = length(diskHitPos.xz - u_BlackHolePos.xz);
+            
+            // Distance from center in the disk plane
+            vec3 toDiskHit = diskHitPos - u_BlackHolePos;
+            vec3 inPlane = toDiskHit - dot(toDiskHit, diskNormal) * diskNormal;
+            float distFromCenter = length(inPlane);
             
             if (distFromCenter >= u_DiskInnerRadius && distFromCenter <= u_DiskOuterRadius) {
                 outColor = diskColor(diskHitPos, rs);
                 hitPos = diskHitPos;
-                hitNormal = vel.y > 0.0 ? vec3(0.0, -1.0, 0.0) : vec3(0.0, 1.0, 0.0);
+                hitNormal = dot(vel, diskNormal) > 0.0 ? -diskNormal : diskNormal;
                 return true;
             }
         }

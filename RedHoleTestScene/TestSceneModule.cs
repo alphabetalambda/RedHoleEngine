@@ -68,7 +68,13 @@ public class TestSceneModule : IGameModule
         world.AddComponent(blackHole, new RaytracerMeshComponent(true) { StaticOnly = true });
         // Mass of 1.5 gives Schwarzschild radius of 3, disk inner=9, outer=45
         // This creates visible lensing at reasonable scene scale
-        world.AddComponent(blackHole, GravitySourceComponent.CreateBlackHole(1.5f));
+        // Using Kerr black hole with spin=0.9 and Y-up spin axis (default)
+        // Frame dragging will cause asymmetric lensing - prograde side (right) will show more distortion
+        world.AddComponent(blackHole, GravitySourceComponent.CreateRotatingBlackHole(
+            mass: 1.5f,
+            spin: 0.9f,  // High spin for visible frame dragging effect
+            spinAxis: Vector3.UnitY  // Spin axis pointing up
+        ));
         
         // Accretion disk around the black hole (bright ring)
         // With mass 1.5: rs=3, disk inner=9, outer=45

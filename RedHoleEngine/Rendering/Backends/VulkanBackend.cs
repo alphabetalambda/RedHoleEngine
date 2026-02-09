@@ -2001,7 +2001,13 @@ public unsafe class VulkanBackend : IGraphicsBackend
                 RaytracerSettings.LensingMaxSteps,
                 RaytracerSettings.LensingStepSize,
                 RaytracerSettings.LensingBvhCheckInterval,
-                (int)RaytracerSettings.LensingQuality)
+                (int)RaytracerSettings.LensingQuality),
+            // Kerr parameters
+            BlackHoleSpin = blackHole.Spin,
+            KerrParameter = blackHole.KerrParameter,
+            OuterHorizonRadius = blackHole.OuterHorizonRadius,
+            ErgosphereRadius = blackHole.ErgosphereEquatorialRadius,
+            BlackHoleSpinAxis = blackHole.SpinAxis
         };
         Unsafe.Copy(_uniformBufferMapped, ref uniforms);
 
@@ -2079,7 +2085,13 @@ public unsafe class VulkanBackend : IGraphicsBackend
                 RaytracerSettings.LensingMaxSteps,
                 RaytracerSettings.LensingStepSize,
                 RaytracerSettings.LensingBvhCheckInterval,
-                (int)RaytracerSettings.LensingQuality)
+                (int)RaytracerSettings.LensingQuality),
+            // Kerr parameters
+            BlackHoleSpin = blackHole.Spin,
+            KerrParameter = blackHole.KerrParameter,
+            OuterHorizonRadius = blackHole.OuterHorizonRadius,
+            ErgosphereRadius = blackHole.ErgosphereEquatorialRadius,
+            BlackHoleSpinAxis = blackHole.SpinAxis
         };
         Unsafe.Copy(_uniformBufferMapped, ref uniforms);
 
@@ -2699,4 +2711,12 @@ public struct RaytracerUniforms
     [FieldOffset(112)] public Vector4 RaySettings;
     [FieldOffset(128)] public Vector4 FrameSettings;
     [FieldOffset(144)] public Vector4 LensingSettings; // x=maxSteps, y=stepSize, z=bvhCheckInterval, w=quality
+    
+    // Kerr black hole parameters
+    [FieldOffset(160)] public float BlackHoleSpin;      // Dimensionless spin parameter a* (0 to ~1)
+    [FieldOffset(164)] public float KerrParameter;      // a = a* × M (spin in length units)
+    [FieldOffset(168)] public float OuterHorizonRadius; // r+ for Kerr
+    [FieldOffset(172)] public float ErgosphereRadius;   // Equatorial ergosphere radius
+    [FieldOffset(176)] public Vector3 BlackHoleSpinAxis; // Rotation axis (normalized)
+    [FieldOffset(188)] public float Pad5;
 }

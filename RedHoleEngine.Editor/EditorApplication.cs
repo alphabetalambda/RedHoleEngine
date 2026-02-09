@@ -15,6 +15,7 @@ using RedHoleEngine.Physics;
 using RedHoleEngine.Rendering;
 using RedHoleEngine.Rendering.Backends;
 using RedHoleEngine.Resources;
+using RedHoleEngine.Serialization;
 using RedHoleEngine.Terminal;
 using Silk.NET.Input;
 using Silk.NET.Maths;
@@ -54,12 +55,17 @@ public class EditorApplication : IDisposable
     private readonly RenderSettings _renderSettings = new();
     private EditorSettings _editorSettings = new();
     private readonly ResourceManager _gameResources = new();
+    private readonly SceneSerializer _sceneSerializer = new();
     private IGameModule? _gameModule;
     private string _gameProjectPath = string.Empty;
     private string _gameProjectStatus = string.Empty;
+    private string _currentScenePath = string.Empty;
     private VirtualFileSystem _terminalFileSystem = new();
     private TerminalSession _terminalSession;
     private GameSaveManager _terminalSaveManager;
+    
+    // File dialogs
+    private readonly UI.FileDialog _fileDialog = new();
 
     // Viewport state
     private Renderer? _viewportRenderer;
@@ -244,6 +250,9 @@ public class EditorApplication : IDisposable
         // End dockspace
         EndDockSpace();
 
+        // Draw file dialog (modal, on top)
+        DrawFileDialog();
+
         // Render ImGui
         _imguiController?.Render();
     }
@@ -293,11 +302,15 @@ public class EditorApplication : IDisposable
                 }
                 if (ImGui.MenuItem("Open Scene", "Ctrl+O"))
                 {
-                    // TODO: Open scene dialog
+                    OpenSceneDialog();
                 }
                 if (ImGui.MenuItem("Save Scene", "Ctrl+S"))
                 {
-                    // TODO: Save scene
+                    SaveSceneDialog();
+                }
+                if (ImGui.MenuItem("Save Scene As...", "Ctrl+Shift+S"))
+                {
+                    SaveSceneAsDialog();
                 }
                 ImGui.Separator();
                 if (ImGui.MenuItem("Exit", "Alt+F4"))
@@ -890,6 +903,7 @@ public class EditorApplication : IDisposable
     private void OnKeyDown(IKeyboard keyboard, Key key, int scancode)
     {
         var ctrl = keyboard.IsKeyPressed(Key.ControlLeft) || keyboard.IsKeyPressed(Key.ControlRight);
+        var shift = keyboard.IsKeyPressed(Key.ShiftLeft) || keyboard.IsKeyPressed(Key.ShiftRight);
 
         switch (key)
         {
@@ -901,6 +915,15 @@ public class EditorApplication : IDisposable
                 break;
             case Key.N when ctrl:
                 CreateEmptyEntity();
+                break;
+            case Key.S when ctrl && shift:
+                SaveSceneAsDialog();
+                break;
+            case Key.S when ctrl:
+                SaveSceneDialog();
+                break;
+            case Key.O when ctrl:
+                OpenSceneDialog();
                 break;
         }
     }
@@ -936,6 +959,163 @@ public class EditorApplication : IDisposable
             _viewportPreviewTexture = 0;
         }
     }
+
+    #region Scene Save/Load
+
+    private const string SceneFileFilter = "Scene Files (*.rhes)|*.rhes|All Files (*.*)|*.*";
+    private const string SceneFileExtension = ".rhes";
+    private UI.FileDialogMode _pendingFileDialogMode;
+
+    private void OpenSceneDialog()
+    {
+        _pendingFileDialogMode = UI.FileDialogMode.Open;
+        var startDir = GetSceneDirectory();
+        _fileDialog.Open(UI.FileDialogMode.Open, "Scene", startDir, SceneFileFilter, SceneFileExtension);
+    }
+
+    private void SaveSceneDialog()
+    {
+        // If we have a current scene path, save directly without dialog
+        if (!string.IsNullOrEmpty(_currentScenePath) && File.Exists(_currentScenePath))
+        {
+            SaveScene(_currentScenePath);
+        }
+        else
+        {
+            SaveSceneAsDialog();
+        }
+    }
+
+    private void SaveSceneAsDialog()
+    {
+        _pendingFileDialogMode = UI.FileDialogMode.Save;
+        var startDir = GetSceneDirectory();
+        _fileDialog.Open(UI.FileDialogMode.Save, "Scene", startDir, SceneFileFilter, SceneFileExtension);
+    }
+
+    private void DrawFileDialog()
+    {
+        var result = _fileDialog.Draw();
+        
+        if (result == UI.FileDialogResult.Ok)
+        {
+            var path = _fileDialog.SelectedPath;
+            
+            if (_pendingFileDialogMode == UI.FileDialogMode.Open)
+            {
+                LoadScene(path);
+            }
+            else
+            {
+                SaveScene(path);
+            }
+        }
+    }
+
+    private void SaveScene(string path)
+    {
+        if (_world == null)
+        {
+            Console.WriteLine("Cannot save: No world loaded");
+            return;
+        }
+
+        try
+        {
+            _sceneSerializer.SaveToFile(_world, path);
+            _currentScenePath = path;
+            Console.WriteLine($"Scene saved to: {path}");
+            
+            // Update window title
+            var fileName = Path.GetFileName(path);
+            _window!.Title = $"{WindowTitle} - {fileName}";
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Failed to save scene: {ex.Message}");
+        }
+    }
+
+    private void LoadScene(string path)
+    {
+        if (!File.Exists(path))
+        {
+            Console.WriteLine($"Scene file not found: {path}");
+            return;
+        }
+
+        try
+        {
+            ResetWorld();
+            if (_world == null) return;
+
+            _sceneSerializer.LoadFromFile(_world, path);
+            _currentScenePath = path;
+            Console.WriteLine($"Scene loaded from: {path}");
+            
+            // Update window title
+            var fileName = Path.GetFileName(path);
+            _window!.Title = $"{WindowTitle} - {fileName}";
+            
+            // Reset accumulation for renderer
+            _raytracerSettings.ResetAccumulation = true;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Failed to load scene: {ex.Message}");
+            // Reload default scene on failure
+            LoadDefaultShowcaseScene();
+        }
+    }
+
+    private string GetSceneDirectory()
+    {
+        // Try to use game project's Scenes folder if available
+        if (!string.IsNullOrEmpty(_gameProjectPath))
+        {
+            var projectDir = Directory.Exists(_gameProjectPath) 
+                ? _gameProjectPath 
+                : Path.GetDirectoryName(_gameProjectPath);
+            
+            if (projectDir != null)
+            {
+                var scenesDir = Path.Combine(projectDir, "Scenes");
+                if (Directory.Exists(scenesDir))
+                    return scenesDir;
+                
+                // Create Scenes folder if project exists
+                if (Directory.Exists(projectDir))
+                {
+                    try
+                    {
+                        Directory.CreateDirectory(scenesDir);
+                        return scenesDir;
+                    }
+                    catch
+                    {
+                        return projectDir;
+                    }
+                }
+            }
+        }
+        
+        // Fall back to user's documents
+        var docs = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+        var redHoleScenes = Path.Combine(docs, "RedHoleEngine", "Scenes");
+        
+        try
+        {
+            Directory.CreateDirectory(redHoleScenes);
+        }
+        catch
+        {
+            return docs;
+        }
+        
+        return redHoleScenes;
+    }
+
+    #endregion
 
     #region Play Mode
 

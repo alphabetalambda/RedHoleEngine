@@ -2016,7 +2016,7 @@ public unsafe class VulkanBackend : IGraphicsBackend
             ShowErgosphere = RaytracerSettings.ShowErgosphere ? 1f : 0f,
             ErgosphereOpacity = RaytracerSettings.ErgosphereOpacity,
             DiskISCO = blackHole.CalculateProgradeISCO(),
-            DiskThickness = blackHole.DiskOuterRadius * 0.05f,
+            DiskThickness = 0f,  // Thin disk only - volumetric causes rendering artifacts
             ShowPhotonSphere = RaytracerSettings.ShowPhotonSphere ? 1f : 0f,
             PhotonSphereOpacity = RaytracerSettings.PhotonSphereOpacity,
             PhotonSphereRadius = blackHole.CalculatePhotonSphereRadius()
@@ -2113,7 +2113,7 @@ public unsafe class VulkanBackend : IGraphicsBackend
             ShowErgosphere = RaytracerSettings.ShowErgosphere ? 1f : 0f,
             ErgosphereOpacity = RaytracerSettings.ErgosphereOpacity,
             DiskISCO = blackHole.CalculateProgradeISCO(),
-            DiskThickness = blackHole.DiskOuterRadius * 0.05f,
+            DiskThickness = 0f,  // Thin disk only - volumetric causes rendering artifacts
             ShowPhotonSphere = RaytracerSettings.ShowPhotonSphere ? 1f : 0f,
             PhotonSphereOpacity = RaytracerSettings.PhotonSphereOpacity,
             PhotonSphereRadius = blackHole.CalculatePhotonSphereRadius()

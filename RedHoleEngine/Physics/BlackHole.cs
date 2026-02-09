@@ -125,7 +125,7 @@ public class BlackHole
         // For prograde orbits, ISCO decreases with spin (down to 1M at a*=1)
         // For simplicity, use prograde ISCO approximation
         DiskInnerRadius = CalculateProgradeISCO();
-        DiskOuterRadius = 15.0f * SchwarzschildRadius;
+        DiskOuterRadius = 6.0f * SchwarzschildRadius;  // Reduced from 15x to 6x for better visualization
     }
     
     /// <summary>

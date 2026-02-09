@@ -18,6 +18,7 @@ using RedHoleEngine.Resources;
 using RedHoleEngine.Serialization;
 using RedHoleEngine.Terminal;
 using RedHoleEngine.Editor.Commands;
+using RedHoleEngine.Editor.Gizmos;
 using Silk.NET.Input;
 using Silk.NET.Maths;
 using Silk.NET.OpenGL;
@@ -85,6 +86,7 @@ public class EditorApplication : IDisposable
     private Vector2 _viewportSize;
     private float _viewportTime;
     private readonly List<GizmoLine> _gizmoLines = new();
+    private readonly TransformGizmo _transformGizmo = new();
 
     // Configuration
     public int WindowWidth { get; set; } = 1600;
@@ -445,6 +447,41 @@ public class EditorApplication : IDisposable
             ImGui.Separator();
             ImGui.SameLine();
 
+            // Gizmo mode buttons
+            var gizmoButtonSize = new Vector2(24, 24);
+            
+            if (_transformGizmo.Mode == GizmoMode.Translate)
+                ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(0.3f, 0.5f, 0.7f, 1f));
+            if (ImGui.Button("W", gizmoButtonSize))
+                _transformGizmo.Mode = GizmoMode.Translate;
+            if (_transformGizmo.Mode == GizmoMode.Translate)
+                ImGui.PopStyleColor();
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("Move (W)");
+
+            ImGui.SameLine(0, 2);
+
+            if (_transformGizmo.Mode == GizmoMode.Rotate)
+                ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(0.3f, 0.5f, 0.7f, 1f));
+            if (ImGui.Button("E", gizmoButtonSize))
+                _transformGizmo.Mode = GizmoMode.Rotate;
+            if (_transformGizmo.Mode == GizmoMode.Rotate)
+                ImGui.PopStyleColor();
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("Rotate (E)");
+
+            ImGui.SameLine(0, 2);
+
+            if (_transformGizmo.Mode == GizmoMode.Scale)
+                ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(0.3f, 0.5f, 0.7f, 1f));
+            if (ImGui.Button("R", gizmoButtonSize))
+                _transformGizmo.Mode = GizmoMode.Scale;
+            if (_transformGizmo.Mode == GizmoMode.Scale)
+                ImGui.PopStyleColor();
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("Scale (R)");
+
+            ImGui.SameLine();
+            ImGui.Separator();
+            ImGui.SameLine();
+
             if (ImGui.Button("Showcase", new Vector2(100, 24)))
             {
                 LoadActiveScene();
@@ -518,7 +555,13 @@ public class EditorApplication : IDisposable
                 var imageMax = imageMin + size;
 
                 var drawList = ImGui.GetWindowDrawList();
-                DrawGizmoOverlay(drawList, imageMin, imageMax);
+                
+                // Update and draw transform gizmo
+                UpdateTransformGizmo(imageMin, size, hovered);
+                if (_world != null)
+                {
+                    _transformGizmo.Draw(drawList, _world, _selection, _viewportCamera, imageMin, size);
+                }
 
                 if (_viewportBackendMode == ViewportBackendMode.OpenGL && _openglPreviewFailed)
                 {
@@ -531,7 +574,15 @@ public class EditorApplication : IDisposable
 
                 DrawViewportOverlayUi(imageMin, size);
 
-                var overlayText = "Viewport  |  RMB drag to orbit, wheel to zoom";
+                // Show gizmo mode and controls
+                var modeStr = _transformGizmo.Mode switch
+                {
+                    GizmoMode.Translate => "Move (W)",
+                    GizmoMode.Rotate => "Rotate (E)",
+                    GizmoMode.Scale => "Scale (R)",
+                    _ => "Move"
+                };
+                var overlayText = $"Viewport  |  {modeStr}  |  RMB orbit, MMB pan, Wheel zoom";
                 var overlayPos = new Vector2(imageMin.X + 8f, imageMax.Y - 22f);
                 drawList.AddText(overlayPos, ImGui.GetColorU32(new Vector4(0.7f, 0.75f, 0.85f, 0.8f)), overlayText);
             }
@@ -557,6 +608,10 @@ public class EditorApplication : IDisposable
 
     private void UpdateViewportCamera(bool hovered)
     {
+        // Don't update camera if gizmo is being dragged
+        if (_transformGizmo.IsDragging)
+            return;
+
         var io = ImGui.GetIO();
 
         if (hovered)
@@ -576,6 +631,36 @@ public class EditorApplication : IDisposable
                 _viewportCamera.Position -= _viewportCamera.Right * (io.MouseDelta.X * 0.02f);
                 _viewportCamera.Position += _viewportCamera.Up * (io.MouseDelta.Y * 0.02f);
             }
+        }
+    }
+
+    private void UpdateTransformGizmo(Vector2 viewportMin, Vector2 viewportSize, bool hovered)
+    {
+        if (_world == null) return;
+
+        var io = ImGui.GetIO();
+        var mousePos = io.MousePos;
+        
+        // Only process gizmo input when viewport is hovered or gizmo is being dragged
+        bool shouldProcess = hovered || _transformGizmo.IsDragging;
+        
+        // Don't interfere with right-click camera orbit
+        if (ImGui.IsMouseDown(ImGuiMouseButton.Right))
+            shouldProcess = false;
+
+        if (shouldProcess)
+        {
+            _transformGizmo.Update(
+                _world,
+                _selection,
+                _undoRedo,
+                _viewportCamera,
+                viewportMin,
+                viewportSize,
+                mousePos,
+                ImGui.IsMouseDown(ImGuiMouseButton.Left),
+                ImGui.IsMouseClicked(ImGuiMouseButton.Left),
+                ImGui.IsMouseReleased(ImGuiMouseButton.Left));
         }
     }
 
@@ -934,6 +1019,16 @@ public class EditorApplication : IDisposable
                 break;
             case Key.O when ctrl:
                 OpenSceneDialog();
+                break;
+            // Gizmo mode shortcuts
+            case Key.W:
+                _transformGizmo.Mode = GizmoMode.Translate;
+                break;
+            case Key.E:
+                _transformGizmo.Mode = GizmoMode.Rotate;
+                break;
+            case Key.R:
+                _transformGizmo.Mode = GizmoMode.Scale;
                 break;
         }
     }

@@ -53,6 +53,7 @@ public class EditorApplication : IDisposable
     private RenderSettingsPanel? _renderPanel;
     private GameProjectPanel? _gameProjectPanel;
     private TerminalPanel? _terminalPanel;
+    private AssetBrowserPanel? _assetBrowserPanel;
 
     private readonly RaytracerSettings _raytracerSettings = new();
     private readonly RenderSettings _renderSettings = new();
@@ -130,6 +131,9 @@ public class EditorApplication : IDisposable
             () => _gameProjectStatus,
             LoadGameProjectFromSettings);
         _terminalPanel = new TerminalPanel(_terminalSession, () => _terminalSaveManager);
+        _assetBrowserPanel = new AssetBrowserPanel(
+            () => _gameProjectPath,
+            path => LoadScene(path));
 
         _panels.Add(_hierarchyPanel);
         _panels.Add(_inspectorPanel);
@@ -138,6 +142,7 @@ public class EditorApplication : IDisposable
         _panels.Add(_renderPanel);
         _panels.Add(_gameProjectPanel);
         _panels.Add(_terminalPanel);
+        _panels.Add(_assetBrowserPanel);
     }
 
     /// <summary>

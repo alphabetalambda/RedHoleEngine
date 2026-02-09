@@ -31,6 +31,12 @@ public class RaytracerSettings
     public float LensingStepSize { get; set; } = 0.4f;
     public int LensingBvhCheckInterval { get; set; } = 6;
     public float LensingMaxDistance { get; set; } = 200f;
+    
+    // Kerr black hole visualization
+    public bool ShowErgosphere { get; set; } = false;
+    public float ErgosphereOpacity { get; set; } = 0.3f;
+    public bool ShowPhotonSphere { get; set; } = false;
+    public float PhotonSphereOpacity { get; set; } = 0.2f;
 
     public int MaxRaysPerPixelLimit { get; set; } = 64;
     public int MaxBouncesLimit { get; set; } = 8;

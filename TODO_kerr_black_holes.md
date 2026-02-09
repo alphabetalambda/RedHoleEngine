@@ -3,139 +3,148 @@
 ## Overview
 Implement rotating (Kerr) black holes with frame dragging, ergosphere visualization, and asymmetric gravitational lensing.
 
-## Phase 1: Frame Dragging (Current)
+## Phase 1: Frame Dragging - COMPLETED
 
 ### Core Physics
-- [ ] Add spin parameter (a) to BlackHole class (0 = Schwarzschild, 1 = extremal Kerr)
-- [ ] Add spin axis vector to define rotation direction
-- [ ] Implement Kerr metric geodesic equations in raytracer shader
-- [ ] Calculate frame dragging velocity field
-- [ ] Update light ray integration to include frame dragging effect
+- [x] Add spin parameter (a) to BlackHole class (0 = Schwarzschild, 1 = extremal Kerr)
+- [x] Add spin axis vector to define rotation direction
+- [x] Implement Kerr metric geodesic equations in raytracer shader
+- [x] Calculate frame dragging velocity field
+- [x] Update light ray integration to include frame dragging effect
 
 ### Shader Changes
-- [ ] Add `u_BlackHoleSpin` (float) uniform for spin parameter
-- [ ] Add `u_BlackHoleSpinAxis` (vec3) uniform for rotation axis
-- [ ] Implement `kerrAcceleration()` function replacing/extending `schwarzschildAcceleration()`
-- [ ] Add frame dragging contribution to ray velocity
+- [x] Add `u_BlackHoleSpin` (float) uniform for spin parameter
+- [x] Add `u_BlackHoleSpinAxis` (vec3) uniform for rotation axis
+- [x] Implement `kerrAcceleration()` function
+- [x] Add frame dragging contribution to ray velocity
 
 ### C# Changes
-- [ ] Extend `BlackHole` class with `Spin` and `SpinAxis` properties
-- [ ] Update `GravitySourceComponent` to expose Kerr parameters
-- [ ] Update `RaytracerUniforms` struct with spin parameters
-- [ ] Update `VulkanBackend` to pass spin to shader
+- [x] Extend `BlackHole` class with `Spin` and `SpinAxis` properties
+- [x] Update `GravitySourceComponent` to expose Kerr parameters
+- [x] Update `RaytracerUniforms` struct with spin parameters
+- [x] Update `VulkanBackend` to pass spin to shader
 
 ---
 
-## Phase 2: Ergosphere Visualization
+## Phase 2: Ergosphere Visualization - COMPLETED
 
 ### Physics
-- [ ] Calculate ergosphere boundary: r_ergo = M + sqrt(M² - a²cos²θ)
-- [ ] Implement ergosphere intersection test
+- [x] Calculate ergosphere boundary: r_ergo = M + sqrt(M² - a²cos²θ)
+- [x] Implement ergosphere check function (`isInsideErgosphere()`)
+- [x] `ergosphereRadiusAtTheta()` for angle-dependent radius
 
 ### Visual Effects
-- [ ] Add ergosphere rendering option (wireframe or translucent surface)
-- [ ] Color-code regions (event horizon vs ergosphere)
-- [ ] Visualize frame dragging with particle trails or flow lines
+- [x] Add ergosphere rendering option (`ShowErgosphere`, `ErgosphereOpacity`)
+- [x] Translucent volumetric rendering as rays pass through
+- [x] Color-code by depth (blue → purple → red near horizon)
+- [x] Animated swirl pattern showing frame dragging rotation
 
 ---
 
-## Phase 3: Asymmetric Lensing
+## Phase 3: Doppler Effects - COMPLETED
 
 ### Physics
-- [ ] Implement prograde vs retrograde light path differences
-- [ ] Light co-rotating with black hole bends less
-- [ ] Light counter-rotating bends more (can get captured easier)
+- [x] Implement prograde vs retrograde light path differences
+- [x] Calculate disk orbital velocity with frame dragging boost
+- [x] Relativistic Doppler factor calculation
 
 ### Visual Effects
-- [ ] Einstein ring becomes asymmetric
-- [ ] Accretion disk appears brighter on approaching side (Doppler beaming)
-- [ ] Implement relativistic Doppler shift for disk color
+- [x] Doppler beaming (approaching side brighter, D³ intensity scaling)
+- [x] Relativistic color shift (blueshift/redshift)
 
 ---
 
-## Phase 4: Accretion Disk Improvements
+## Phase 4: Accretion Disk Improvements - COMPLETED
 
 ### Physics
-- [ ] ISCO (Innermost Stable Circular Orbit) depends on spin
-  - Prograde ISCO: r = M(3 + Z2 - sqrt((3-Z1)(3+Z1+2*Z2)))
-  - Retrograde ISCO: r = M(3 + Z2 + sqrt((3-Z1)(3+Z1+2*Z2)))
-- [ ] Disk rotation direction matches black hole spin
-- [ ] Implement disk thickness variation
+- [x] ISCO (Innermost Stable Circular Orbit) passed to shader
+- [x] Disk plane perpendicular to spin axis
+- [x] Gravitational redshift - inner disk light loses energy
+- [x] Disk orbital velocity calculation
 
 ### Visual Effects
-- [ ] Doppler beaming (approaching side brighter)
-- [ ] Gravitational redshift variation across disk
-- [ ] Light bending creates "top" and "bottom" images of disk
+- [x] Disk rotation animation (differential rotation - inner faster)
+- [x] Spiral arm structure
+- [x] Disk thickness variation (flared disk - thicker at outer edge)
+- [x] Volumetric disk intersection
+- [x] Gravitational redshift color/intensity adjustment
+- [x] Combined Doppler + gravitational effects
 
 ---
 
-## Phase 5: Advanced Features
+## Phase 5: Advanced Features - COMPLETED
 
 ### Ring Singularity
-- [ ] Kerr singularity is a ring, not a point
-- [ ] Implement ring singularity geometry
-- [ ] Rays passing through ring enter "negative space" (optional sci-fi feature)
+- [x] Kerr singularity is a ring, not a point
+- [x] Implement ring singularity geometry (`distanceToRingSingularity()`, `ringSingularityColor()`)
+- [x] Visual glow near ring singularity (purple/white gradient)
+- [ ] Rays passing through ring enter "negative space" (optional sci-fi feature - deferred)
+
+### Photon Sphere
+- [x] Photon sphere visualization (`isNearPhotonSphere()`, `photonSphereColor()`)
+- [x] Golden glow showing photon orbit radius
+- [x] `ShowPhotonSphere` and `PhotonSphereOpacity` settings
+- [x] `u_PhotonSphereRadius` uniform passed from C#
 
 ### Penrose Process Visualization
-- [ ] Show energy extraction region in ergosphere
-- [ ] Particle splitting visualization (optional)
+- [ ] Show energy extraction region in ergosphere (deferred)
+- [ ] Particle splitting visualization (deferred)
 
 ### Performance Optimization
-- [ ] Adaptive step size based on proximity to ergosphere
-- [ ] Early termination for rays clearly escaping
-- [ ] LOD for distant black holes
+- [x] Adaptive step size based on proximity to black hole
+- [x] Early termination for rays clearly escaping
+- [x] Configurable max distance for far viewing
+- [ ] LOD for distant black holes (deferred)
+
+### Additional Visual Features
+- [x] Photon sphere visualization
+- [ ] Caustic patterns from strong lensing (deferred)
+- [ ] Multiple Einstein rings (deferred)
 
 ---
 
-## Reference Formulas
+## Summary of Implemented Features
 
-### Kerr Metric (Boyer-Lindquist coordinates)
-```
-Σ = r² + a²cos²θ
-Δ = r² - 2Mr + a²
+### Shader Functions Added:
+- `frameDraggingOmega()` - Lense-Thirring angular velocity
+- `kerrAcceleration()` - Full Kerr geodesic with frame dragging
+- `isInsideErgosphere()` - Ergosphere boundary check
+- `ergosphereColor()` - Volumetric ergosphere visualization
+- `diskOrbitalVelocity()` - Keplerian + frame dragging velocity
+- `diskOrbitalPeriod()` - For rotation animation
+- `dopplerFactor()` - Relativistic Doppler calculation
+- `dopplerColorShift()` - Blueshift/redshift colors
+- `gravitationalRedshift()` - Energy loss in gravity well
+- `applyGravitationalRedshift()` - Color/intensity adjustment
+- `getDiskThickness()` - Flared disk geometry
+- `isInsideDiskVolume()` - Volumetric disk intersection
+- `isNearPhotonSphere()` - Proximity to photon orbit
+- `photonSphereColor()` - Golden glow visualization
+- `distanceToRingSingularity()` - Distance to Kerr ring singularity
+- `passedThroughRing()` - Detects ray crossing through ring plane
+- `ringSingularityColor()` - Purple/white glow near ring
 
-ds² = -(1 - 2Mr/Σ)dt² - (4Mar sin²θ/Σ)dtdφ + (Σ/Δ)dr² + Σdθ² + (r² + a² + 2Ma²r sin²θ/Σ)sin²θ dφ²
-```
-
-### Event Horizon
-```
-r_+ = M + sqrt(M² - a²)  (outer horizon)
-r_- = M - sqrt(M² - a²)  (inner horizon)
-```
-
-### Ergosphere
-```
-r_ergo = M + sqrt(M² - a²cos²θ)
-```
-
-### Frame Dragging Angular Velocity
-```
-ω = 2Mar / ((r² + a²)² - a²Δsin²θ)
-```
-
----
-
-## Files to Modify
-
-### Shaders
-- `RedHoleEngine/Rendering/Shaders/raytracer_vulkan.comp`
-
-### C# Core
-- `RedHoleEngine/Physics/BlackHole.cs`
-- `RedHoleEngine/Components/GravitySourceComponent.cs`
-- `RedHoleEngine/Rendering/Backends/VulkanBackend.cs`
-- `RedHoleEngine/Rendering/RaytracerSettings.cs`
-
-### Test Scene
-- `RedHoleTestScene/TestSceneModule.cs`
+### Uniforms Added:
+- `u_BlackHoleSpin` - Dimensionless spin (0 to ~1)
+- `u_KerrParameter` - a = spin × M
+- `u_OuterHorizonRadius` - Kerr event horizon
+- `u_ErgosphereRadius` - Equatorial ergosphere
+- `u_BlackHoleSpinAxis` - Rotation axis
+- `u_ShowErgosphere` - Toggle visualization
+- `u_ErgosphereOpacity` - Ergosphere transparency
+- `u_DiskISCO` - Inner disk edge from ISCO
+- `u_DiskThickness` - Disk half-thickness
+- `u_ShowPhotonSphere` - Toggle photon sphere visualization
+- `u_PhotonSphereOpacity` - Photon sphere transparency
+- `u_PhotonSphereRadius` - Calculated photon sphere radius
 
 ---
 
 ## Testing Checklist
 
-- [ ] Spin = 0 produces identical results to current Schwarzschild implementation
-- [ ] Frame dragging visible at high spin values
+- [x] Spin = 0 produces identical results to Schwarzschild
+- [x] Ergosphere visualization works
+- [x] Doppler beaming creates asymmetric disk brightness
+- [x] Disk rotation animates correctly
 - [ ] No visual artifacts at spin = 0.99 (near-extremal)
 - [ ] Performance acceptable at all spin values
-- [ ] Accretion disk asymmetry visible
-- [ ] Ergosphere correctly sized and positioned

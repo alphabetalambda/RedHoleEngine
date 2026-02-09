@@ -30,7 +30,16 @@ layout(set = 0, binding = 1) uniform UniformBlock {
     float u_OuterHorizonRadius;  // r+ = M + sqrt(M^2 - a^2)
     float u_ErgosphereRadius;    // Equatorial ergosphere radius
     vec3 u_BlackHoleSpinAxis;    // Spin axis direction (normalized)
-    float _padKerr;
+    float u_ShowErgosphere;      // 1.0 = show, 0.0 = hide
+    // Visualization settings
+    float u_ErgosphereOpacity;   // 0.0 - 1.0
+    float u_DiskISCO;            // Innermost Stable Circular Orbit radius
+    float u_DiskThickness;       // Disk half-thickness at outer edge
+    float u_ShowPhotonSphere;    // 1.0 = show, 0.0 = hide
+    float u_PhotonSphereOpacity; // 0.0 - 1.0
+    float u_PhotonSphereRadius;  // Radius where light can orbit
+    float _pad9;
+    float _pad10;
 };
 
 struct BvhNode {
@@ -196,20 +205,278 @@ bool isInsideErgosphere(vec3 pos, float M, float a, vec3 spinAxis) {
     return rMag < ergoRadius;
 }
 
+// Calculate ergosphere radius at given theta angle
+float ergosphereRadiusAtTheta(float M, float a, float cosTheta) {
+    float cos2Theta = cosTheta * cosTheta;
+    return M + sqrt(max(M*M - a*a * cos2Theta, 0.0));
+}
+
+// Get the "ergosphere distance" - how far inside/outside the ergosphere
+// Negative = inside, Positive = outside
+float ergosphereDistance(vec3 pos, float M, float a, vec3 spinAxis) {
+    vec3 r = pos - u_BlackHolePos;
+    float rMag = length(r);
+    if (rMag < 0.001) return -M; // At center
+    
+    vec3 rNorm = r / rMag;
+    float cosTheta = dot(rNorm, spinAxis);
+    float ergoRadius = ergosphereRadiusAtTheta(M, a, cosTheta);
+    
+    return rMag - ergoRadius;
+}
+
+// Ergosphere visualization color based on depth and angle
+// Creates a translucent blue-purple shell effect
+vec3 ergosphereColor(vec3 pos, float M, float a, vec3 spinAxis) {
+    vec3 r = pos - u_BlackHolePos;
+    float rMag = length(r);
+    if (rMag < 0.001) return vec3(0.0);
+    
+    vec3 rNorm = r / rMag;
+    float cosTheta = dot(rNorm, spinAxis);
+    float sinTheta = sqrt(1.0 - cosTheta * cosTheta);
+    
+    // Ergosphere is largest at equator, smallest at poles
+    float ergoRadius = ergosphereRadiusAtTheta(M, a, cosTheta);
+    float horizonRadius = M + sqrt(max(M*M - a*a, 0.0));
+    
+    // Depth into ergosphere (0 at boundary, 1 at horizon)
+    float depth = 1.0 - (rMag - horizonRadius) / (ergoRadius - horizonRadius);
+    depth = clamp(depth, 0.0, 1.0);
+    
+    // Color gradient: blue at boundary -> purple -> red near horizon
+    vec3 boundaryColor = vec3(0.2, 0.4, 1.0);  // Blue
+    vec3 midColor = vec3(0.6, 0.2, 0.8);       // Purple  
+    vec3 deepColor = vec3(1.0, 0.2, 0.3);      // Red
+    
+    vec3 color;
+    if (depth < 0.5) {
+        color = mix(boundaryColor, midColor, depth * 2.0);
+    } else {
+        color = mix(midColor, deepColor, (depth - 0.5) * 2.0);
+    }
+    
+    // Brighter at equator where ergosphere is largest
+    float equatorFactor = sinTheta * sinTheta;
+    color *= 0.5 + 0.5 * equatorFactor;
+    
+    // Add some swirl pattern based on frame dragging
+    float angle = atan(r.z - u_BlackHolePos.z, r.x - u_BlackHolePos.x);
+    float swirl = sin(angle * 4.0 + u_Time * 2.0) * 0.15 + 0.85;
+    color *= swirl;
+    
+    return color;
+}
+
+// ============================================
+// Photon Sphere Visualization
+// ============================================
+
+// Check if position is near the photon sphere (unstable photon orbit)
+// For Kerr, photon sphere varies with latitude - use average
+bool isNearPhotonSphere(vec3 pos, float photonR, float tolerance) {
+    vec3 r = pos - u_BlackHolePos;
+    float rMag = length(r);
+    return abs(rMag - photonR) < tolerance;
+}
+
+// Photon sphere visualization color - golden/yellow glow
+vec3 photonSphereColor(vec3 pos, float photonR) {
+    vec3 r = pos - u_BlackHolePos;
+    float rMag = length(r);
+    
+    // Distance from photon sphere surface
+    float dist = abs(rMag - photonR);
+    float thickness = photonR * 0.15; // Shell thickness
+    
+    // Intensity falls off with distance from photon sphere
+    float intensity = 1.0 - clamp(dist / thickness, 0.0, 1.0);
+    intensity = intensity * intensity; // Sharper falloff
+    
+    // Golden color for photon sphere - represents trapped light
+    vec3 color = vec3(1.0, 0.85, 0.3) * intensity;
+    
+    // Add subtle pulsing effect
+    float pulse = sin(u_Time * 3.0) * 0.1 + 0.9;
+    color *= pulse;
+    
+    return color;
+}
+
+// ============================================
+// Ring Singularity (Kerr)
+// ============================================
+
+// For Kerr black holes, the singularity is a ring of radius a in the equatorial plane
+// Calculate distance to the ring singularity
+float distanceToRingSingularity(vec3 pos, float a, vec3 spinAxis) {
+    if (a < 0.001) return length(pos - u_BlackHolePos); // Point singularity for Schwarzschild
+    
+    vec3 r = pos - u_BlackHolePos;
+    
+    // Project position onto spin axis to get height
+    float height = dot(r, spinAxis);
+    
+    // Get position in equatorial plane
+    vec3 inPlane = r - height * spinAxis;
+    float rho = length(inPlane); // Cylindrical radius
+    
+    // Distance to the ring (radius a, in equatorial plane)
+    // Ring is at rho = a, height = 0
+    float dRho = rho - a;
+    float dHeight = height;
+    
+    return sqrt(dRho * dRho + dHeight * dHeight);
+}
+
+// Check if ray passes through the ring singularity plane near the ring
+bool passedThroughRing(vec3 oldPos, vec3 newPos, float a, vec3 spinAxis, out vec3 ringHitPos) {
+    if (a < 0.001) {
+        ringHitPos = vec3(0.0);
+        return false; // No ring for Schwarzschild
+    }
+    
+    // Check if crossed equatorial plane
+    float h1 = dot(oldPos - u_BlackHolePos, spinAxis);
+    float h2 = dot(newPos - u_BlackHolePos, spinAxis);
+    
+    if (h1 * h2 >= 0.0) {
+        ringHitPos = vec3(0.0);
+        return false; // Didn't cross plane
+    }
+    
+    // Find crossing point
+    float t = abs(h1) / (abs(h1) + abs(h2));
+    ringHitPos = mix(oldPos, newPos, t);
+    
+    // Check if crossing is within ring radius (with some tolerance)
+    vec3 toHit = ringHitPos - u_BlackHolePos;
+    vec3 inPlane = toHit - dot(toHit, spinAxis) * spinAxis;
+    float rho = length(inPlane);
+    
+    // Ring has some thickness for visualization
+    float ringThickness = a * 0.3;
+    return abs(rho - a) < ringThickness;
+}
+
+// Ring singularity visualization - eerie purple/white glow
+vec3 ringSingularityColor(vec3 pos, float a, vec3 spinAxis) {
+    float dist = distanceToRingSingularity(pos, a, spinAxis);
+    
+    // Intensity increases dramatically near the ring
+    float intensity = a / (dist + 0.01);
+    intensity = clamp(intensity, 0.0, 10.0);
+    
+    // Purple-white color for the ring singularity
+    vec3 color = mix(vec3(0.6, 0.3, 1.0), vec3(1.0, 1.0, 1.0), clamp(intensity * 0.1, 0.0, 1.0));
+    
+    // Flicker effect near singularity
+    float flicker = sin(u_Time * 10.0 + dist * 5.0) * 0.2 + 0.8;
+    
+    return color * intensity * flicker * 0.5;
+}
+
 // ============================================
 // Accretion Disk
 // ============================================
 
-// Temperature-based color for accretion disk (simplified blackbody)
+// Calculate Keplerian orbital velocity at radius r around a Kerr black hole
+// Returns velocity as fraction of speed of light
+float diskOrbitalVelocity(float r, float M, float a) {
+    // For Kerr metric, orbital velocity depends on spin
+    // Simplified: v = sqrt(M/r) * (1 + a*sqrt(M/r^3)) for prograde
+    float v_kepler = sqrt(M / r);
+    
+    // Frame dragging boost for prograde orbits
+    float frameDragBoost = 1.0 + 0.5 * a * sqrt(M / (r * r * r));
+    
+    // Clamp to reasonable relativistic values (max ~0.5c for visible disk)
+    return clamp(v_kepler * frameDragBoost, 0.0, 0.5);
+}
+
+// Calculate orbital period at radius r (for animation)
+float diskOrbitalPeriod(float r, float M) {
+    // T = 2*pi*sqrt(r^3/M) in geometric units
+    return 6.283185 * sqrt(r * r * r / M);
+}
+
+// Calculate Doppler factor for relativistic beaming
+// D = 1 / (gamma * (1 - beta * cos(theta)))
+float dopplerFactor(float beta, float cosTheta) {
+    if (abs(beta) < 0.001) return 1.0;
+    
+    float gamma = 1.0 / sqrt(1.0 - beta * beta);
+    float D = 1.0 / (gamma * (1.0 - beta * cosTheta));
+    
+    return clamp(D, 0.1, 5.0);
+}
+
+// Calculate gravitational redshift factor
+// z = 1/sqrt(1 - rs/r) - 1 for Schwarzschild
+// Light from deeper in gravity well is redshifted (loses energy)
+float gravitationalRedshift(float r, float rs) {
+    if (r <= rs) return 10.0; // Extreme redshift near horizon
+    float factor = sqrt(1.0 - rs / r);
+    return 1.0 / factor; // >1 means redshifted, energy reduced
+}
+
+// Apply relativistic Doppler color shift
+vec3 dopplerColorShift(vec3 baseColor, float dopplerD) {
+    if (abs(dopplerD - 1.0) < 0.01) return baseColor;
+    
+    float shift = dopplerD - 1.0;
+    
+    vec3 blueShift = vec3(0.8, 0.9, 1.0);
+    vec3 redShift = vec3(1.0, 0.7, 0.5);
+    
+    if (shift > 0.0) {
+        float amount = clamp(shift * 0.5, 0.0, 0.6);
+        return mix(baseColor, baseColor * blueShift, amount);
+    } else {
+        float amount = clamp(-shift * 0.5, 0.0, 0.6);
+        return mix(baseColor, baseColor * redShift, amount);
+    }
+}
+
+// Apply gravitational redshift to color
+vec3 applyGravitationalRedshift(vec3 baseColor, float redshiftFactor) {
+    // Redshift moves colors toward red and reduces intensity
+    float intensity = 1.0 / redshiftFactor;
+    
+    // Subtle color shift toward red for gravitationally redshifted light
+    float colorShift = clamp((redshiftFactor - 1.0) * 0.3, 0.0, 0.5);
+    vec3 redshiftTint = vec3(1.0, 0.85, 0.7);
+    
+    return mix(baseColor, baseColor * redshiftTint, colorShift) * intensity;
+}
+
+// Calculate disk thickness at given radius
+// Disk is thicker at outer edge, thinner near ISCO
+float getDiskThickness(float r, float innerR, float outerR, float maxThickness) {
+    float t = (r - innerR) / (outerR - innerR);
+    t = clamp(t, 0.0, 1.0);
+    // Thickness increases with radius (flared disk)
+    return maxThickness * (0.3 + 0.7 * t);
+}
+
+// Temperature-based color for accretion disk with full relativistic effects
 vec3 diskColor(vec3 hitPos, float rs) {
-    float distFromCenter = length(hitPos.xz - u_BlackHolePos.xz);
+    // Get disk-plane position relative to black hole
+    vec3 diskNormal = length(u_BlackHoleSpinAxis) > 0.5 ? normalize(u_BlackHoleSpinAxis) : vec3(0.0, 1.0, 0.0);
+    vec3 toHit = hitPos - u_BlackHolePos;
+    vec3 inPlane = toHit - dot(toHit, diskNormal) * diskNormal;
+    float distFromCenter = length(inPlane);
+    
+    // Use ISCO as inner radius if available
+    float innerRadius = u_DiskISCO > 0.0 ? u_DiskISCO : u_DiskInnerRadius;
+    float outerRadius = u_DiskOuterRadius;
     
     // Temperature decreases with distance from center
-    float t = (distFromCenter - u_DiskInnerRadius) / (u_DiskOuterRadius - u_DiskInnerRadius);
+    float t = (distFromCenter - innerRadius) / (outerRadius - innerRadius);
     t = clamp(t, 0.0, 1.0);
     
     // Inner disk is hotter (bluer/whiter), outer is cooler (redder)
-    vec3 hotColor = vec3(1.0, 0.9, 0.8);   // White-hot
+    vec3 hotColor = vec3(1.0, 0.95, 0.9);  // White-hot
     vec3 warmColor = vec3(1.0, 0.6, 0.2);  // Orange
     vec3 coolColor = vec3(0.8, 0.2, 0.1);  // Red
     
@@ -220,14 +487,68 @@ vec3 diskColor(vec3 hitPos, float rs) {
         color = mix(warmColor, coolColor, (t - 0.5) * 2.0);
     }
     
-    // Add some turbulence/variation
-    float angle = atan(hitPos.z - u_BlackHolePos.z, hitPos.x - u_BlackHolePos.x);
-    float turbulence = sin(angle * 10.0 + u_Time * 2.0) * 0.1 + 0.9;
+    // Base brightness from gravitational heating (closer = brighter)
+    // Energy release ~ 1/r for accretion
+    float brightness = 1.0 / (1.0 + t * t * 3.0);
     
-    // Brightness based on distance (closer = brighter due to gravitational heating)
-    float brightness = 1.0 / (1.0 + t * 2.0);
+    float M = rs * 0.5;
+    float a = u_KerrParameter;
+    float spin = u_BlackHoleSpin;
     
-    return color * brightness * turbulence * 2.0;
+    // === GRAVITATIONAL REDSHIFT ===
+    // Light from inner disk loses energy climbing out of gravity well
+    float gRedshift = gravitationalRedshift(distFromCenter, rs);
+    color = applyGravitationalRedshift(color, gRedshift);
+    
+    // === DOPPLER BEAMING ===
+    if (abs(spin) > 0.001 && distFromCenter > 0.01) {
+        float orbitalSpeed = diskOrbitalVelocity(distFromCenter, M, a);
+        
+        vec3 radialDir = normalize(inPlane);
+        vec3 orbitalDir = cross(diskNormal, radialDir);
+        
+        vec3 toCamera = normalize(u_CameraPos - hitPos);
+        float cosTheta = dot(orbitalDir, toCamera);
+        
+        float D = dopplerFactor(orbitalSpeed, cosTheta);
+        
+        // Relativistic beaming: D^3 for surface brightness
+        float beaming = D * D * D;
+        brightness *= beaming;
+        
+        // Doppler color shift
+        color = dopplerColorShift(color, D);
+    }
+    
+    // === DISK ROTATION ANIMATION ===
+    vec3 radial = length(inPlane) > 0.01 ? normalize(inPlane) : vec3(1.0, 0.0, 0.0);
+    float baseAngle = atan(radial.z, radial.x);
+    
+    // Orbital motion - inner disk rotates faster
+    float period = diskOrbitalPeriod(distFromCenter, M);
+    float orbitalPhase = u_Time / max(period, 0.1);
+    float animatedAngle = baseAngle + orbitalPhase * 6.283185;
+    
+    // Turbulence pattern that rotates with the disk
+    float turbulence = sin(animatedAngle * 8.0) * 0.12 + 0.88;
+    
+    // Add spiral arm structure
+    float spiral = sin(animatedAngle * 2.0 - distFromCenter * 0.5) * 0.08 + 0.92;
+    
+    return color * brightness * turbulence * spiral * 2.5;
+}
+
+// Check if a point is inside the disk volume (for thickness)
+bool isInsideDiskVolume(vec3 pos, vec3 diskNormal, float innerR, float outerR, float maxThickness) {
+    vec3 toPos = pos - u_BlackHolePos;
+    float heightAboveDisk = abs(dot(toPos, diskNormal));
+    vec3 inPlane = toPos - dot(toPos, diskNormal) * diskNormal;
+    float r = length(inPlane);
+    
+    if (r < innerR || r > outerR) return false;
+    
+    float thickness = getDiskThickness(r, innerR, outerR, maxThickness);
+    return heightAboveDisk <= thickness;
 }
 
 // ============================================
@@ -486,6 +807,19 @@ bool traceOnce(vec3 rayOrigin, vec3 rayDir, out vec3 outColor, out vec3 hitPos, 
     vec3 vel = normalize(rayDir);
     float totalDist = 0.0;
     
+    // Visualization accumulation
+    float M = rs * 0.5; // Mass in geometric units
+    bool showErgo = u_ShowErgosphere > 0.5 && useKerr;
+    bool showPhoton = u_ShowPhotonSphere > 0.5;
+    float photonR = u_PhotonSphereRadius > 0.0 ? u_PhotonSphereRadius : 1.5 * rs;
+    
+    vec3 ergoColorAccum = vec3(0.0);
+    float ergoDistAccum = 0.0;
+    vec3 photonColorAccum = vec3(0.0);
+    float photonDistAccum = 0.0;
+    vec3 ringColorAccum = vec3(0.0);
+    float ringDistAccum = 0.0;
+    
     for (int i = 0; i < maxSteps; i++) {
         // Distance from current position to black hole center
         vec3 relPos = pos - u_BlackHolePos;
@@ -496,10 +830,46 @@ bool traceOnce(vec3 rayOrigin, vec3 rayDir, out vec3 outColor, out vec3 hitPos, 
         
         // Check if fallen into event horizon (use outer horizon for Kerr)
         if (dist < eventHorizon) {
-            outColor = vec3(0.0); // Black - absorbed by black hole
+            // Apply accumulated ergosphere color before returning black
+            if (showErgo && ergoDistAccum > 0.0) {
+                float ergoAlpha = min(ergoDistAccum * u_ErgosphereOpacity * 0.1, 0.8);
+                outColor = ergoColorAccum / max(ergoDistAccum, 0.001) * ergoAlpha;
+            } else {
+                outColor = vec3(0.0); // Black - absorbed by black hole
+            }
             hitPos = pos;
             hitNormal = vec3(0.0, 1.0, 0.0);
             return false;
+        }
+        
+        // Ergosphere visualization - accumulate color while ray passes through
+        if (showErgo) {
+            bool insideErgo = isInsideErgosphere(pos, M, a, spinAxis);
+            if (insideErgo) {
+                vec3 eColor = ergosphereColor(pos, M, a, spinAxis);
+                ergoColorAccum += eColor * step;
+                ergoDistAccum += step;
+            }
+        }
+        
+        // Photon sphere visualization - accumulate when near photon orbit radius
+        if (showPhoton) {
+            float photonTolerance = photonR * 0.2;
+            if (isNearPhotonSphere(pos, photonR, photonTolerance)) {
+                vec3 pColor = photonSphereColor(pos, photonR);
+                photonColorAccum += pColor * step;
+                photonDistAccum += step;
+            }
+        }
+        
+        // Ring singularity visualization (Kerr only)
+        if (useKerr && a > 0.01) {
+            float ringDist = distanceToRingSingularity(pos, a, spinAxis);
+            if (ringDist < a * 0.5) {
+                vec3 rColor = ringSingularityColor(pos, a, spinAxis);
+                ringColorAccum += rColor * step;
+                ringDistAccum += step;
+            }
         }
         
         // Only check BVH periodically to save performance (every N steps or when far from BH)
@@ -513,6 +883,20 @@ bool traceOnce(vec3 rayOrigin, vec3 rayDir, out vec3 outColor, out vec3 hitPos, 
                 hitPos = pos + vel * hitT;
                 hitNormal = segHitNormal;
                 outColor = segHitColor;
+                
+                // Blend visualization effects
+                if (showErgo && ergoDistAccum > 0.0) {
+                    float ergoAlpha = min(ergoDistAccum * u_ErgosphereOpacity * 0.1, 0.5);
+                    outColor = mix(outColor, ergoColorAccum / ergoDistAccum, ergoAlpha);
+                }
+                if (showPhoton && photonDistAccum > 0.0) {
+                    float photonAlpha = min(photonDistAccum * u_PhotonSphereOpacity * 0.15, 0.4);
+                    outColor = mix(outColor, photonColorAccum / photonDistAccum, photonAlpha);
+                }
+                if (ringDistAccum > 0.0) {
+                    float ringAlpha = min(ringDistAccum * 0.2, 0.5);
+                    outColor += ringColorAccum / ringDistAccum * ringAlpha;
+                }
                 return true;
             }
         }
@@ -547,18 +931,60 @@ bool traceOnce(vec3 rayOrigin, vec3 rayDir, out vec3 outColor, out vec3 hitPos, 
         float d1 = dot(oldPos - u_BlackHolePos, diskNormal);
         float d2 = dot(pos - u_BlackHolePos, diskNormal);
         
-        if (d1 * d2 < 0.0) {
-            // Ray crossed the disk plane
-            float t = abs(d1) / (abs(d1) + abs(d2));
-            vec3 diskHitPos = mix(oldPos, pos, t);
+        // Use ISCO as inner radius if available, otherwise use uniform
+        float diskInnerR = u_DiskISCO > 0.0 ? u_DiskISCO : u_DiskInnerRadius;
+        float diskOuterR = u_DiskOuterRadius;
+        float diskThick = u_DiskThickness > 0.0 ? u_DiskThickness : 0.0;
+        
+        // Check for disk intersection - either crossing plane or inside volume
+        bool crossedPlane = (d1 * d2 < 0.0);
+        bool insideDiskVolume = diskThick > 0.0 && isInsideDiskVolume(pos, diskNormal, diskInnerR, diskOuterR, diskThick);
+        
+        if (crossedPlane || insideDiskVolume) {
+            vec3 diskHitPos;
+            float distFromCenter;
             
-            // Distance from center in the disk plane
-            vec3 toDiskHit = diskHitPos - u_BlackHolePos;
-            vec3 inPlane = toDiskHit - dot(toDiskHit, diskNormal) * diskNormal;
-            float distFromCenter = length(inPlane);
+            if (crossedPlane) {
+                // Ray crossed the disk plane
+                float t = abs(d1) / (abs(d1) + abs(d2));
+                diskHitPos = mix(oldPos, pos, t);
+                
+                vec3 toDiskHit = diskHitPos - u_BlackHolePos;
+                vec3 inPlane = toDiskHit - dot(toDiskHit, diskNormal) * diskNormal;
+                distFromCenter = length(inPlane);
+            } else {
+                // Inside disk volume
+                diskHitPos = pos;
+                vec3 toDiskHit = diskHitPos - u_BlackHolePos;
+                vec3 inPlane = toDiskHit - dot(toDiskHit, diskNormal) * diskNormal;
+                distFromCenter = length(inPlane);
+            }
             
-            if (distFromCenter >= u_DiskInnerRadius && distFromCenter <= u_DiskOuterRadius) {
+            if (distFromCenter >= diskInnerR && distFromCenter <= diskOuterR) {
                 outColor = diskColor(diskHitPos, rs);
+                
+                // For volumetric disk, attenuate based on path through disk
+                if (insideDiskVolume && !crossedPlane) {
+                    float thickness = getDiskThickness(distFromCenter, diskInnerR, diskOuterR, diskThick);
+                    float heightInDisk = abs(dot(diskHitPos - u_BlackHolePos, diskNormal));
+                    float density = 1.0 - (heightInDisk / thickness);
+                    outColor *= density * 0.5;
+                }
+                
+                // Blend visualization effects
+                if (showErgo && ergoDistAccum > 0.0) {
+                    float ergoAlpha = min(ergoDistAccum * u_ErgosphereOpacity * 0.1, 0.5);
+                    outColor = mix(outColor, ergoColorAccum / ergoDistAccum, ergoAlpha);
+                }
+                if (showPhoton && photonDistAccum > 0.0) {
+                    float photonAlpha = min(photonDistAccum * u_PhotonSphereOpacity * 0.15, 0.4);
+                    outColor = mix(outColor, photonColorAccum / photonDistAccum, photonAlpha);
+                }
+                if (ringDistAccum > 0.0) {
+                    float ringAlpha = min(ringDistAccum * 0.2, 0.5);
+                    outColor += ringColorAccum / ringDistAccum * ringAlpha;
+                }
+                
                 hitPos = diskHitPos;
                 hitNormal = dot(vel, diskNormal) > 0.0 ? -diskNormal : diskNormal;
                 return true;
@@ -570,14 +996,43 @@ bool traceOnce(vec3 rayOrigin, vec3 rayDir, out vec3 outColor, out vec3 hitPos, 
             // Do one final BVH check with full remaining distance before returning starfield
             float hitT;
             vec3 segHitNormal, segHitColor;
-            float remainingDist = maxDistance * 2.0;  // Check far ahead for distant geometry
+            float remainingDist = maxDistance * 2.0;
             if (intersectBvhSegment(pos, vel, remainingDist, nodeCount, triCount, hitT, segHitNormal, segHitColor)) {
                 hitPos = pos + vel * hitT;
                 hitNormal = segHitNormal;
                 outColor = segHitColor;
+                
+                // Blend visualization effects
+                if (showErgo && ergoDistAccum > 0.0) {
+                    float ergoAlpha = min(ergoDistAccum * u_ErgosphereOpacity * 0.1, 0.5);
+                    outColor = mix(outColor, ergoColorAccum / ergoDistAccum, ergoAlpha);
+                }
+                if (showPhoton && photonDistAccum > 0.0) {
+                    float photonAlpha = min(photonDistAccum * u_PhotonSphereOpacity * 0.15, 0.4);
+                    outColor = mix(outColor, photonColorAccum / photonDistAccum, photonAlpha);
+                }
+                if (ringDistAccum > 0.0) {
+                    float ringAlpha = min(ringDistAccum * 0.2, 0.5);
+                    outColor += ringColorAccum / ringDistAccum * ringAlpha;
+                }
                 return true;
             }
+            
+            // Blend visualization effects with starfield
             outColor = starfield(vel);
+            if (showErgo && ergoDistAccum > 0.0) {
+                float ergoAlpha = min(ergoDistAccum * u_ErgosphereOpacity * 0.1, 0.5);
+                outColor = mix(outColor, ergoColorAccum / ergoDistAccum, ergoAlpha);
+            }
+            if (showPhoton && photonDistAccum > 0.0) {
+                float photonAlpha = min(photonDistAccum * u_PhotonSphereOpacity * 0.15, 0.4);
+                outColor = mix(outColor, photonColorAccum / photonDistAccum, photonAlpha);
+            }
+            if (ringDistAccum > 0.0) {
+                float ringAlpha = min(ringDistAccum * 0.2, 0.5);
+                outColor += ringColorAccum / ringDistAccum * ringAlpha;
+            }
+            
             hitPos = pos;
             hitNormal = vec3(0.0, 1.0, 0.0);
             return false;
@@ -586,6 +1041,21 @@ bool traceOnce(vec3 rayOrigin, vec3 rayDir, out vec3 outColor, out vec3 hitPos, 
     
     // Max iterations reached - return starfield based on final direction
     outColor = starfield(vel);
+    
+    // Blend visualization effects
+    if (showErgo && ergoDistAccum > 0.0) {
+        float ergoAlpha = min(ergoDistAccum * u_ErgosphereOpacity * 0.1, 0.5);
+        outColor = mix(outColor, ergoColorAccum / ergoDistAccum, ergoAlpha);
+    }
+    if (showPhoton && photonDistAccum > 0.0) {
+        float photonAlpha = min(photonDistAccum * u_PhotonSphereOpacity * 0.15, 0.4);
+        outColor = mix(outColor, photonColorAccum / photonDistAccum, photonAlpha);
+    }
+    if (ringDistAccum > 0.0) {
+        float ringAlpha = min(ringDistAccum * 0.2, 0.5);
+        outColor += ringColorAccum / ringDistAccum * ringAlpha;
+    }
+    
     hitPos = pos;
     hitNormal = vec3(0.0, 1.0, 0.0);
     return false;

@@ -165,6 +165,29 @@ public class BlackHole
     }
     
     /// <summary>
+    /// Calculate the photon sphere radius (where light can orbit)
+    /// For Schwarzschild: r_ph = 1.5 × rs = 3M
+    /// For Kerr (prograde, equatorial): r_ph = 2M(1 + cos(2/3 × arccos(-a*)))
+    /// </summary>
+    public float CalculatePhotonSphereRadius()
+    {
+        if (Spin < 0.001f)
+            return 1.5f * SchwarzschildRadius; // 3M for Schwarzschild
+        
+        // For Kerr, photon sphere depends on direction
+        // Use prograde equatorial value (smallest, most visible)
+        float a = Spin;
+        float photonR = 2 * Mass * (1 + MathF.Cos(2f/3f * MathF.Acos(-a)));
+        return photonR;
+    }
+    
+    /// <summary>
+    /// Kerr ring singularity radius (a = J/M in geometric units)
+    /// The singularity is a ring of radius a in the equatorial plane
+    /// </summary>
+    public float RingSingularityRadius => KerrParameter;
+    
+    /// <summary>
     /// Frame dragging angular velocity at a given position
     /// ω = 2Mar / ((r² + a²)² - a²Δsin²θ)
     /// This is the angular velocity at which spacetime itself rotates

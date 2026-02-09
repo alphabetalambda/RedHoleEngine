@@ -28,6 +28,12 @@ public struct RenderSettingsComponent : IComponent
     public float LensingStepSize;
     public int LensingBvhCheckInterval;
     public float LensingMaxDistance;
+    
+    // Kerr black hole visualization
+    public bool ShowErgosphere;
+    public float ErgosphereOpacity;
+    public bool ShowPhotonSphere;
+    public float PhotonSphereOpacity;
 
     public RenderSettingsComponent(RenderMode mode = RenderMode.Raytraced)
     {
@@ -50,5 +56,11 @@ public struct RenderSettingsComponent : IComponent
         LensingStepSize = 0.4f;
         LensingBvhCheckInterval = 6;
         LensingMaxDistance = 200f;
+        
+        // Kerr visualization defaults
+        ShowErgosphere = false;
+        ErgosphereOpacity = 0.3f;
+        ShowPhotonSphere = false;
+        PhotonSphereOpacity = 0.2f;
     }
 }

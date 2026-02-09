@@ -2007,7 +2007,14 @@ public unsafe class VulkanBackend : IGraphicsBackend
             KerrParameter = blackHole.KerrParameter,
             OuterHorizonRadius = blackHole.OuterHorizonRadius,
             ErgosphereRadius = blackHole.ErgosphereEquatorialRadius,
-            BlackHoleSpinAxis = blackHole.SpinAxis
+            BlackHoleSpinAxis = blackHole.SpinAxis,
+            ShowErgosphere = RaytracerSettings.ShowErgosphere ? 1f : 0f,
+            ErgosphereOpacity = RaytracerSettings.ErgosphereOpacity,
+            DiskISCO = blackHole.CalculateProgradeISCO(),
+            DiskThickness = blackHole.DiskOuterRadius * 0.05f,
+            ShowPhotonSphere = RaytracerSettings.ShowPhotonSphere ? 1f : 0f,
+            PhotonSphereOpacity = RaytracerSettings.PhotonSphereOpacity,
+            PhotonSphereRadius = blackHole.CalculatePhotonSphereRadius()
         };
         Unsafe.Copy(_uniformBufferMapped, ref uniforms);
 
@@ -2091,7 +2098,14 @@ public unsafe class VulkanBackend : IGraphicsBackend
             KerrParameter = blackHole.KerrParameter,
             OuterHorizonRadius = blackHole.OuterHorizonRadius,
             ErgosphereRadius = blackHole.ErgosphereEquatorialRadius,
-            BlackHoleSpinAxis = blackHole.SpinAxis
+            BlackHoleSpinAxis = blackHole.SpinAxis,
+            ShowErgosphere = RaytracerSettings.ShowErgosphere ? 1f : 0f,
+            ErgosphereOpacity = RaytracerSettings.ErgosphereOpacity,
+            DiskISCO = blackHole.CalculateProgradeISCO(),
+            DiskThickness = blackHole.DiskOuterRadius * 0.05f,
+            ShowPhotonSphere = RaytracerSettings.ShowPhotonSphere ? 1f : 0f,
+            PhotonSphereOpacity = RaytracerSettings.PhotonSphereOpacity,
+            PhotonSphereRadius = blackHole.CalculatePhotonSphereRadius()
         };
         Unsafe.Copy(_uniformBufferMapped, ref uniforms);
 
@@ -2689,7 +2703,7 @@ public unsafe class VulkanBackend : IGraphicsBackend
     }
 }
 
-[StructLayout(LayoutKind.Explicit, Size = 144)]
+[StructLayout(LayoutKind.Explicit, Size = 224)]
 public struct RaytracerUniforms
 {
     [FieldOffset(0)] public Vector2 Resolution;
@@ -2718,5 +2732,15 @@ public struct RaytracerUniforms
     [FieldOffset(168)] public float OuterHorizonRadius; // r+ for Kerr
     [FieldOffset(172)] public float ErgosphereRadius;   // Equatorial ergosphere radius
     [FieldOffset(176)] public Vector3 BlackHoleSpinAxis; // Rotation axis (normalized)
-    [FieldOffset(188)] public float Pad5;
+    [FieldOffset(188)] public float ShowErgosphere;     // 1.0 = show, 0.0 = hide
+    
+    // Visualization settings
+    [FieldOffset(192)] public float ErgosphereOpacity;  // 0.0 - 1.0
+    [FieldOffset(196)] public float DiskISCO;           // Innermost Stable Circular Orbit radius
+    [FieldOffset(200)] public float DiskThickness;      // Disk half-thickness at outer edge
+    [FieldOffset(204)] public float ShowPhotonSphere;   // 1.0 = show, 0.0 = hide
+    [FieldOffset(208)] public float PhotonSphereOpacity;// 0.0 - 1.0
+    [FieldOffset(212)] public float PhotonSphereRadius; // Calculated from mass and spin
+    [FieldOffset(216)] public float Pad9;
+    [FieldOffset(220)] public float Pad10;
 }

@@ -47,7 +47,12 @@ public class TestSceneModule : IGameModule
             LensingMaxSteps = 128,      // More steps to reach far objects
             LensingStepSize = 1.0f,     // Larger steps for faster traversal
             LensingBvhCheckInterval = 4,
-            LensingMaxDistance = 500f   // Increased render distance for larger scenes
+            LensingMaxDistance = 500f,  // Increased render distance for larger scenes
+            // Kerr visualization - show ergosphere and photon sphere
+            ShowErgosphere = true,
+            ErgosphereOpacity = 0.4f,
+            ShowPhotonSphere = true,
+            PhotonSphereOpacity = 0.3f
         });
 
         // === BLACK HOLE (for gravitational lensing) ===

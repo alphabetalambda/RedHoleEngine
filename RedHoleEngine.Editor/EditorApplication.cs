@@ -19,6 +19,7 @@ using RedHoleEngine.Serialization;
 using RedHoleEngine.Terminal;
 using RedHoleEngine.Editor.Commands;
 using RedHoleEngine.Editor.Gizmos;
+using RedHoleEngine.Editor.Project;
 using Silk.NET.Input;
 using Silk.NET.Maths;
 using Silk.NET.OpenGL;
@@ -60,9 +61,8 @@ public class EditorApplication : IDisposable
     private EditorSettings _editorSettings = new();
     private readonly ResourceManager _gameResources = new();
     private readonly SceneSerializer _sceneSerializer = new();
+    private readonly ProjectManager _projectManager = new();
     private IGameModule? _gameModule;
-    private string _gameProjectPath = string.Empty;
-    private string _gameProjectStatus = string.Empty;
     private string _currentScenePath = string.Empty;
     private VirtualFileSystem _terminalFileSystem = new();
     private TerminalSession _terminalSession;
@@ -125,14 +125,10 @@ public class EditorApplication : IDisposable
         _consolePanel = new ConsolePanel();
         _raytracerPanel = new RaytracerSettingsPanel(_raytracerSettings);
         _renderPanel = new RenderSettingsPanel(_renderSettings);
-        _gameProjectPanel = new GameProjectPanel(
-            () => _gameProjectPath,
-            path => _gameProjectPath = path,
-            () => _gameProjectStatus,
-            LoadGameProjectFromSettings);
+        _gameProjectPanel = new GameProjectPanel(_projectManager, LoadGameProjectFromSettings);
         _terminalPanel = new TerminalPanel(_terminalSession, () => _terminalSaveManager);
         _assetBrowserPanel = new AssetBrowserPanel(
-            () => _gameProjectPath,
+            () => _projectManager.HasProject ? _projectManager.GetAssetPath() : "",
             path => LoadScene(path));
 
         _panels.Add(_hierarchyPanel);
@@ -1180,31 +1176,21 @@ public class EditorApplication : IDisposable
 
     private string GetSceneDirectory()
     {
-        // Try to use game project's Scenes folder if available
-        if (!string.IsNullOrEmpty(_gameProjectPath))
+        // Try to use project's Scenes folder if available
+        if (_projectManager.HasProject)
         {
-            var projectDir = Directory.Exists(_gameProjectPath) 
-                ? _gameProjectPath 
-                : Path.GetDirectoryName(_gameProjectPath);
-            
-            if (projectDir != null)
+            var scenesDir = _projectManager.GetScenesPath();
+            if (!string.IsNullOrEmpty(scenesDir))
             {
-                var scenesDir = Path.Combine(projectDir, "Scenes");
-                if (Directory.Exists(scenesDir))
-                    return scenesDir;
-                
-                // Create Scenes folder if project exists
-                if (Directory.Exists(projectDir))
+                try
                 {
-                    try
-                    {
+                    if (!Directory.Exists(scenesDir))
                         Directory.CreateDirectory(scenesDir);
-                        return scenesDir;
-                    }
-                    catch
-                    {
-                        return projectDir;
-                    }
+                    return scenesDir;
+                }
+                catch
+                {
+                    // Fall through to default
                 }
             }
         }
@@ -1330,7 +1316,12 @@ public class EditorApplication : IDisposable
         }
 
         _loadShowcaseOnStart = _editorSettings.LoadShowcaseOnStart;
-        _gameProjectPath = _editorSettings.GameProjectPath;
+
+        // Load project from saved path
+        if (!string.IsNullOrEmpty(_editorSettings.GameProjectPath))
+        {
+            _projectManager.OpenProject(_editorSettings.GameProjectPath, out _);
+        }
 
         if (string.Equals(_editorSettings.ViewportBackend, "OpenGL", StringComparison.OrdinalIgnoreCase))
         {
@@ -1380,11 +1371,17 @@ public class EditorApplication : IDisposable
     {
         _editorSettings.ViewportBackend = _viewportBackendMode == ViewportBackendMode.OpenGL ? "OpenGL" : "Vulkan";
         _editorSettings.LoadShowcaseOnStart = _loadShowcaseOnStart;
-        _editorSettings.GameProjectPath = _gameProjectPath;
+        _editorSettings.GameProjectPath = _projectManager.ProjectFilePath ?? "";
         _editorSettings.HasCamera = true;
         _editorSettings.CameraPosition = _viewportCamera.Position;
         _editorSettings.CameraYaw = _viewportCamera.Yaw;
         _editorSettings.CameraPitch = _viewportCamera.Pitch;
+        
+        // Also save the project if one is loaded
+        if (_projectManager.HasProject)
+        {
+            _projectManager.SaveProject(out _);
+        }
 
         try
         {
@@ -1408,23 +1405,30 @@ public class EditorApplication : IDisposable
 
     private void LoadGameProjectFromSettings()
     {
-        if (string.IsNullOrWhiteSpace(_gameProjectPath))
+        if (!_projectManager.HasProject)
         {
-            _gameProjectStatus = "No game project path set.";
             _gameModule = null;
             return;
         }
 
-        if (TryLoadGameProject(_gameProjectPath, out var module, out var status))
+        var csProjectPath = _projectManager.GetCsProjectPath();
+        if (string.IsNullOrEmpty(csProjectPath))
+        {
+            _gameModule = null;
+            return;
+        }
+
+        if (TryLoadGameProject(csProjectPath, out var module, out _))
         {
             _gameModule = module;
-            _gameProjectStatus = status;
-            _terminalSaveManager = new GameSaveManager(_gameModule.Name);
+            if (_gameModule != null)
+            {
+                _terminalSaveManager = new GameSaveManager(_gameModule.Name);
+            }
         }
         else
         {
             _gameModule = null;
-            _gameProjectStatus = status;
             _terminalSaveManager = new GameSaveManager("Editor");
         }
     }

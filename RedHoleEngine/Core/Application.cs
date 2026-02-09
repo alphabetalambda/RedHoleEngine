@@ -6,6 +6,7 @@ using RedHoleEngine.Core.Scene;
 using RedHoleEngine.Engine;
 using RedHoleEngine.Physics;
 using RedHoleEngine.Physics.Collision;
+using RedHoleEngine.Profiling;
 using RedHoleEngine.Rendering;
 using RedHoleEngine.Rendering.Backends;
 using RedHoleEngine.Rendering.Debug;
@@ -70,6 +71,16 @@ public class Application : IDisposable
     /// Audio quality preset
     /// </summary>
     public AcousticQualitySettings AudioQuality { get; set; } = AcousticQualitySettings.Medium;
+    
+    /// <summary>
+    /// Whether to show profiler stats in console (every N frames)
+    /// </summary>
+    public int ProfilerLogInterval { get; set; } = 0; // 0 = disabled
+    
+    /// <summary>
+    /// The profiler instance
+    /// </summary>
+    public Profiler Profiler => Profiler.Instance;
 
     /// <summary>
     /// The game loop manager
@@ -316,46 +327,71 @@ public class Application : IDisposable
 
     private void OnWindowUpdate(double deltaTime)
     {
+        Profiler.Instance.BeginFrame();
+        
         // Clear debug primitives from previous frame
         _debugDraw?.Clear();
         
-        _inputHandler?.Update((float)deltaTime);
-        _gameLoop.Update((float)deltaTime);
-        _audioEngine?.Update((float)deltaTime);
+        using (Profiler.Instance.Scope("Input", "Update"))
+        {
+            _inputHandler?.Update((float)deltaTime);
+        }
+        
+        using (Profiler.Instance.Scope("GameLoop", "Update"))
+        {
+            _gameLoop.Update((float)deltaTime);
+        }
+        
+        using (Profiler.Instance.Scope("Audio", "Update"))
+        {
+            _audioEngine?.Update((float)deltaTime);
+        }
+        
         OnUpdate?.Invoke((float)deltaTime);
     }
 
     private void OnRender(double deltaTime)
     {
-        _gameLoop.Render();
-        
-        // Get black hole from scene if it exists, otherwise use default
-        BlackHole? blackHole = null;
-        if (ActiveScene != null)
+        using (Profiler.Instance.Scope("Render", "Render"))
         {
-            foreach (var entity in World!.Query<GravitySourceComponent, TransformComponent>())
+            _gameLoop.Render();
+            
+            // Get black hole from scene if it exists, otherwise use default
+            BlackHole? blackHole = null;
+            if (ActiveScene != null)
             {
-                ref var gravity = ref World.GetComponent<GravitySourceComponent>(entity);
-                ref var transform = ref World.GetComponent<TransformComponent>(entity);
-                
-                if (gravity.GravityType == GravityType.Schwarzschild || 
-                    gravity.GravityType == GravityType.Kerr)
+                foreach (var entity in World!.Query<GravitySourceComponent, TransformComponent>())
                 {
-                    // Create legacy BlackHole for renderer compatibility
-                    blackHole = new BlackHole(transform.Position, gravity.Mass);
-                    break;
+                    ref var gravity = ref World.GetComponent<GravitySourceComponent>(entity);
+                    ref var transform = ref World.GetComponent<TransformComponent>(entity);
+                    
+                    if (gravity.GravityType == GravityType.Schwarzschild || 
+                        gravity.GravityType == GravityType.Kerr)
+                    {
+                        // Create legacy BlackHole for renderer compatibility
+                        blackHole = new BlackHole(transform.Position, gravity.Mass);
+                        break;
+                    }
                 }
             }
+            
+            // Fallback to default if no black hole in scene
+            blackHole ??= BlackHole.CreateDefault();
+            
+            if (_uiSystem != null)
+            {
+                _backend?.SetUiDrawData(_uiSystem.DrawData);
+            }
+            _backend?.Render(_legacyCamera!, blackHole, Time.TotalTime, _debugDraw);
         }
         
-        // Fallback to default if no black hole in scene
-        blackHole ??= BlackHole.CreateDefault();
+        Profiler.Instance.EndFrame();
         
-        if (_uiSystem != null)
+        // Log profiler stats periodically if enabled
+        if (ProfilerLogInterval > 0 && Profiler.Instance.FrameCount % ProfilerLogInterval == 0)
         {
-            _backend?.SetUiDrawData(_uiSystem.DrawData);
+            Console.WriteLine(Profiler.Instance.GetStatusLine());
         }
-        _backend?.Render(_legacyCamera!, blackHole, Time.TotalTime, _debugDraw);
     }
 
     private void OnResize(Vector2D<int> newSize)

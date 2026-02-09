@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Text;
@@ -6,6 +7,7 @@ using System.Runtime.InteropServices;
 using RedHoleEngine.Engine;
 using RedHoleEngine.Particles;
 using RedHoleEngine.Physics;
+using RedHoleEngine.Profiling;
 using RedHoleEngine.Rendering.Debug;
 using RedHoleEngine.Rendering.UI;
 using RedHoleEngine.Rendering.Particles;
@@ -1961,6 +1963,9 @@ public unsafe class VulkanBackend : IGraphicsBackend
 
     public void Render(Camera camera, BlackHole blackHole, float time, DebugDrawManager? debugDraw, ParticlePool? particles)
     {
+        var renderTimer = Profiler.Instance.GetOrCreateTimer("VulkanRender", "GPU");
+        renderTimer.Start();
+        
         fixed (Fence* fence = &_inFlightFence)
         {
             _vk!.WaitForFences(_device, 1, fence, true, ulong.MaxValue);
@@ -2057,6 +2062,12 @@ public unsafe class VulkanBackend : IGraphicsBackend
         {
             _frameIndex = 0;
         }
+        
+        renderTimer.Stop();
+        
+        // Update profiler counters
+        Profiler.Instance.SetCounter("BVHNodes", _bvhNodeCount, "Raytracer");
+        Profiler.Instance.SetCounter("Triangles", _triangleCount, "Raytracer");
     }
 
     public void RenderToReadback(Camera camera, BlackHole blackHole, float time, byte[] rgbaBuffer)

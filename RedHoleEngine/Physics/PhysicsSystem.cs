@@ -2,6 +2,7 @@ using System.Numerics;
 using RedHoleEngine.Components;
 using RedHoleEngine.Core.ECS;
 using RedHoleEngine.Physics.Collision;
+using RedHoleEngine.Profiling;
 using RedHoleEngine.Rendering.Debug;
 
 namespace RedHoleEngine.Physics;
@@ -86,23 +87,44 @@ public class PhysicsSystem : GameSystem
     {
         if (World == null) return;
 
-        // 1. Register new physics entities
-        RegisterNewEntities();
-
-        // 2. Sync transforms from ECS to physics (for kinematic bodies and external changes)
-        SyncTransformsToPhysics();
-
-        // 3. Step physics simulation
-        _physicsWorld.Step(deltaTime);
-
-        // 4. Sync transforms from physics back to ECS
-        SyncPhysicsToTransforms();
-
-        // 5. Draw debug visualization
-        if (_debugDraw != null && _debugFlags != PhysicsDebugFlags.None)
+        using (Profiler.Instance.Scope("Physics", "Update"))
         {
-            DrawDebugVisualization();
+            // 1. Register new physics entities
+            using (Profiler.Instance.Scope("RegisterEntities", "Physics"))
+            {
+                RegisterNewEntities();
+            }
+
+            // 2. Sync transforms from ECS to physics (for kinematic bodies and external changes)
+            using (Profiler.Instance.Scope("SyncToPhysics", "Physics"))
+            {
+                SyncTransformsToPhysics();
+            }
+
+            // 3. Step physics simulation
+            using (Profiler.Instance.Scope("Step", "Physics"))
+            {
+                _physicsWorld.Step(deltaTime);
+            }
+
+            // 4. Sync transforms from physics back to ECS
+            using (Profiler.Instance.Scope("SyncFromPhysics", "Physics"))
+            {
+                SyncPhysicsToTransforms();
+            }
+
+            // 5. Draw debug visualization
+            if (_debugDraw != null && _debugFlags != PhysicsDebugFlags.None)
+            {
+                using (Profiler.Instance.Scope("DebugDraw", "Physics"))
+                {
+                    DrawDebugVisualization();
+                }
+            }
         }
+        
+        // Update counters
+        Profiler.Instance.SetCounter("PhysicsBodies", _registeredEntities.Count, "Physics");
     }
 
     private void RegisterNewEntities()

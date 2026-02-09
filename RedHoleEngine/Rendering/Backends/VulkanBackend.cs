@@ -1996,7 +1996,12 @@ public unsafe class VulkanBackend : IGraphicsBackend
                 RaytracerSettings.SamplesPerFrame,
                 _frameIndex,
                 RaytracerSettings.Accumulate ? 1f : 0f,
-                RaytracerSettings.Denoise ? 1f : 0f)
+                RaytracerSettings.Denoise ? 1f : 0f),
+            LensingSettings = new Vector4(
+                RaytracerSettings.LensingMaxSteps,
+                RaytracerSettings.LensingStepSize,
+                RaytracerSettings.LensingBvhCheckInterval,
+                (int)RaytracerSettings.LensingQuality)
         };
         Unsafe.Copy(_uniformBufferMapped, ref uniforms);
 
@@ -2069,7 +2074,12 @@ public unsafe class VulkanBackend : IGraphicsBackend
                 RaytracerSettings.SamplesPerFrame,
                 _frameIndex,
                 RaytracerSettings.Accumulate ? 1f : 0f,
-                RaytracerSettings.Denoise ? 1f : 0f)
+                RaytracerSettings.Denoise ? 1f : 0f),
+            LensingSettings = new Vector4(
+                RaytracerSettings.LensingMaxSteps,
+                RaytracerSettings.LensingStepSize,
+                RaytracerSettings.LensingBvhCheckInterval,
+                (int)RaytracerSettings.LensingQuality)
         };
         Unsafe.Copy(_uniformBufferMapped, ref uniforms);
 
@@ -2688,4 +2698,5 @@ public struct RaytracerUniforms
     [FieldOffset(104)] public float DiskOuterRadius;
     [FieldOffset(112)] public Vector4 RaySettings;
     [FieldOffset(128)] public Vector4 FrameSettings;
+    [FieldOffset(144)] public Vector4 LensingSettings; // x=maxSteps, y=stepSize, z=bvhCheckInterval, w=quality
 }

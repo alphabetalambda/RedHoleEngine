@@ -48,6 +48,13 @@ public class RenderSettingsSystem : GameSystem
             _backend.RaytracerSettings.SamplesPerFrame = settings.SamplesPerFrame;
             _backend.RaytracerSettings.Accumulate = settings.Accumulate;
             _backend.RaytracerSettings.Denoise = settings.Denoise;
+            
+            // Apply lensing quality settings
+            _backend.RaytracerSettings.LensingQuality = settings.LensingQuality;
+            _backend.RaytracerSettings.LensingMaxSteps = settings.LensingMaxSteps;
+            _backend.RaytracerSettings.LensingStepSize = settings.LensingStepSize;
+            _backend.RaytracerSettings.LensingBvhCheckInterval = settings.LensingBvhCheckInterval;
+            
             if (settings.ResetAccumulation)
             {
                 _backend.RaytracerSettings.ResetAccumulation = true;

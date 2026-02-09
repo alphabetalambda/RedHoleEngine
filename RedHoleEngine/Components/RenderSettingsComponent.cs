@@ -21,6 +21,12 @@ public struct RenderSettingsComponent : IComponent
     public int MaxRaysPerPixelLimit;
     public int MaxBouncesLimit;
     public int MaxSamplesPerFrameLimit;
+    
+    // Gravitational lensing quality
+    public LensingQuality LensingQuality;
+    public int LensingMaxSteps;
+    public float LensingStepSize;
+    public int LensingBvhCheckInterval;
 
     public RenderSettingsComponent(RenderMode mode = RenderMode.Raytraced)
     {
@@ -36,5 +42,11 @@ public struct RenderSettingsComponent : IComponent
         MaxRaysPerPixelLimit = 64;
         MaxBouncesLimit = 8;
         MaxSamplesPerFrameLimit = 8;
+        
+        // Default to Medium lensing quality
+        LensingQuality = LensingQuality.Medium;
+        LensingMaxSteps = 64;
+        LensingStepSize = 0.4f;
+        LensingBvhCheckInterval = 6;
     }
 }

@@ -23,6 +23,7 @@ layout(set = 0, binding = 1) uniform UniformBlock {
     float u_DiskOuterRadius;
     vec4 u_RaySettings;
     vec4 u_FrameSettings;
+    vec4 u_LensingSettings;  // x=maxSteps, y=stepSize, z=bvhCheckInterval, w=quality(0-2)
 };
 
 struct BvhNode {
@@ -55,9 +56,11 @@ layout(std430, set = 0, binding = 3) buffer Triangles {
 
 // Constants
 const float PI = 3.14159265359;
-const int MAX_STEPS = 128;      // Reduced from 300 for performance
-const float STEP_SIZE = 0.25;   // Increased from 0.1 for performance
-const int BVH_CHECK_INTERVAL = 4; // Only check BVH every N steps
+
+// Lensing quality settings from uniforms (with fallback defaults)
+int getMaxSteps() { return u_LensingSettings.x > 0.0 ? int(u_LensingSettings.x) : 64; }
+float getStepSize() { return u_LensingSettings.y > 0.0 ? u_LensingSettings.y : 0.4; }
+int getBvhCheckInterval() { return u_LensingSettings.z > 0.0 ? int(u_LensingSettings.z) : 6; }
 
 // ============================================
 // Schwarzschild Geodesic Integration
@@ -357,18 +360,23 @@ bool traceOnce(vec3 rayOrigin, vec3 rayDir, out vec3 outColor, out vec3 hitPos, 
         return false;
     }
 
+    // Get quality settings from uniforms
+    int maxSteps = getMaxSteps();
+    float baseStepSize = getStepSize();
+    int bvhInterval = getBvhCheckInterval();
+    
     // Trace ray along curved geodesic path
     vec3 pos = rayOrigin;
     vec3 vel = normalize(rayDir);
     float totalDist = 0.0;
     
-    for (int i = 0; i < MAX_STEPS; i++) {
+    for (int i = 0; i < maxSteps; i++) {
         // Distance from current position to black hole center
         vec3 relPos = pos - u_BlackHolePos;
         float dist = length(relPos);
         
         // Adaptive step size - larger when far from black hole
-        float step = STEP_SIZE * clamp(dist / (rs * 2.0), 0.1, 2.0);
+        float step = baseStepSize * clamp(dist / (rs * 2.0), 0.1, 2.0);
         
         // Check if fallen into event horizon
         if (dist < rs) {
@@ -378,13 +386,13 @@ bool traceOnce(vec3 rayOrigin, vec3 rayDir, out vec3 outColor, out vec3 hitPos, 
             return false;
         }
         
-        // Only check BVH periodically to save performance (every N steps or when close to geometry)
-        bool checkBvh = (i % BVH_CHECK_INTERVAL == 0) || (dist > rs * 8.0);
+        // Only check BVH periodically to save performance (every N steps or when far from BH)
+        bool checkBvh = (i % bvhInterval == 0) || (dist > rs * 8.0);
         
         if (checkBvh) {
             float hitT;
             vec3 segHitNormal, segHitColor;
-            float checkDist = step * float(BVH_CHECK_INTERVAL) * 1.2;
+            float checkDist = step * float(bvhInterval) * 1.2;
             if (intersectBvhSegment(pos, vel, checkDist, nodeCount, triCount, hitT, segHitNormal, segHitColor)) {
                 hitPos = pos + vel * hitT;
                 hitNormal = segHitNormal;

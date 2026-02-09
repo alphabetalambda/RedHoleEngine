@@ -41,7 +41,12 @@ public class TestSceneModule : IGameModule
             SamplesPerFrame = 1,
             Accumulate = false,  // Disabled - scene has dynamic objects
             Denoise = false,
-            Preset = RaytracerQualityPreset.Custom
+            Preset = RaytracerQualityPreset.Custom,
+            // Use Low lensing quality for better performance (especially on Windows/NVIDIA)
+            LensingQuality = LensingQuality.Low,
+            LensingMaxSteps = 32,
+            LensingStepSize = 0.6f,
+            LensingBvhCheckInterval = 8
         });
 
         // === BLACK HOLE (for gravitational lensing) ===

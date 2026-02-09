@@ -18,12 +18,13 @@ public static class Program
         };
 
         var gameModule = new GameModule();
+        var saveManager = new GameSaveManager(gameModule.Name);
         app.OnInitialize += () =>
         {
             if (app.World == null)
                 return;
 
-            var context = new GameContext(app.World, app.Resources, app.RenderSettings, app.RaytracerSettings, app, isEditor: false);
+            var context = new GameContext(app.World, app.Resources, app.RenderSettings, app.RaytracerSettings, saveManager, app, isEditor: false);
             gameModule.BuildScene(context);
             Console.WriteLine($"Scene initialized by {gameModule.Name}");
         };

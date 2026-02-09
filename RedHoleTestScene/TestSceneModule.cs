@@ -19,8 +19,8 @@ public class TestSceneModule : IGameModule
         var world = context.World;
         var resources = context.Resources;
 
-        // Create meshes - larger ground plane for expanded scene
-        resources.Add("mesh_plane", Mesh.CreatePlane(120f, 120f, 8, 8));
+        // Create meshes - very large ground plane for far view distance
+        resources.Add("mesh_plane", Mesh.CreatePlane(1000f, 1000f, 16, 16));
         resources.Add("mesh_cube", Mesh.CreateCube(1f));
         resources.Add("mesh_sphere", Mesh.CreateSphere(1f, 32, 16));
         resources.Add("mesh_small_sphere", Mesh.CreateSphere(0.3f, 16, 8));
@@ -41,7 +41,18 @@ public class TestSceneModule : IGameModule
             SamplesPerFrame = 1,
             Accumulate = false,  // Disabled - scene has dynamic objects
             Denoise = false,
-            Preset = RaytracerQualityPreset.Custom
+            Preset = RaytracerQualityPreset.Custom,
+            // Use Medium lensing quality with high max distance
+            LensingQuality = LensingQuality.Custom,
+            LensingMaxSteps = 128,      // More steps to reach far objects
+            LensingStepSize = 1.0f,     // Larger steps for faster traversal
+            LensingBvhCheckInterval = 4,
+            LensingMaxDistance = 500f,  // Increased render distance for larger scenes
+            // Kerr visualization - show ergosphere and photon sphere
+            ShowErgosphere = true,
+            ErgosphereOpacity = 0.4f,
+            ShowPhotonSphere = true,
+            PhotonSphereOpacity = 0.3f
         });
 
         // === BLACK HOLE (for gravitational lensing) ===
@@ -63,7 +74,13 @@ public class TestSceneModule : IGameModule
         world.AddComponent(blackHole, new RaytracerMeshComponent(true) { StaticOnly = true });
         // Mass of 1.5 gives Schwarzschild radius of 3, disk inner=9, outer=45
         // This creates visible lensing at reasonable scene scale
-        world.AddComponent(blackHole, GravitySourceComponent.CreateBlackHole(1.5f));
+        // Using Kerr black hole with spin=0.9 and Y-up spin axis (default)
+        // Frame dragging will cause asymmetric lensing - prograde side (right) will show more distortion
+        world.AddComponent(blackHole, GravitySourceComponent.CreateRotatingBlackHole(
+            mass: 1.5f,
+            spin: 0.9f,  // High spin for visible frame dragging effect
+            spinAxis: Vector3.UnitY  // Spin axis pointing up
+        ));
         
         // Accretion disk around the black hole (bright ring)
         // With mass 1.5: rs=3, disk inner=9, outer=45

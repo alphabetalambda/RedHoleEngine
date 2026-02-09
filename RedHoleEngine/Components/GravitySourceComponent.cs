@@ -97,9 +97,118 @@ public struct GravitySourceComponent : IComponent
     public readonly float EventHorizonRadius => GravityType switch
     {
         GravityType.Schwarzschild => SchwarzschildRadius,
-        GravityType.Kerr => Mass + MathF.Sqrt(Mass * Mass - SpinParameter * SpinParameter * Mass * Mass),
+        GravityType.Kerr => OuterHorizonRadius,
         _ => 0f
     };
+    
+    /// <summary>
+    /// Kerr spin parameter in length units: a = a* × M
+    /// </summary>
+    public readonly float KerrParameter => SpinParameter * Mass;
+    
+    /// <summary>
+    /// Outer event horizon radius for Kerr black hole
+    /// r+ = M + sqrt(M² - a²)
+    /// </summary>
+    public readonly float OuterHorizonRadius
+    {
+        get
+        {
+            float a = KerrParameter;
+            float discriminant = Mass * Mass - a * a;
+            if (discriminant < 0) return 0;
+            return Mass + MathF.Sqrt(discriminant);
+        }
+    }
+    
+    /// <summary>
+    /// Inner (Cauchy) horizon radius for Kerr black hole
+    /// r- = M - sqrt(M² - a²)
+    /// </summary>
+    public readonly float InnerHorizonRadius
+    {
+        get
+        {
+            float a = KerrParameter;
+            float discriminant = Mass * Mass - a * a;
+            if (discriminant < 0) return 0;
+            return Mass - MathF.Sqrt(discriminant);
+        }
+    }
+    
+    /// <summary>
+    /// Ergosphere radius at the equator: r_ergo(θ=π/2) = 2M
+    /// </summary>
+    public readonly float ErgosphereEquatorialRadius => 2f * Mass;
+    
+    /// <summary>
+    /// Ergosphere radius at a given polar angle θ
+    /// r_ergo = M + sqrt(M² - a²cos²θ)
+    /// </summary>
+    public readonly float ErgosphereRadius(float theta)
+    {
+        float a = KerrParameter;
+        float cosTheta = MathF.Cos(theta);
+        float discriminant = Mass * Mass - a * a * cosTheta * cosTheta;
+        if (discriminant < 0) return Mass;
+        return Mass + MathF.Sqrt(discriminant);
+    }
+    
+    /// <summary>
+    /// Frame dragging angular velocity at radius r and angle θ
+    /// ω = 2Mar / ((r² + a²)² - a²Δsin²θ)
+    /// </summary>
+    public readonly float FrameDraggingAngularVelocity(float r, float theta)
+    {
+        float a = KerrParameter;
+        float a2 = a * a;
+        float r2 = r * r;
+        float sinTheta = MathF.Sin(theta);
+        float sin2Theta = sinTheta * sinTheta;
+        
+        float delta = r2 - 2 * Mass * r + a2;
+        float rPlusA2 = r2 + a2;
+        float denominator = rPlusA2 * rPlusA2 - a2 * delta * sin2Theta;
+        
+        if (MathF.Abs(denominator) < 1e-10f)
+            return 0;
+            
+        return 2 * Mass * a * r / denominator;
+    }
+    
+    /// <summary>
+    /// Prograde ISCO radius for Kerr black hole
+    /// </summary>
+    public readonly float ProgradeISCO
+    {
+        get
+        {
+            if (SpinParameter < 0.001f)
+                return 6f * Mass;
+                
+            float a = SpinParameter;
+            float Z1 = 1 + MathF.Pow(1 - a * a, 1f/3f) * (MathF.Pow(1 + a, 1f/3f) + MathF.Pow(1 - a, 1f/3f));
+            float Z2 = MathF.Sqrt(3 * a * a + Z1 * Z1);
+            return Mass * (3 + Z2 - MathF.Sqrt((3 - Z1) * (3 + Z1 + 2 * Z2)));
+        }
+    }
+    
+    /// <summary>
+    /// Retrograde ISCO radius for Kerr black hole
+    /// </summary>
+    public readonly float RetrogradeISCO
+    {
+        get
+        {
+            if (SpinParameter < 0.001f)
+                return 6f * Mass;
+                
+            float a = SpinParameter;
+            float Z1 = 1 + MathF.Pow(1 - a * a, 1f/3f) * (MathF.Pow(1 + a, 1f/3f) + MathF.Pow(1 - a, 1f/3f));
+            float Z2 = MathF.Sqrt(3 * a * a + Z1 * Z1);
+            return Mass * (3 + Z2 + MathF.Sqrt((3 - Z1) * (3 + Z1 + 2 * Z2)));
+        }
+    }
 
     /// <summary>
     /// Create a Schwarzschild black hole

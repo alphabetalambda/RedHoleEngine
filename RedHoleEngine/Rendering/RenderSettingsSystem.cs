@@ -48,6 +48,20 @@ public class RenderSettingsSystem : GameSystem
             _backend.RaytracerSettings.SamplesPerFrame = settings.SamplesPerFrame;
             _backend.RaytracerSettings.Accumulate = settings.Accumulate;
             _backend.RaytracerSettings.Denoise = settings.Denoise;
+            
+            // Apply lensing quality settings
+            _backend.RaytracerSettings.LensingQuality = settings.LensingQuality;
+            _backend.RaytracerSettings.LensingMaxSteps = settings.LensingMaxSteps;
+            _backend.RaytracerSettings.LensingStepSize = settings.LensingStepSize;
+            _backend.RaytracerSettings.LensingBvhCheckInterval = settings.LensingBvhCheckInterval;
+            _backend.RaytracerSettings.LensingMaxDistance = settings.LensingMaxDistance;
+            
+            // Kerr visualization settings
+            _backend.RaytracerSettings.ShowErgosphere = settings.ShowErgosphere;
+            _backend.RaytracerSettings.ErgosphereOpacity = settings.ErgosphereOpacity;
+            _backend.RaytracerSettings.ShowPhotonSphere = settings.ShowPhotonSphere;
+            _backend.RaytracerSettings.PhotonSphereOpacity = settings.PhotonSphereOpacity;
+            
             if (settings.ResetAccumulation)
             {
                 _backend.RaytracerSettings.ResetAccumulation = true;

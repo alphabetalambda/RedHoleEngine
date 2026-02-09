@@ -23,7 +23,7 @@ layout(set = 0, binding = 1) uniform UniformBlock {
     float u_DiskOuterRadius;
     vec4 u_RaySettings;
     vec4 u_FrameSettings;
-    vec4 u_LensingSettings;  // x=maxSteps, y=stepSize, z=bvhCheckInterval, w=quality(0-2)
+    vec4 u_LensingSettings;  // x=maxSteps, y=stepSize, z=bvhCheckInterval, w=maxDistance
     // Kerr black hole parameters (rotating black holes)
     float u_BlackHoleSpin;       // Dimensionless spin parameter a* (0 to 0.998)
     float u_KerrParameter;       // a = a* * M (spin in geometric units)
@@ -68,6 +68,7 @@ const float PI = 3.14159265359;
 int getMaxSteps() { return u_LensingSettings.x > 0.0 ? int(u_LensingSettings.x) : 64; }
 float getStepSize() { return u_LensingSettings.y > 0.0 ? u_LensingSettings.y : 0.4; }
 int getBvhCheckInterval() { return u_LensingSettings.z > 0.0 ? int(u_LensingSettings.z) : 6; }
+float getMaxDistance() { return u_LensingSettings.w > 0.0 ? u_LensingSettings.w : 200.0; }
 
 // ============================================
 // Schwarzschild Geodesic Integration
@@ -478,6 +479,7 @@ bool traceOnce(vec3 rayOrigin, vec3 rayDir, out vec3 outColor, out vec3 hitPos, 
     int maxSteps = getMaxSteps();
     float baseStepSize = getStepSize();
     int bvhInterval = getBvhCheckInterval();
+    float maxDistance = getMaxDistance();
     
     // Trace ray along curved geodesic path
     vec3 pos = rayOrigin;
@@ -564,11 +566,12 @@ bool traceOnce(vec3 rayOrigin, vec3 rayDir, out vec3 outColor, out vec3 hitPos, 
         }
         
         // Check if ray escaped (far from black hole or traveled far enough)
-        if (dist > rs * 25.0 || totalDist > 100.0) {
-            // Do one final BVH check before returning starfield
+        if (dist > rs * 25.0 || totalDist > maxDistance) {
+            // Do one final BVH check with full remaining distance before returning starfield
             float hitT;
             vec3 segHitNormal, segHitColor;
-            if (intersectBvhSegment(pos, vel, 50.0, nodeCount, triCount, hitT, segHitNormal, segHitColor)) {
+            float remainingDist = maxDistance * 2.0;  // Check far ahead for distant geometry
+            if (intersectBvhSegment(pos, vel, remainingDist, nodeCount, triCount, hitT, segHitNormal, segHitColor)) {
                 hitPos = pos + vel * hitT;
                 hitNormal = segHitNormal;
                 outColor = segHitColor;

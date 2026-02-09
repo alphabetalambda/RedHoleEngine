@@ -27,6 +27,7 @@ public struct RenderSettingsComponent : IComponent
     public int LensingMaxSteps;
     public float LensingStepSize;
     public int LensingBvhCheckInterval;
+    public float LensingMaxDistance;
 
     public RenderSettingsComponent(RenderMode mode = RenderMode.Raytraced)
     {
@@ -48,5 +49,6 @@ public struct RenderSettingsComponent : IComponent
         LensingMaxSteps = 64;
         LensingStepSize = 0.4f;
         LensingBvhCheckInterval = 6;
+        LensingMaxDistance = 200f;
     }
 }

@@ -8,7 +8,8 @@ public enum LensingQuality
     Low,      // Fast, lower accuracy
     Medium,   // Balanced (default)
     High,     // Best quality, slower
-    Ultra     // Maximum quality for screenshots
+    Ultra,    // Maximum quality for screenshots
+    Custom    // Use manual settings
 }
 
 /// <summary>
@@ -29,6 +30,7 @@ public class RaytracerSettings
     public int LensingMaxSteps { get; set; } = 64;
     public float LensingStepSize { get; set; } = 0.4f;
     public int LensingBvhCheckInterval { get; set; } = 6;
+    public float LensingMaxDistance { get; set; } = 200f;
 
     public int MaxRaysPerPixelLimit { get; set; } = 64;
     public int MaxBouncesLimit { get; set; } = 8;
@@ -47,6 +49,7 @@ public class RaytracerSettings
         LensingMaxSteps = Math.Clamp(LensingMaxSteps, 16, 256);
         LensingStepSize = Math.Clamp(LensingStepSize, 0.1f, 1.0f);
         LensingBvhCheckInterval = Math.Clamp(LensingBvhCheckInterval, 1, 16);
+        LensingMaxDistance = Math.Clamp(LensingMaxDistance, 50f, 1000f);
     }
 
     public void ApplyPreset(RaytracerQualityPreset preset)

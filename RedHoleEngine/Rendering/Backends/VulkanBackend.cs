@@ -2001,7 +2001,7 @@ public unsafe class VulkanBackend : IGraphicsBackend
                 RaytracerSettings.LensingMaxSteps,
                 RaytracerSettings.LensingStepSize,
                 RaytracerSettings.LensingBvhCheckInterval,
-                (int)RaytracerSettings.LensingQuality),
+                RaytracerSettings.LensingMaxDistance),
             // Kerr parameters
             BlackHoleSpin = blackHole.Spin,
             KerrParameter = blackHole.KerrParameter,
@@ -2085,7 +2085,7 @@ public unsafe class VulkanBackend : IGraphicsBackend
                 RaytracerSettings.LensingMaxSteps,
                 RaytracerSettings.LensingStepSize,
                 RaytracerSettings.LensingBvhCheckInterval,
-                (int)RaytracerSettings.LensingQuality),
+                RaytracerSettings.LensingMaxDistance),
             // Kerr parameters
             BlackHoleSpin = blackHole.Spin,
             KerrParameter = blackHole.KerrParameter,
@@ -2710,7 +2710,7 @@ public struct RaytracerUniforms
     [FieldOffset(104)] public float DiskOuterRadius;
     [FieldOffset(112)] public Vector4 RaySettings;
     [FieldOffset(128)] public Vector4 FrameSettings;
-    [FieldOffset(144)] public Vector4 LensingSettings; // x=maxSteps, y=stepSize, z=bvhCheckInterval, w=quality
+    [FieldOffset(144)] public Vector4 LensingSettings; // x=maxSteps, y=stepSize, z=bvhCheckInterval, w=maxDistance
     
     // Kerr black hole parameters
     [FieldOffset(160)] public float BlackHoleSpin;      // Dimensionless spin parameter a* (0 to ~1)

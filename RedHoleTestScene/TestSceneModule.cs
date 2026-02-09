@@ -19,8 +19,8 @@ public class TestSceneModule : IGameModule
         var world = context.World;
         var resources = context.Resources;
 
-        // Create meshes - larger ground plane for expanded scene
-        resources.Add("mesh_plane", Mesh.CreatePlane(120f, 120f, 8, 8));
+        // Create meshes - very large ground plane for far view distance
+        resources.Add("mesh_plane", Mesh.CreatePlane(1000f, 1000f, 16, 16));
         resources.Add("mesh_cube", Mesh.CreateCube(1f));
         resources.Add("mesh_sphere", Mesh.CreateSphere(1f, 32, 16));
         resources.Add("mesh_small_sphere", Mesh.CreateSphere(0.3f, 16, 8));
@@ -42,11 +42,12 @@ public class TestSceneModule : IGameModule
             Accumulate = false,  // Disabled - scene has dynamic objects
             Denoise = false,
             Preset = RaytracerQualityPreset.Custom,
-            // Use Low lensing quality for better performance (especially on Windows/NVIDIA)
-            LensingQuality = LensingQuality.Low,
-            LensingMaxSteps = 32,
-            LensingStepSize = 0.6f,
-            LensingBvhCheckInterval = 8
+            // Use Medium lensing quality with high max distance
+            LensingQuality = LensingQuality.Custom,
+            LensingMaxSteps = 128,      // More steps to reach far objects
+            LensingStepSize = 1.0f,     // Larger steps for faster traversal
+            LensingBvhCheckInterval = 4,
+            LensingMaxDistance = 500f   // Increased render distance for larger scenes
         });
 
         // === BLACK HOLE (for gravitational lensing) ===

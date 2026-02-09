@@ -54,6 +54,7 @@ public class RenderSettingsSystem : GameSystem
             _backend.RaytracerSettings.LensingMaxSteps = settings.LensingMaxSteps;
             _backend.RaytracerSettings.LensingStepSize = settings.LensingStepSize;
             _backend.RaytracerSettings.LensingBvhCheckInterval = settings.LensingBvhCheckInterval;
+            _backend.RaytracerSettings.LensingMaxDistance = settings.LensingMaxDistance;
             
             if (settings.ResetAccumulation)
             {

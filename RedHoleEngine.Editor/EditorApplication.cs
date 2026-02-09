@@ -17,6 +17,7 @@ using RedHoleEngine.Rendering.Backends;
 using RedHoleEngine.Resources;
 using RedHoleEngine.Serialization;
 using RedHoleEngine.Terminal;
+using RedHoleEngine.Editor.Commands;
 using Silk.NET.Input;
 using Silk.NET.Maths;
 using Silk.NET.OpenGL;
@@ -37,6 +38,7 @@ public class EditorApplication : IDisposable
 
     // Editor state
     private readonly SelectionManager _selection = new();
+    private readonly UndoRedoManager _undoRedo = new();
     private World? _world;
     private bool _isPlaying;
     private bool _isPaused;
@@ -322,13 +324,15 @@ public class EditorApplication : IDisposable
 
             if (ImGui.BeginMenu("Edit"))
             {
-                if (ImGui.MenuItem("Undo", "Ctrl+Z", false, false))
+                var undoText = _undoRedo.CanUndo ? $"Undo {_undoRedo.UndoDescription}" : "Undo";
+                if (ImGui.MenuItem(undoText, "Ctrl+Z", false, _undoRedo.CanUndo))
                 {
-                    // TODO: Undo
+                    _undoRedo.Undo();
                 }
-                if (ImGui.MenuItem("Redo", "Ctrl+Y", false, false))
+                var redoText = _undoRedo.CanRedo ? $"Redo {_undoRedo.RedoDescription}" : "Redo";
+                if (ImGui.MenuItem(redoText, "Ctrl+Y", false, _undoRedo.CanRedo))
                 {
-                    // TODO: Redo
+                    _undoRedo.Redo();
                 }
                 ImGui.Separator();
                 if (ImGui.MenuItem("Delete", "Delete", false, _selection.HasSelection))
@@ -337,7 +341,7 @@ public class EditorApplication : IDisposable
                 }
                 if (ImGui.MenuItem("Duplicate", "Ctrl+D", false, _selection.HasSelection))
                 {
-                    // TODO: Duplicate
+                    DuplicateSelected();
                 }
                 ImGui.EndMenu();
             }
@@ -911,10 +915,16 @@ public class EditorApplication : IDisposable
                 DeleteSelected();
                 break;
             case Key.D when ctrl:
-                // TODO: Duplicate
+                DuplicateSelected();
                 break;
             case Key.N when ctrl:
                 CreateEmptyEntity();
+                break;
+            case Key.Z when ctrl:
+                _undoRedo.Undo();
+                break;
+            case Key.Y when ctrl:
+                _undoRedo.Redo();
                 break;
             case Key.S when ctrl && shift:
                 SaveSceneAsDialog();
@@ -1184,6 +1194,7 @@ public class EditorApplication : IDisposable
     private void ResetWorld()
     {
         _selection.ClearSelection();
+        _undoRedo.Clear();
         _world?.Dispose();
         _world = new World();
         if (!_hasSavedCamera)
@@ -1422,80 +1433,82 @@ public class EditorApplication : IDisposable
 
     private void DeleteSelected()
     {
-        if (_world == null) return;
+        if (_world == null || !_selection.HasSelection) return;
 
         var toDelete = _selection.SelectedEntities.ToList();
-        _selection.ClearSelection();
+        var command = new DeleteEntitiesCommand(_world, _selection, toDelete);
+        _undoRedo.ExecuteCommand(command);
+    }
 
-        foreach (var entity in toDelete)
-        {
-            if (_world.IsAlive(entity))
-            {
-                _world.DestroyEntity(entity);
-            }
-        }
+    private void DuplicateSelected()
+    {
+        if (_world == null || !_selection.HasSelection) return;
+
+        var toDuplicate = _selection.SelectedEntities.ToList();
+        var command = new DuplicateEntitiesCommand(_world, _selection, toDuplicate);
+        _undoRedo.ExecuteCommand(command);
     }
 
     private void CreateEmptyEntity()
     {
         if (_world == null) return;
 
-        var entity = _world.CreateEntity();
-        _world.AddComponent(entity, new RedHoleEngine.Components.TransformComponent());
-        _selection.Select(entity);
+        var command = new CreateEntityCommand(_world, _selection, "Empty Entity",
+            new TransformComponent());
+        _undoRedo.ExecuteCommand(command);
     }
 
     private void CreateCamera()
     {
         if (_world == null) return;
 
-        var entity = _world.CreateEntity();
-        _world.AddComponent(entity, new RedHoleEngine.Components.TransformComponent(new Vector3(0, 5, 10)));
-        _world.AddComponent(entity, RedHoleEngine.Components.CameraComponent.CreatePerspective(60f, 16f / 9f));
-        _selection.Select(entity);
+        var command = new CreateEntityCommand(_world, _selection, "Camera",
+            new TransformComponent(new Vector3(0, 5, 10)),
+            CameraComponent.CreatePerspective(60f, 16f / 9f));
+        _undoRedo.ExecuteCommand(command);
     }
 
     private void CreateBlackHole()
     {
         if (_world == null) return;
 
-        var entity = _world.CreateEntity();
-        _world.AddComponent(entity, new RedHoleEngine.Components.TransformComponent());
-        _world.AddComponent(entity, RedHoleEngine.Components.GravitySourceComponent.CreateBlackHole(1e6f));
-        _selection.Select(entity);
+        var command = new CreateEntityCommand(_world, _selection, "Black Hole",
+            new TransformComponent(),
+            GravitySourceComponent.CreateBlackHole(1e6f));
+        _undoRedo.ExecuteCommand(command);
     }
 
     private void CreatePhysicsSphere()
     {
         if (_world == null) return;
 
-        var entity = _world.CreateEntity();
-        _world.AddComponent(entity, new RedHoleEngine.Components.TransformComponent(new Vector3(0, 5, 0)));
-        _world.AddComponent(entity, RedHoleEngine.Components.RigidBodyComponent.CreateDynamic(1f));
-        _world.AddComponent(entity, RedHoleEngine.Components.ColliderComponent.CreateSphere(0.5f));
-        _selection.Select(entity);
+        var command = new CreateEntityCommand(_world, _selection, "Physics Sphere",
+            new TransformComponent(new Vector3(0, 5, 0)),
+            RigidBodyComponent.CreateDynamic(1f),
+            ColliderComponent.CreateSphere(0.5f));
+        _undoRedo.ExecuteCommand(command);
     }
 
     private void CreatePhysicsBox()
     {
         if (_world == null) return;
 
-        var entity = _world.CreateEntity();
-        _world.AddComponent(entity, new RedHoleEngine.Components.TransformComponent(new Vector3(0, 5, 0)));
-        _world.AddComponent(entity, RedHoleEngine.Components.RigidBodyComponent.CreateDynamic(1f));
-        _world.AddComponent(entity, RedHoleEngine.Components.ColliderComponent.CreateBox(new Vector3(0.5f)));
-        _selection.Select(entity);
+        var command = new CreateEntityCommand(_world, _selection, "Physics Box",
+            new TransformComponent(new Vector3(0, 5, 0)),
+            RigidBodyComponent.CreateDynamic(1f),
+            ColliderComponent.CreateBox(new Vector3(0.5f)));
+        _undoRedo.ExecuteCommand(command);
     }
 
     private void CreateGroundPlane()
     {
         if (_world == null) return;
 
-        var entity = _world.CreateEntity();
-        _world.AddComponent(entity, new RedHoleEngine.Components.TransformComponent());
-        _world.AddComponent(entity, RedHoleEngine.Components.RigidBodyComponent.CreateStatic());
-        _world.AddComponent(entity, RedHoleEngine.Components.ColliderComponent.CreateGroundPlane());
-        _selection.Select(entity);
+        var command = new CreateEntityCommand(_world, _selection, "Ground Plane",
+            new TransformComponent(),
+            RigidBodyComponent.CreateStatic(),
+            ColliderComponent.CreateGroundPlane());
+        _undoRedo.ExecuteCommand(command);
     }
 
     private void CreateStaticBox(Vector3 position, Vector3 size)

@@ -1,9 +1,16 @@
 using System.Numerics;
 using System.Runtime.CompilerServices;
+using System.Text;
+using Silk.NET.Core.Native;
 using System.Runtime.InteropServices;
 using RedHoleEngine.Engine;
+using RedHoleEngine.Particles;
 using RedHoleEngine.Physics;
 using RedHoleEngine.Rendering.Debug;
+using RedHoleEngine.Rendering.Particles;
+using RedHoleEngine.Rendering;
+using RedHoleEngine.Rendering.Raytracing;
+using RedHoleEngine.Rendering.Rasterization;
 using Silk.NET.Core;
 using Silk.NET.Core.Native;
 using Silk.NET.Vulkan;
@@ -20,6 +27,9 @@ namespace RedHoleEngine.Rendering.Backends;
 /// </summary>
 public unsafe class VulkanBackend : IGraphicsBackend
 {
+    public RaytracerSettings RaytracerSettings { get; } = new();
+    public RenderSettings RenderSettings { get; } = new();
+
     private readonly IWindow _window;
     private readonly int _width;
     private readonly int _height;
@@ -52,6 +62,7 @@ public unsafe class VulkanBackend : IGraphicsBackend
     private Image _outputImage;
     private DeviceMemory _outputImageMemory;
     private ImageView _outputImageView;
+    private ImageLayout _outputImageLayout = ImageLayout.Undefined;
 
     // Command buffers
     private CommandPool _commandPool;
@@ -69,16 +80,61 @@ public unsafe class VulkanBackend : IGraphicsBackend
     private DeviceMemory _uniformBufferMemory;
     private void* _uniformBufferMapped;
 
+    // Raytracer mesh buffers
+    private VkBuffer _bvhNodeBuffer;
+    private DeviceMemory _bvhNodeBufferMemory;
+    private ulong _bvhNodeBufferSize;
+
+    private VkBuffer _triangleBuffer;
+    private DeviceMemory _triangleBufferMemory;
+    private ulong _triangleBufferSize;
+
+    private Image _accumImage;
+    private DeviceMemory _accumImageMemory;
+    private ImageView _accumImageView;
+
+    private VkBuffer _readbackBuffer;
+    private DeviceMemory _readbackBufferMemory;
+    private ulong _readbackBufferSize;
+    private bool _loggedReadbackStats;
+
+    private int _bvhNodeCount;
+    private int _triangleCount;
+    private uint _frameIndex;
+    private bool _accumInitialized;
+    private Vector3 _lastCameraPos;
+    private Vector3 _lastCameraForward;
+    private float _lastCameraFov;
+    private int _lastSettingsHash;
+
+    // Rasterization
+    private RenderPass _rasterRenderPass;
+    private Framebuffer[] _rasterFramebuffers = Array.Empty<Framebuffer>();
+    private PipelineLayout _rasterPipelineLayout;
+    private Pipeline _rasterPipeline;
+    private VkBuffer _rasterVertexBuffer;
+    private DeviceMemory _rasterVertexBufferMemory;
+    private ulong _rasterVertexBufferSize;
+    private VkBuffer _rasterIndexBuffer;
+    private DeviceMemory _rasterIndexBufferMemory;
+    private ulong _rasterIndexBufferSize;
+    private int _rasterVertexCount;
+    private int _rasterIndexCount;
+
     private uint _computeQueueFamily;
     private uint _graphicsQueueFamily;
     private uint _presentQueueFamily;
     
     // Debug renderer
     private DebugRenderer? _debugRenderer;
+    
+    // Particle renderer
+    private ParticleRenderer? _particleRenderer;
 
     public GraphicsBackendType BackendType => GraphicsBackendType.Vulkan;
     public bool SupportsComputeShaders => true;
     public bool SupportsDebugRendering => _debugRenderer?.IsInitialized ?? false;
+    public bool SupportsParticleRendering => _particleRenderer?.IsInitialized ?? false;
 
     public VulkanBackend(IWindow window, int width, int height)
     {
@@ -98,6 +154,9 @@ public unsafe class VulkanBackend : IGraphicsBackend
         CreateSwapchain();
         CreateImageViews();
         CreateOutputImage();
+        CreateRasterRenderPass();
+        CreateRasterFramebuffers();
+        CreateRasterPipeline();
         CreateDescriptorSetLayout();
         CreateComputePipeline();
         CreateDescriptorPool();
@@ -121,7 +180,7 @@ public unsafe class VulkanBackend : IGraphicsBackend
             ApplicationVersion = new Version32(1, 0, 0),
             PEngineName = (byte*)Marshal.StringToHGlobalAnsi("RedHole"),
             EngineVersion = new Version32(1, 0, 0),
-            ApiVersion = Vk.Version12
+            ApiVersion = Vk.Version10
         };
 
         // Query available instance extensions
@@ -549,12 +608,20 @@ public unsafe class VulkanBackend : IGraphicsBackend
 
     private void CreateOutputImage()
     {
+        CreateStorageImage(_width, _height, out _outputImage, out _outputImageMemory, out _outputImageView);
+        CreateStorageImage(_width, _height, out _accumImage, out _accumImageMemory, out _accumImageView);
+        _accumInitialized = false;
+        _outputImageLayout = ImageLayout.Undefined;
+    }
+
+    private void CreateStorageImage(int width, int height, out Image image, out DeviceMemory memory, out ImageView view)
+    {
         var imageInfo = new ImageCreateInfo
         {
             SType = StructureType.ImageCreateInfo,
             ImageType = ImageType.Type2D,
             Format = Format.R32G32B32A32Sfloat,
-            Extent = new Extent3D((uint)_width, (uint)_height, 1),
+            Extent = new Extent3D((uint)width, (uint)height, 1),
             MipLevels = 1,
             ArrayLayers = 1,
             Samples = SampleCountFlags.Count1Bit,
@@ -564,15 +631,15 @@ public unsafe class VulkanBackend : IGraphicsBackend
             InitialLayout = ImageLayout.Undefined
         };
 
-        fixed (Image* image = &_outputImage)
+        fixed (Image* imagePtr = &image)
         {
-            if (_vk!.CreateImage(_device, &imageInfo, null, image) != Result.Success)
+            if (_vk!.CreateImage(_device, &imageInfo, null, imagePtr) != Result.Success)
             {
-                throw new Exception("Failed to create output image");
+                throw new Exception("Failed to create storage image");
             }
         }
 
-        _vk!.GetImageMemoryRequirements(_device, _outputImage, out var memRequirements);
+        _vk!.GetImageMemoryRequirements(_device, image, out var memRequirements);
 
         var allocInfo = new MemoryAllocateInfo
         {
@@ -581,16 +648,261 @@ public unsafe class VulkanBackend : IGraphicsBackend
             MemoryTypeIndex = FindMemoryType(memRequirements.MemoryTypeBits, MemoryPropertyFlags.DeviceLocalBit)
         };
 
-        fixed (DeviceMemory* memory = &_outputImageMemory)
+        fixed (DeviceMemory* memoryPtr = &memory)
         {
-            if (_vk.AllocateMemory(_device, &allocInfo, null, memory) != Result.Success)
+            if (_vk.AllocateMemory(_device, &allocInfo, null, memoryPtr) != Result.Success)
             {
                 throw new Exception("Failed to allocate image memory");
             }
         }
 
-        _vk.BindImageMemory(_device, _outputImage, _outputImageMemory, 0);
-        _outputImageView = CreateImageView(_outputImage, Format.R32G32B32A32Sfloat);
+        _vk.BindImageMemory(_device, image, memory, 0);
+        view = CreateImageView(image, Format.R32G32B32A32Sfloat);
+    }
+
+    private void CreateRasterRenderPass()
+    {
+        var colorAttachment = new AttachmentDescription
+        {
+            Format = _swapchainFormat,
+            Samples = SampleCountFlags.Count1Bit,
+            LoadOp = AttachmentLoadOp.Clear,
+            StoreOp = AttachmentStoreOp.Store,
+            StencilLoadOp = AttachmentLoadOp.DontCare,
+            StencilStoreOp = AttachmentStoreOp.DontCare,
+            InitialLayout = ImageLayout.Undefined,
+            FinalLayout = ImageLayout.PresentSrcKhr
+        };
+
+        var colorAttachmentRef = new AttachmentReference
+        {
+            Attachment = 0,
+            Layout = ImageLayout.ColorAttachmentOptimal
+        };
+
+        var subpass = new SubpassDescription
+        {
+            PipelineBindPoint = PipelineBindPoint.Graphics,
+            ColorAttachmentCount = 1,
+            PColorAttachments = &colorAttachmentRef
+        };
+
+        var dependency = new SubpassDependency
+        {
+            SrcSubpass = Vk.SubpassExternal,
+            DstSubpass = 0,
+            SrcStageMask = PipelineStageFlags.ColorAttachmentOutputBit,
+            DstStageMask = PipelineStageFlags.ColorAttachmentOutputBit,
+            SrcAccessMask = 0,
+            DstAccessMask = AccessFlags.ColorAttachmentWriteBit
+        };
+
+        var renderPassInfo = new RenderPassCreateInfo
+        {
+            SType = StructureType.RenderPassCreateInfo,
+            AttachmentCount = 1,
+            PAttachments = &colorAttachment,
+            SubpassCount = 1,
+            PSubpasses = &subpass,
+            DependencyCount = 1,
+            PDependencies = &dependency
+        };
+
+        fixed (RenderPass* rpPtr = &_rasterRenderPass)
+        {
+            if (_vk!.CreateRenderPass(_device, &renderPassInfo, null, rpPtr) != Result.Success)
+            {
+                throw new Exception("Failed to create raster render pass");
+            }
+        }
+    }
+
+    private void CreateRasterFramebuffers()
+    {
+        _rasterFramebuffers = new Framebuffer[_swapchainImageViews.Length];
+
+        for (int i = 0; i < _swapchainImageViews.Length; i++)
+        {
+            var attachment = _swapchainImageViews[i];
+
+            var framebufferInfo = new FramebufferCreateInfo
+            {
+                SType = StructureType.FramebufferCreateInfo,
+                RenderPass = _rasterRenderPass,
+                AttachmentCount = 1,
+                PAttachments = &attachment,
+                Width = _swapchainExtent.Width,
+                Height = _swapchainExtent.Height,
+                Layers = 1
+            };
+
+            fixed (Framebuffer* fbPtr = &_rasterFramebuffers[i])
+            {
+                if (_vk!.CreateFramebuffer(_device, &framebufferInfo, null, fbPtr) != Result.Success)
+                {
+                    throw new Exception("Failed to create raster framebuffer");
+                }
+            }
+        }
+    }
+
+    private void CreateRasterPipeline()
+    {
+        var vertCode = LoadShaderBytes(Path.Combine("Rendering", "Shaders", "raster.vert.spv"));
+        var fragCode = LoadShaderBytes(Path.Combine("Rendering", "Shaders", "raster.frag.spv"));
+
+        var vertModule = CreateShaderModule(vertCode);
+        var fragModule = CreateShaderModule(fragCode);
+
+        var vertStage = new PipelineShaderStageCreateInfo
+        {
+            SType = StructureType.PipelineShaderStageCreateInfo,
+            Stage = ShaderStageFlags.VertexBit,
+            Module = vertModule,
+            PName = (byte*)Marshal.StringToHGlobalAnsi("main")
+        };
+
+        var fragStage = new PipelineShaderStageCreateInfo
+        {
+            SType = StructureType.PipelineShaderStageCreateInfo,
+            Stage = ShaderStageFlags.FragmentBit,
+            Module = fragModule,
+            PName = (byte*)Marshal.StringToHGlobalAnsi("main")
+        };
+
+        var shaderStages = stackalloc[] { vertStage, fragStage };
+
+        var bindingDescription = new VertexInputBindingDescription
+        {
+            Binding = 0,
+            Stride = (uint)Unsafe.SizeOf<RasterVertex>(),
+            InputRate = VertexInputRate.Vertex
+        };
+
+        var attributeDescriptions = stackalloc VertexInputAttributeDescription[2];
+        attributeDescriptions[0] = new VertexInputAttributeDescription
+        {
+            Binding = 0,
+            Location = 0,
+            Format = Format.R32G32B32Sfloat,
+            Offset = 0
+        };
+        attributeDescriptions[1] = new VertexInputAttributeDescription
+        {
+            Binding = 0,
+            Location = 1,
+            Format = Format.R32G32B32A32Sfloat,
+            Offset = 12
+        };
+
+        var vertexInputInfo = new PipelineVertexInputStateCreateInfo
+        {
+            SType = StructureType.PipelineVertexInputStateCreateInfo,
+            VertexBindingDescriptionCount = 1,
+            PVertexBindingDescriptions = &bindingDescription,
+            VertexAttributeDescriptionCount = 2,
+            PVertexAttributeDescriptions = attributeDescriptions
+        };
+
+        var inputAssembly = new PipelineInputAssemblyStateCreateInfo
+        {
+            SType = StructureType.PipelineInputAssemblyStateCreateInfo,
+            Topology = PrimitiveTopology.TriangleList,
+            PrimitiveRestartEnable = false
+        };
+
+        var viewportState = new PipelineViewportStateCreateInfo
+        {
+            SType = StructureType.PipelineViewportStateCreateInfo,
+            ViewportCount = 1,
+            ScissorCount = 1
+        };
+
+        var rasterizer = new PipelineRasterizationStateCreateInfo
+        {
+            SType = StructureType.PipelineRasterizationStateCreateInfo,
+            PolygonMode = PolygonMode.Fill,
+            CullMode = CullModeFlags.BackBit,
+            FrontFace = FrontFace.CounterClockwise,
+            LineWidth = 1f
+        };
+
+        var multisampling = new PipelineMultisampleStateCreateInfo
+        {
+            SType = StructureType.PipelineMultisampleStateCreateInfo,
+            RasterizationSamples = SampleCountFlags.Count1Bit
+        };
+
+        var colorBlendAttachment = new PipelineColorBlendAttachmentState
+        {
+            ColorWriteMask = ColorComponentFlags.RBit | ColorComponentFlags.GBit | ColorComponentFlags.BBit | ColorComponentFlags.ABit,
+            BlendEnable = false
+        };
+
+        var colorBlending = new PipelineColorBlendStateCreateInfo
+        {
+            SType = StructureType.PipelineColorBlendStateCreateInfo,
+            AttachmentCount = 1,
+            PAttachments = &colorBlendAttachment
+        };
+
+        var dynamicStates = stackalloc[] { DynamicState.Viewport, DynamicState.Scissor };
+        var dynamicState = new PipelineDynamicStateCreateInfo
+        {
+            SType = StructureType.PipelineDynamicStateCreateInfo,
+            DynamicStateCount = 2,
+            PDynamicStates = dynamicStates
+        };
+
+        var pushConstantRange = new PushConstantRange
+        {
+            StageFlags = ShaderStageFlags.VertexBit,
+            Offset = 0,
+            Size = (uint)Unsafe.SizeOf<Matrix4x4>()
+        };
+
+        var pipelineLayoutInfo = new PipelineLayoutCreateInfo
+        {
+            SType = StructureType.PipelineLayoutCreateInfo,
+            PushConstantRangeCount = 1,
+            PPushConstantRanges = &pushConstantRange
+        };
+
+        fixed (PipelineLayout* layoutPtr = &_rasterPipelineLayout)
+        {
+            if (_vk!.CreatePipelineLayout(_device, &pipelineLayoutInfo, null, layoutPtr) != Result.Success)
+            {
+                throw new Exception("Failed to create raster pipeline layout");
+            }
+        }
+
+        var pipelineInfo = new GraphicsPipelineCreateInfo
+        {
+            SType = StructureType.GraphicsPipelineCreateInfo,
+            StageCount = 2,
+            PStages = shaderStages,
+            PVertexInputState = &vertexInputInfo,
+            PInputAssemblyState = &inputAssembly,
+            PViewportState = &viewportState,
+            PRasterizationState = &rasterizer,
+            PMultisampleState = &multisampling,
+            PColorBlendState = &colorBlending,
+            PDynamicState = &dynamicState,
+            Layout = _rasterPipelineLayout,
+            RenderPass = _rasterRenderPass,
+            Subpass = 0
+        };
+
+        fixed (Pipeline* pipelinePtr = &_rasterPipeline)
+        {
+            if (_vk!.CreateGraphicsPipelines(_device, default, 1, &pipelineInfo, null, pipelinePtr) != Result.Success)
+            {
+                throw new Exception("Failed to create raster pipeline");
+            }
+        }
+
+        _vk.DestroyShaderModule(_device, vertModule, null);
+        _vk.DestroyShaderModule(_device, fragModule, null);
     }
 
     private uint FindMemoryType(uint typeFilter, MemoryPropertyFlags properties)
@@ -620,10 +932,31 @@ public unsafe class VulkanBackend : IGraphicsBackend
                 DescriptorCount = 1,
                 StageFlags = ShaderStageFlags.ComputeBit
             },
+            new() // Accumulation image
+            {
+                Binding = 4,
+                DescriptorType = DescriptorType.StorageImage,
+                DescriptorCount = 1,
+                StageFlags = ShaderStageFlags.ComputeBit
+            },
             new() // Uniform buffer
             {
                 Binding = 1,
                 DescriptorType = DescriptorType.UniformBuffer,
+                DescriptorCount = 1,
+                StageFlags = ShaderStageFlags.ComputeBit
+            },
+            new() // BVH nodes
+            {
+                Binding = 2,
+                DescriptorType = DescriptorType.StorageBuffer,
+                DescriptorCount = 1,
+                StageFlags = ShaderStageFlags.ComputeBit
+            },
+            new() // Triangles
+            {
+                Binding = 3,
+                DescriptorType = DescriptorType.StorageBuffer,
                 DescriptorCount = 1,
                 StageFlags = ShaderStageFlags.ComputeBit
             }
@@ -701,18 +1034,92 @@ public unsafe class VulkanBackend : IGraphicsBackend
 
     private byte[] CompileShader()
     {
-        // Load pre-compiled SPIR-V shader
-        string shaderPath = Path.Combine(AppContext.BaseDirectory, "Rendering", "Shaders", "raytracer_vulkan.spv");
-        
-        if (!File.Exists(shaderPath))
+        string basePath = AppContext.BaseDirectory;
+        string spvPath = Path.Combine(basePath, "Rendering", "Shaders", "raytracer_vulkan.spv");
+        string sourcePath = Path.Combine(basePath, "Rendering", "Shaders", "raytracer_vulkan.comp");
+
+        if (File.Exists(sourcePath))
         {
-            throw new FileNotFoundException($"Pre-compiled shader not found: {shaderPath}. Run: glslangValidator --target-env vulkan1.2 -S comp -o raytracer_vulkan.spv raytracer_vulkan.comp");
+            try
+            {
+                var shaderc = Shaderc.GetApi();
+                var compiler = shaderc.CompilerInitialize();
+                var options = shaderc.CompileOptionsInitialize();
+
+                var source = File.ReadAllText(sourcePath);
+                var sourceBytes = Encoding.UTF8.GetBytes(source);
+                var fileNamePtr = SilkMarshal.StringToPtr("raytracer_vulkan.comp", NativeStringEncoding.UTF8);
+                var entryPointPtr = SilkMarshal.StringToPtr("main", NativeStringEncoding.UTF8);
+
+                CompilationResult* result = null;
+                fixed (byte* sourcePtr = sourceBytes)
+                {
+                    result = shaderc.CompileIntoSpv(compiler, sourcePtr, (nuint)sourceBytes.Length, ShaderKind.ComputeShader, (byte*)fileNamePtr, (byte*)entryPointPtr, options);
+                }
+
+                var status = shaderc.ResultGetCompilationStatus(result);
+                if (status == CompilationStatus.Success)
+                {
+                    var length = shaderc.ResultGetLength(result);
+                    var bytesPtr = shaderc.ResultGetBytes(result);
+                    var spirv = new byte[(int)length];
+                    Marshal.Copy((IntPtr)bytesPtr, spirv, 0, (int)length);
+                    Console.WriteLine($"Compiled Vulkan shader from source {sourcePath} ({spirv.Length} bytes)");
+
+                    shaderc.ResultRelease(result);
+                    shaderc.CompileOptionsRelease(options);
+                    shaderc.CompilerRelease(compiler);
+                    SilkMarshal.Free(fileNamePtr);
+                    SilkMarshal.Free(entryPointPtr);
+
+                    return spirv;
+                }
+
+                var error = shaderc.ResultGetErrorMessageS(result);
+                Console.WriteLine($"Shaderc failed to compile {sourcePath}: {error}");
+
+                shaderc.ResultRelease(result);
+                shaderc.CompileOptionsRelease(options);
+                shaderc.CompilerRelease(compiler);
+                SilkMarshal.Free(fileNamePtr);
+                SilkMarshal.Free(entryPointPtr);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Shaderc compile failed, falling back to SPIR-V: {ex.Message}");
+            }
         }
-        
-        byte[] spirv = File.ReadAllBytes(shaderPath);
-        Console.WriteLine($"Loaded pre-compiled SPIR-V shader from {shaderPath} ({spirv.Length} bytes)");
-        
-        return spirv;
+
+        if (!File.Exists(spvPath))
+        {
+            throw new FileNotFoundException($"Pre-compiled shader not found: {spvPath}. Run: glslangValidator --target-env vulkan1.0 -S comp -o raytracer_vulkan.spv raytracer_vulkan.comp");
+        }
+
+        byte[] precompiled = File.ReadAllBytes(spvPath);
+        Console.WriteLine($"Loaded pre-compiled SPIR-V shader from {spvPath} ({precompiled.Length} bytes)");
+
+        return precompiled;
+    }
+
+    private static byte[] LoadShaderBytes(string relativePath)
+    {
+        string basePath = AppContext.BaseDirectory;
+        string[] possiblePaths =
+        {
+            Path.Combine(basePath, relativePath),
+            Path.Combine(basePath, "..", "..", "..", relativePath),
+            relativePath
+        };
+
+        foreach (string path in possiblePaths)
+        {
+            if (File.Exists(path))
+            {
+                return File.ReadAllBytes(path);
+            }
+        }
+
+        throw new FileNotFoundException($"Shader file not found: {relativePath}");
     }
 
     private string ConvertToVulkanGlsl(string source)
@@ -727,7 +1134,7 @@ public unsafe class VulkanBackend : IGraphicsBackend
         
         // Wrap uniforms in a uniform buffer block
         var uniformBlock = @"
-layout(set = 0, binding = 1) uniform UniformBlock {
+ layout(set = 0, binding = 1) uniform UniformBlock {
     vec2 u_Resolution;
     float u_Time;
     float _pad1;
@@ -744,7 +1151,8 @@ layout(set = 0, binding = 1) uniform UniformBlock {
     float u_SchwarzschildRadius;
     float u_DiskInnerRadius;
     float u_DiskOuterRadius;
-    float _pad5;
+    vec4 u_RaySettings;
+    vec4 u_FrameSettings;
 };
 ";
         // Remove individual uniform declarations (handles vec2, vec3, float, etc.)
@@ -786,8 +1194,9 @@ layout(set = 0, binding = 1) uniform UniformBlock {
     {
         var poolSizes = new DescriptorPoolSize[]
         {
-            new() { Type = DescriptorType.StorageImage, DescriptorCount = 1 },
-            new() { Type = DescriptorType.UniformBuffer, DescriptorCount = 1 }
+            new() { Type = DescriptorType.StorageImage, DescriptorCount = 2 },
+            new() { Type = DescriptorType.UniformBuffer, DescriptorCount = 1 },
+            new() { Type = DescriptorType.StorageBuffer, DescriptorCount = 2 }
         };
 
         fixed (DescriptorPoolSize* poolSizesPtr = poolSizes)
@@ -884,11 +1293,33 @@ layout(set = 0, binding = 1) uniform UniformBlock {
             ImageLayout = ImageLayout.General
         };
 
+        var accumInfo = new DescriptorImageInfo
+        {
+            ImageView = _accumImageView,
+            ImageLayout = ImageLayout.General
+        };
+
         var bufferDescInfo = new DescriptorBufferInfo
         {
             Buffer = _uniformBuffer,
             Offset = 0,
             Range = bufferSize
+        };
+
+        EnsureRaytracerBuffers(1, 1);
+
+        var bvhDescInfo = new DescriptorBufferInfo
+        {
+            Buffer = _bvhNodeBuffer,
+            Offset = 0,
+            Range = _bvhNodeBufferSize
+        };
+
+        var triDescInfo = new DescriptorBufferInfo
+        {
+            Buffer = _triangleBuffer,
+            Offset = 0,
+            Range = _triangleBufferSize
         };
 
         var writes = new WriteDescriptorSet[]
@@ -907,11 +1338,41 @@ layout(set = 0, binding = 1) uniform UniformBlock {
             {
                 SType = StructureType.WriteDescriptorSet,
                 DstSet = _computeDescriptorSet,
+                DstBinding = 4,
+                DstArrayElement = 0,
+                DescriptorType = DescriptorType.StorageImage,
+                DescriptorCount = 1,
+                PImageInfo = &accumInfo
+            },
+            new()
+            {
+                SType = StructureType.WriteDescriptorSet,
+                DstSet = _computeDescriptorSet,
                 DstBinding = 1,
                 DstArrayElement = 0,
                 DescriptorType = DescriptorType.UniformBuffer,
                 DescriptorCount = 1,
                 PBufferInfo = &bufferDescInfo
+            },
+            new()
+            {
+                SType = StructureType.WriteDescriptorSet,
+                DstSet = _computeDescriptorSet,
+                DstBinding = 2,
+                DstArrayElement = 0,
+                DescriptorType = DescriptorType.StorageBuffer,
+                DescriptorCount = 1,
+                PBufferInfo = &bvhDescInfo
+            },
+            new()
+            {
+                SType = StructureType.WriteDescriptorSet,
+                DstSet = _computeDescriptorSet,
+                DstBinding = 3,
+                DstArrayElement = 0,
+                DescriptorType = DescriptorType.StorageBuffer,
+                DescriptorCount = 1,
+                PBufferInfo = &triDescInfo
             }
         };
 
@@ -919,6 +1380,226 @@ layout(set = 0, binding = 1) uniform UniformBlock {
         {
             _vk.UpdateDescriptorSets(_device, (uint)writes.Length, writesPtr, 0, null);
         }
+    }
+
+    private void EnsureRaytracerBuffers(ulong minNodeSize, ulong minTriSize)
+    {
+        bool nodesChanged = EnsureStorageBuffer(ref _bvhNodeBuffer, ref _bvhNodeBufferMemory, ref _bvhNodeBufferSize, minNodeSize);
+        bool trisChanged = EnsureStorageBuffer(ref _triangleBuffer, ref _triangleBufferMemory, ref _triangleBufferSize, minTriSize);
+
+        if (nodesChanged || trisChanged)
+        {
+            UpdateRaytracerBufferDescriptors();
+        }
+    }
+
+    private void EnsureRasterBuffers(ulong vertexSize, ulong indexSize)
+    {
+        EnsureRasterBuffer(ref _rasterVertexBuffer, ref _rasterVertexBufferMemory, ref _rasterVertexBufferSize, vertexSize, BufferUsageFlags.VertexBufferBit);
+        EnsureRasterBuffer(ref _rasterIndexBuffer, ref _rasterIndexBufferMemory, ref _rasterIndexBufferSize, indexSize, BufferUsageFlags.IndexBufferBit);
+    }
+
+    private void EnsureRasterBuffer(ref VkBuffer buffer, ref DeviceMemory memory, ref ulong bufferSize, ulong requiredSize, BufferUsageFlags usage)
+    {
+        if (requiredSize == 0)
+            requiredSize = (ulong)Unsafe.SizeOf<int>();
+
+        if (buffer.Handle != 0 && bufferSize >= requiredSize)
+            return;
+
+        if (buffer.Handle != 0)
+        {
+            _vk.DestroyBuffer(_device, buffer, null);
+            _vk.FreeMemory(_device, memory, null);
+        }
+
+        CreateBuffer(requiredSize, usage | BufferUsageFlags.TransferDstBit, MemoryPropertyFlags.DeviceLocalBit, out buffer, out memory);
+        bufferSize = requiredSize;
+    }
+
+    private bool EnsureStorageBuffer(ref VkBuffer buffer, ref DeviceMemory memory, ref ulong bufferSize, ulong requiredSize)
+    {
+        if (requiredSize == 0)
+            requiredSize = (ulong)Unsafe.SizeOf<int>();
+
+        if (buffer.Handle != 0 && bufferSize >= requiredSize)
+            return false;
+
+        if (buffer.Handle != 0)
+        {
+            _vk.DestroyBuffer(_device, buffer, null);
+            _vk.FreeMemory(_device, memory, null);
+        }
+
+        CreateBuffer(requiredSize, BufferUsageFlags.StorageBufferBit | BufferUsageFlags.TransferDstBit, MemoryPropertyFlags.DeviceLocalBit, out buffer, out memory);
+        bufferSize = requiredSize;
+        return true;
+    }
+
+    private void UpdateRaytracerBufferDescriptors()
+    {
+        var bvhDescInfo = new DescriptorBufferInfo
+        {
+            Buffer = _bvhNodeBuffer,
+            Offset = 0,
+            Range = _bvhNodeBufferSize
+        };
+
+        var triDescInfo = new DescriptorBufferInfo
+        {
+            Buffer = _triangleBuffer,
+            Offset = 0,
+            Range = _triangleBufferSize
+        };
+
+        var writes = new WriteDescriptorSet[]
+        {
+            new()
+            {
+                SType = StructureType.WriteDescriptorSet,
+                DstSet = _computeDescriptorSet,
+                DstBinding = 2,
+                DstArrayElement = 0,
+                DescriptorType = DescriptorType.StorageBuffer,
+                DescriptorCount = 1,
+                PBufferInfo = &bvhDescInfo
+            },
+            new()
+            {
+                SType = StructureType.WriteDescriptorSet,
+                DstSet = _computeDescriptorSet,
+                DstBinding = 3,
+                DstArrayElement = 0,
+                DescriptorType = DescriptorType.StorageBuffer,
+                DescriptorCount = 1,
+                PBufferInfo = &triDescInfo
+            }
+        };
+
+        fixed (WriteDescriptorSet* writesPtr = writes)
+        {
+            _vk.UpdateDescriptorSets(_device, (uint)writes.Length, writesPtr, 0, null);
+        }
+    }
+
+    private void CreateBuffer(ulong size, BufferUsageFlags usage, MemoryPropertyFlags properties, out VkBuffer buffer, out DeviceMemory memory)
+    {
+        var bufferInfo = new BufferCreateInfo
+        {
+            SType = StructureType.BufferCreateInfo,
+            Size = size,
+            Usage = usage,
+            SharingMode = SharingMode.Exclusive
+        };
+
+        fixed (VkBuffer* bufferPtr = &buffer)
+        {
+            if (_vk!.CreateBuffer(_device, &bufferInfo, null, bufferPtr) != Result.Success)
+            {
+                throw new Exception("Failed to create buffer");
+            }
+        }
+
+        _vk!.GetBufferMemoryRequirements(_device, buffer, out var memRequirements);
+
+        var allocInfo = new MemoryAllocateInfo
+        {
+            SType = StructureType.MemoryAllocateInfo,
+            AllocationSize = memRequirements.Size,
+            MemoryTypeIndex = FindMemoryType(memRequirements.MemoryTypeBits, properties)
+        };
+
+        fixed (DeviceMemory* memoryPtr = &memory)
+        {
+            if (_vk.AllocateMemory(_device, &allocInfo, null, memoryPtr) != Result.Success)
+            {
+                throw new Exception("Failed to allocate buffer memory");
+            }
+        }
+
+        _vk.BindBufferMemory(_device, buffer, memory, 0);
+    }
+
+    private void EnsureReadbackBuffer(ulong size)
+    {
+        if (_readbackBuffer.Handle != 0 && _readbackBufferSize >= size)
+            return;
+
+        if (_readbackBuffer.Handle != 0)
+        {
+            _vk!.DestroyBuffer(_device, _readbackBuffer, null);
+            _vk.FreeMemory(_device, _readbackBufferMemory, null);
+            _readbackBuffer = default;
+            _readbackBufferMemory = default;
+        }
+
+        CreateBuffer(size, BufferUsageFlags.TransferDstBit, MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit, out _readbackBuffer, out _readbackBufferMemory);
+        _readbackBufferSize = size;
+    }
+
+    private static byte ToByte(float value)
+    {
+        value = Math.Clamp(value, 0f, 1f);
+        return (byte)(value * 255f + 0.5f);
+    }
+
+    private void UploadBufferData<T>(T[] data, VkBuffer dstBuffer) where T : unmanaged
+    {
+        if (data.Length == 0)
+            return;
+
+        ulong size = (ulong)(data.Length * Unsafe.SizeOf<T>());
+
+        CreateBuffer(size, BufferUsageFlags.TransferSrcBit, MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit, out var stagingBuffer, out var stagingMemory);
+
+        void* mapped = null;
+        _vk.MapMemory(_device, stagingMemory, 0, size, 0, &mapped);
+
+        fixed (T* src = data)
+        {
+            System.Buffer.MemoryCopy(src, mapped, size, size);
+        }
+
+        _vk.UnmapMemory(_device, stagingMemory);
+
+        var allocInfo = new CommandBufferAllocateInfo
+        {
+            SType = StructureType.CommandBufferAllocateInfo,
+            CommandPool = _commandPool,
+            Level = CommandBufferLevel.Primary,
+            CommandBufferCount = 1
+        };
+
+        CommandBuffer commandBuffer;
+        _vk.AllocateCommandBuffers(_device, &allocInfo, &commandBuffer);
+
+        var beginInfo = new CommandBufferBeginInfo
+        {
+            SType = StructureType.CommandBufferBeginInfo,
+            Flags = CommandBufferUsageFlags.OneTimeSubmitBit
+        };
+
+        _vk.BeginCommandBuffer(commandBuffer, &beginInfo);
+
+        var copyRegion = new BufferCopy { Size = size };
+        _vk.CmdCopyBuffer(commandBuffer, stagingBuffer, dstBuffer, 1, &copyRegion);
+
+        _vk.EndCommandBuffer(commandBuffer);
+
+        var submitInfo = new SubmitInfo
+        {
+            SType = StructureType.SubmitInfo,
+            CommandBufferCount = 1,
+            PCommandBuffers = &commandBuffer
+        };
+
+        _vk.QueueSubmit(_graphicsQueue, 1, &submitInfo, default);
+        _vk.QueueWaitIdle(_graphicsQueue);
+
+        _vk.FreeCommandBuffers(_device, _commandPool, 1, &commandBuffer);
+
+        _vk.DestroyBuffer(_device, stagingBuffer, null);
+        _vk.FreeMemory(_device, stagingMemory, null);
     }
 
     private void CreateCommandPool()
@@ -999,14 +1680,78 @@ layout(set = 0, binding = 1) uniform UniformBlock {
             Console.WriteLine("Debug visualization will be disabled.");
             _debugRenderer = null;
         }
+        
+        // Initialize particle renderer
+        try
+        {
+            _particleRenderer = new ParticleRenderer(_vk!, _device, _physicalDevice, _graphicsQueueFamily);
+            _particleRenderer.Initialize(_swapchainFormat, _swapchainExtent, _swapchainImageViews);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Warning: Particle renderer initialization failed: {ex.Message}");
+            Console.WriteLine("Particle rendering will be disabled.");
+            _particleRenderer = null;
+        }
+    }
+
+    public void SetRaytracerMeshData(RaytracerMeshData data)
+    {
+        if (data == null)
+        {
+            _bvhNodeCount = 0;
+            _triangleCount = 0;
+            return;
+        }
+
+        _bvhNodeCount = data.Nodes.Length;
+        _triangleCount = data.Triangles.Length;
+
+        if (_bvhNodeCount == 0 || _triangleCount == 0)
+            return;
+
+        ulong nodeSize = (ulong)(_bvhNodeCount * Unsafe.SizeOf<RaytracerBvhNode>());
+        ulong triSize = (ulong)(_triangleCount * Unsafe.SizeOf<RaytracerTriangle>());
+
+        EnsureRaytracerBuffers(nodeSize, triSize);
+        UploadBufferData(data.Nodes, _bvhNodeBuffer);
+        UploadBufferData(data.Triangles, _triangleBuffer);
+    }
+
+    public void SetRasterMeshData(RasterMeshData data)
+    {
+        if (data == null)
+        {
+            _rasterVertexCount = 0;
+            _rasterIndexCount = 0;
+            return;
+        }
+
+        _rasterVertexCount = data.Vertices.Length;
+        _rasterIndexCount = data.Indices.Length;
+
+        if (_rasterVertexCount == 0 || _rasterIndexCount == 0)
+            return;
+
+        ulong vertexSize = (ulong)(_rasterVertexCount * Unsafe.SizeOf<RasterVertex>());
+        ulong indexSize = (ulong)(_rasterIndexCount * sizeof(uint));
+
+        EnsureRasterBuffers(vertexSize, indexSize);
+        UploadBufferData(data.Vertices, _rasterVertexBuffer);
+        UploadBufferData(data.Indices, _rasterIndexBuffer);
     }
 
     public void Render(Camera camera, BlackHole blackHole, float time)
     {
-        Render(camera, blackHole, time, null);
+        Render(camera, blackHole, time, null, null);
     }
 
     public void Render(Camera camera, BlackHole blackHole, float time, DebugDrawManager? debugDraw)
+    {
+        Render(camera, blackHole, time, debugDraw, null);
+    }
+
+    public void Render(Camera camera, BlackHole blackHole, float time, DebugDrawManager? debugDraw, ParticlePool? particles)
     {
         fixed (Fence* fence = &_inFlightFence)
         {
@@ -1014,7 +1759,12 @@ layout(set = 0, binding = 1) uniform UniformBlock {
             _vk.ResetFences(_device, 1, fence);
         }
 
+        bool useRaytracer = RenderSettings.Mode == RenderMode.Raytraced;
+
+        UpdateAccumulationState(camera);
+
         // Update uniforms
+        RaytracerSettings.Clamp();
         var uniforms = new RaytracerUniforms
         {
             Resolution = new Vector2(_width, _height),
@@ -1028,20 +1778,34 @@ layout(set = 0, binding = 1) uniform UniformBlock {
             BlackHoleMass = blackHole.Mass,
             SchwarzschildRadius = blackHole.SchwarzschildRadius,
             DiskInnerRadius = blackHole.DiskInnerRadius,
-            DiskOuterRadius = blackHole.DiskOuterRadius
+            DiskOuterRadius = blackHole.DiskOuterRadius,
+            RaySettings = new Vector4(
+                RaytracerSettings.RaysPerPixel,
+                RaytracerSettings.MaxBounces,
+                _bvhNodeCount,
+                _triangleCount),
+            FrameSettings = new Vector4(
+                RaytracerSettings.SamplesPerFrame,
+                _frameIndex,
+                RaytracerSettings.Accumulate ? 1f : 0f,
+                RaytracerSettings.Denoise ? 1f : 0f)
         };
         Unsafe.Copy(_uniformBufferMapped, ref uniforms);
+
 
         // Acquire swapchain image
         uint imageIndex = 0;
         _khrSwapchain!.AcquireNextImage(_device, _swapchain, ulong.MaxValue, _imageAvailableSemaphore, default, &imageIndex);
 
-        // Record and submit compute commands
-        RecordComputeCommands();
-        SubmitCompute();
+        // Record and submit compute commands (raytracer only)
+        if (useRaytracer)
+        {
+            RecordComputeCommands();
+            SubmitCompute();
+        }
 
-        // Record and submit graphics commands (copy compute output to swapchain)
-        RecordGraphicsCommands(imageIndex, camera, debugDraw);
+        // Record and submit graphics commands
+        RecordGraphicsCommands(imageIndex, camera, time, debugDraw, particles);
         SubmitGraphics();
 
         // Present
@@ -1058,9 +1822,102 @@ layout(set = 0, binding = 1) uniform UniformBlock {
         };
 
         _khrSwapchain.QueuePresent(_presentQueue, &presentInfo);
+
+        if (RaytracerSettings.Accumulate)
+        {
+            _frameIndex++;
+        }
+        else
+        {
+            _frameIndex = 0;
+        }
     }
 
-    private void RecordComputeCommands()
+    public void RenderToReadback(Camera camera, BlackHole blackHole, float time, byte[] rgbaBuffer)
+    {
+        UpdateAccumulationState(camera);
+
+        RaytracerSettings.Clamp();
+        var uniforms = new RaytracerUniforms
+        {
+            Resolution = new Vector2(_width, _height),
+            Time = time,
+            CameraPos = camera.Position,
+            CameraForward = camera.Forward,
+            CameraRight = camera.Right,
+            CameraUp = camera.Up,
+            Fov = camera.FieldOfView,
+            BlackHolePos = blackHole.Position,
+            BlackHoleMass = blackHole.Mass,
+            SchwarzschildRadius = blackHole.SchwarzschildRadius,
+            DiskInnerRadius = blackHole.DiskInnerRadius,
+            DiskOuterRadius = blackHole.DiskOuterRadius,
+            RaySettings = new Vector4(
+                RaytracerSettings.RaysPerPixel,
+                RaytracerSettings.MaxBounces,
+                _bvhNodeCount,
+                _triangleCount),
+            FrameSettings = new Vector4(
+                RaytracerSettings.SamplesPerFrame,
+                _frameIndex,
+                RaytracerSettings.Accumulate ? 1f : 0f,
+                RaytracerSettings.Denoise ? 1f : 0f)
+        };
+        Unsafe.Copy(_uniformBufferMapped, ref uniforms);
+
+        ulong requiredSize = (ulong)(_width * _height * 4 * sizeof(float));
+        EnsureReadbackBuffer(requiredSize);
+
+        RecordComputeCommands(_readbackBuffer);
+
+        fixed (CommandBuffer* cmd = &_computeCommandBuffer)
+        {
+            var submitInfo = new SubmitInfo
+            {
+                SType = StructureType.SubmitInfo,
+                CommandBufferCount = 1,
+                PCommandBuffers = cmd
+            };
+
+            _vk!.QueueSubmit(_computeQueue, 1, &submitInfo, default);
+            _vk.QueueWaitIdle(_computeQueue);
+        }
+
+        int requiredBytes = _width * _height * 4;
+        if (rgbaBuffer.Length < requiredBytes)
+            throw new ArgumentException("Readback buffer is too small", nameof(rgbaBuffer));
+
+        void* mapped = null;
+        _vk.MapMemory(_device, _readbackBufferMemory, 0, _readbackBufferSize, 0, &mapped);
+
+        var floatData = (float*)mapped;
+        int pixelCount = _width * _height;
+        for (int i = 0; i < pixelCount; i++)
+        {
+            int src = i * 4;
+            int dst = i * 4;
+            rgbaBuffer[dst] = ToByte(floatData[src]);
+            rgbaBuffer[dst + 1] = ToByte(floatData[src + 1]);
+            rgbaBuffer[dst + 2] = ToByte(floatData[src + 2]);
+            rgbaBuffer[dst + 3] = ToByte(floatData[src + 3]);
+        }
+
+
+        _vk.UnmapMemory(_device, _readbackBufferMemory);
+
+        if (RaytracerSettings.Accumulate)
+        {
+            _frameIndex++;
+        }
+        else
+        {
+            _frameIndex = 0;
+        }
+
+        return;
+    }
+
+    private void RecordComputeCommands(VkBuffer? readbackBuffer = null)
     {
         _vk!.ResetCommandBuffer(_computeCommandBuffer, 0);
 
@@ -1068,7 +1925,17 @@ layout(set = 0, binding = 1) uniform UniformBlock {
         _vk.BeginCommandBuffer(_computeCommandBuffer, &beginInfo);
 
         // Transition output image to general layout for compute shader
-        TransitionImageLayout(_computeCommandBuffer, _outputImage, ImageLayout.Undefined, ImageLayout.General);
+        if (_outputImageLayout != ImageLayout.General)
+        {
+            TransitionImageLayout(_computeCommandBuffer, _outputImage, _outputImageLayout, ImageLayout.General);
+            _outputImageLayout = ImageLayout.General;
+        }
+
+        if (!_accumInitialized)
+        {
+            TransitionImageLayout(_computeCommandBuffer, _accumImage, ImageLayout.Undefined, ImageLayout.General);
+            _accumInitialized = true;
+        }
 
         _vk.CmdBindPipeline(_computeCommandBuffer, PipelineBindPoint.Compute, _computePipeline);
 
@@ -1083,70 +1950,200 @@ layout(set = 0, binding = 1) uniform UniformBlock {
 
         // Transition output image for transfer
         TransitionImageLayout(_computeCommandBuffer, _outputImage, ImageLayout.General, ImageLayout.TransferSrcOptimal);
+        _outputImageLayout = ImageLayout.TransferSrcOptimal;
+
+        if (readbackBuffer.HasValue)
+        {
+            var region = new BufferImageCopy
+            {
+                BufferOffset = 0,
+                BufferRowLength = 0,
+                BufferImageHeight = 0,
+                ImageSubresource = new ImageSubresourceLayers
+                {
+                    AspectMask = ImageAspectFlags.ColorBit,
+                    MipLevel = 0,
+                    BaseArrayLayer = 0,
+                    LayerCount = 1
+                },
+                ImageOffset = new Offset3D(0, 0, 0),
+                ImageExtent = new Extent3D((uint)_width, (uint)_height, 1)
+            };
+
+            _vk.CmdCopyImageToBuffer(_computeCommandBuffer, _outputImage, ImageLayout.TransferSrcOptimal, readbackBuffer.Value, 1, &region);
+            TransitionImageLayout(_computeCommandBuffer, _outputImage, ImageLayout.TransferSrcOptimal, ImageLayout.General);
+            _outputImageLayout = ImageLayout.General;
+        }
 
         _vk.EndCommandBuffer(_computeCommandBuffer);
     }
 
-    private void RecordGraphicsCommands(uint imageIndex, Camera camera, DebugDrawManager? debugDraw)
+    private void UpdateAccumulationState(Camera camera)
+    {
+        int settingsHash = HashCode.Combine(
+            RaytracerSettings.RaysPerPixel,
+            RaytracerSettings.MaxBounces,
+            RaytracerSettings.SamplesPerFrame,
+            RaytracerSettings.Accumulate,
+            RaytracerSettings.Denoise,
+            _bvhNodeCount,
+            _triangleCount);
+
+        bool cameraChanged = camera.Position != _lastCameraPos ||
+                             camera.Forward != _lastCameraForward ||
+                             Math.Abs(camera.FieldOfView - _lastCameraFov) > 0.001f;
+
+        if (RaytracerSettings.ResetAccumulation || cameraChanged || settingsHash != _lastSettingsHash || !RaytracerSettings.Accumulate)
+        {
+            _frameIndex = 0;
+            _accumInitialized = false;
+            RaytracerSettings.ResetAccumulation = false;
+        }
+
+        _lastCameraPos = camera.Position;
+        _lastCameraForward = camera.Forward;
+        _lastCameraFov = camera.FieldOfView;
+        _lastSettingsHash = settingsHash;
+    }
+
+    private void RecordGraphicsCommands(uint imageIndex, Camera camera, float time, DebugDrawManager? debugDraw, ParticlePool? particles)
     {
         _vk!.ResetCommandBuffer(_graphicsCommandBuffer, 0);
 
         var beginInfo = new CommandBufferBeginInfo { SType = StructureType.CommandBufferBeginInfo };
         _vk.BeginCommandBuffer(_graphicsCommandBuffer, &beginInfo);
 
-        // Transition swapchain image to transfer dst
-        TransitionImageLayout(_graphicsCommandBuffer, _swapchainImages[imageIndex], ImageLayout.Undefined, ImageLayout.TransferDstOptimal);
-
-        // Blit from compute output to swapchain image
-        var blitRegion = new ImageBlit
+        if (RenderSettings.Mode == RenderMode.Rasterized)
         {
-            SrcSubresource = new ImageSubresourceLayers
+            var clearValue = new ClearValue
             {
-                AspectMask = ImageAspectFlags.ColorBit,
-                MipLevel = 0,
-                BaseArrayLayer = 0,
-                LayerCount = 1
-            },
-            DstSubresource = new ImageSubresourceLayers
+                Color = new ClearColorValue(0.02f, 0.02f, 0.03f, 1f)
+            };
+
+            var renderPassInfo = new RenderPassBeginInfo
             {
-                AspectMask = ImageAspectFlags.ColorBit,
-                MipLevel = 0,
-                BaseArrayLayer = 0,
-                LayerCount = 1
+                SType = StructureType.RenderPassBeginInfo,
+                RenderPass = _rasterRenderPass,
+                Framebuffer = _rasterFramebuffers[imageIndex],
+                RenderArea = new Rect2D
+                {
+                    Offset = new Offset2D(0, 0),
+                    Extent = _swapchainExtent
+                },
+                ClearValueCount = 1,
+                PClearValues = &clearValue
+            };
+
+            _vk.CmdBeginRenderPass(_graphicsCommandBuffer, &renderPassInfo, SubpassContents.Inline);
+            _vk.CmdBindPipeline(_graphicsCommandBuffer, PipelineBindPoint.Graphics, _rasterPipeline);
+
+            var viewport = new Viewport
+            {
+                X = 0,
+                Y = 0,
+                Width = _swapchainExtent.Width,
+                Height = _swapchainExtent.Height,
+                MinDepth = 0f,
+                MaxDepth = 1f
+            };
+            _vk.CmdSetViewport(_graphicsCommandBuffer, 0, 1, &viewport);
+
+            var scissor = new Rect2D
+            {
+                Offset = new Offset2D(0, 0),
+                Extent = _swapchainExtent
+            };
+            _vk.CmdSetScissor(_graphicsCommandBuffer, 0, 1, &scissor);
+
+            if (_rasterIndexCount > 0)
+            {
+                ulong offset = 0;
+                fixed (VkBuffer* vertexBufferPtr = &_rasterVertexBuffer)
+                {
+                    _vk.CmdBindVertexBuffers(_graphicsCommandBuffer, 0, 1, vertexBufferPtr, &offset);
+                }
+                _vk.CmdBindIndexBuffer(_graphicsCommandBuffer, _rasterIndexBuffer, 0, IndexType.Uint32);
+
+                float aspectRaster = (float)_width / _height;
+                var viewRaster = camera.GetViewMatrix();
+                var projectionRaster = Matrix4x4.CreatePerspectiveFieldOfView(
+                    camera.FieldOfView * MathF.PI / 180f,
+                    aspectRaster,
+                    0.1f,
+                    10000f);
+
+                var viewProj = viewRaster * projectionRaster;
+                void* viewProjPtr = Unsafe.AsPointer(ref viewProj);
+                _vk.CmdPushConstants(_graphicsCommandBuffer, _rasterPipelineLayout, ShaderStageFlags.VertexBit, 0, (uint)Unsafe.SizeOf<Matrix4x4>(), viewProjPtr);
+
+                _vk.CmdDrawIndexed(_graphicsCommandBuffer, (uint)_rasterIndexCount, 1, 0, 0, 0);
             }
-        };
-        blitRegion.SrcOffsets[0] = new Offset3D(0, 0, 0);
-        blitRegion.SrcOffsets[1] = new Offset3D(_width, _height, 1);
-        blitRegion.DstOffsets[0] = new Offset3D(0, 0, 0);
-        blitRegion.DstOffsets[1] = new Offset3D((int)_swapchainExtent.Width, (int)_swapchainExtent.Height, 1);
 
-        _vk.CmdBlitImage(_graphicsCommandBuffer,
-            _outputImage, ImageLayout.TransferSrcOptimal,
-            _swapchainImages[imageIndex], ImageLayout.TransferDstOptimal,
-            1, &blitRegion, Filter.Linear);
-
-        // Transition swapchain image to present (or to color attachment if debug rendering)
-        if (debugDraw != null && debugDraw.HasContent && _debugRenderer?.IsInitialized == true)
-        {
-            // Transition to present layout first (debug renderer expects this)
-            TransitionImageLayout(_graphicsCommandBuffer, _swapchainImages[imageIndex], ImageLayout.TransferDstOptimal, ImageLayout.PresentSrcKhr);
-            
-            // Build view and projection matrices from camera
-            float aspect = (float)_width / _height;
-            var view = camera.GetViewMatrix();
-            var projection = Matrix4x4.CreatePerspectiveFieldOfView(
-                camera.FieldOfView * MathF.PI / 180f, 
-                aspect, 
-                0.1f, 
-                10000f);
-            
-            // Record debug rendering commands
-            _debugRenderer.RecordCommands(_graphicsCommandBuffer, imageIndex, debugDraw, view, projection);
+            _vk.CmdEndRenderPass(_graphicsCommandBuffer);
         }
         else
         {
-            // No debug rendering, just transition to present
+            if (_outputImageLayout != ImageLayout.TransferSrcOptimal)
+            {
+                TransitionImageLayout(_graphicsCommandBuffer, _outputImage, _outputImageLayout, ImageLayout.TransferSrcOptimal);
+                _outputImageLayout = ImageLayout.TransferSrcOptimal;
+            }
+            // Transition swapchain image to transfer dst
+            TransitionImageLayout(_graphicsCommandBuffer, _swapchainImages[imageIndex], ImageLayout.Undefined, ImageLayout.TransferDstOptimal);
+
+            // Blit from compute output to swapchain image
+            var blitRegion = new ImageBlit
+            {
+                SrcSubresource = new ImageSubresourceLayers
+                {
+                    AspectMask = ImageAspectFlags.ColorBit,
+                    MipLevel = 0,
+                    BaseArrayLayer = 0,
+                    LayerCount = 1
+                },
+                DstSubresource = new ImageSubresourceLayers
+                {
+                    AspectMask = ImageAspectFlags.ColorBit,
+                    MipLevel = 0,
+                    BaseArrayLayer = 0,
+                    LayerCount = 1
+                }
+            };
+            blitRegion.SrcOffsets[0] = new Offset3D(0, 0, 0);
+            blitRegion.SrcOffsets[1] = new Offset3D(_width, _height, 1);
+            blitRegion.DstOffsets[0] = new Offset3D(0, 0, 0);
+            blitRegion.DstOffsets[1] = new Offset3D((int)_swapchainExtent.Width, (int)_swapchainExtent.Height, 1);
+
+            _vk.CmdBlitImage(_graphicsCommandBuffer,
+                _outputImage, ImageLayout.TransferSrcOptimal,
+                _swapchainImages[imageIndex], ImageLayout.TransferDstOptimal,
+                1, &blitRegion, Filter.Linear);
+
+            // Transition to present layout (required by particle and debug renderers)
             TransitionImageLayout(_graphicsCommandBuffer, _swapchainImages[imageIndex], ImageLayout.TransferDstOptimal, ImageLayout.PresentSrcKhr);
+        }
+        
+        // Build view and projection matrices from camera
+        float aspect = (float)_width / _height;
+        var view = camera.GetViewMatrix();
+        var projection = Matrix4x4.CreatePerspectiveFieldOfView(
+            camera.FieldOfView * MathF.PI / 180f,
+            aspect,
+            0.1f,
+            10000f);
+        
+        // Render particles (before debug so debug draws on top)
+        if (particles != null && particles.AliveCount > 0 && _particleRenderer?.IsInitialized == true)
+        {
+            _particleRenderer.UpdateParticles(particles);
+            _particleRenderer.UpdateUniforms(view, projection, camera.Position, time);
+            _particleRenderer.RecordCommands(_graphicsCommandBuffer, imageIndex);
+        }
+
+        // Render debug overlay
+        if (debugDraw != null && debugDraw.HasContent && _debugRenderer?.IsInitialized == true)
+        {
+            _debugRenderer.RecordCommands(_graphicsCommandBuffer, imageIndex, debugDraw, view, projection);
         }
 
         _vk.EndCommandBuffer(_graphicsCommandBuffer);
@@ -1187,6 +2184,13 @@ layout(set = 0, binding = 1) uniform UniformBlock {
             barrier.DstAccessMask = AccessFlags.TransferReadBit;
             srcStage = PipelineStageFlags.ComputeShaderBit;
             dstStage = PipelineStageFlags.TransferBit;
+        }
+        else if (oldLayout == ImageLayout.TransferSrcOptimal && newLayout == ImageLayout.General)
+        {
+            barrier.SrcAccessMask = AccessFlags.TransferReadBit;
+            barrier.DstAccessMask = AccessFlags.ShaderWriteBit;
+            srcStage = PipelineStageFlags.TransferBit;
+            dstStage = PipelineStageFlags.ComputeShaderBit;
         }
         else if (oldLayout == ImageLayout.Undefined && newLayout == ImageLayout.TransferDstOptimal)
         {
@@ -1271,35 +2275,108 @@ layout(set = 0, binding = 1) uniform UniformBlock {
 
     public void Dispose()
     {
-        _vk!.DeviceWaitIdle(_device);
+        if (_vk == null)
+            return;
 
-        _debugRenderer?.Dispose();
-        
-        _vk.DestroySemaphore(_device, _imageAvailableSemaphore, null);
-        _vk.DestroySemaphore(_device, _renderFinishedSemaphore, null);
-        _vk.DestroySemaphore(_device, _computeFinishedSemaphore, null);
-        _vk.DestroyFence(_device, _inFlightFence, null);
-        _vk.DestroyCommandPool(_device, _commandPool, null);
-        _vk.UnmapMemory(_device, _uniformBufferMemory);
-        _vk.DestroyBuffer(_device, _uniformBuffer, null);
-        _vk.FreeMemory(_device, _uniformBufferMemory, null);
-        _vk.DestroyDescriptorPool(_device, _descriptorPool, null);
-        _vk.DestroyPipeline(_device, _computePipeline, null);
-        _vk.DestroyPipelineLayout(_device, _computePipelineLayout, null);
-        _vk.DestroyDescriptorSetLayout(_device, _computeDescriptorSetLayout, null);
-        _vk.DestroyImageView(_device, _outputImageView, null);
-        _vk.DestroyImage(_device, _outputImage, null);
-        _vk.FreeMemory(_device, _outputImageMemory, null);
-
-        foreach (var imageView in _swapchainImageViews)
+        if (_device.Handle != 0)
         {
-            _vk.DestroyImageView(_device, imageView, null);
+            _vk.DeviceWaitIdle(_device);
         }
 
-        _khrSwapchain?.DestroySwapchain(_device, _swapchain, null);
-        _vk.DestroyDevice(_device, null);
-        _khrSurface?.DestroySurface(_instance, _surface, null);
-        _vk.DestroyInstance(_instance, null);
+        _particleRenderer?.Dispose();
+        _debugRenderer?.Dispose();
+        
+        if (_device.Handle != 0)
+        {
+            _vk.DestroySemaphore(_device, _imageAvailableSemaphore, null);
+            _vk.DestroySemaphore(_device, _renderFinishedSemaphore, null);
+            _vk.DestroySemaphore(_device, _computeFinishedSemaphore, null);
+            _vk.DestroyFence(_device, _inFlightFence, null);
+            _vk.DestroyCommandPool(_device, _commandPool, null);
+        }
+        if (_device.Handle != 0 && _rasterPipeline.Handle != 0)
+        {
+            _vk.DestroyPipeline(_device, _rasterPipeline, null);
+        }
+        if (_device.Handle != 0 && _rasterPipelineLayout.Handle != 0)
+        {
+            _vk.DestroyPipelineLayout(_device, _rasterPipelineLayout, null);
+        }
+        if (_device.Handle != 0 && _rasterRenderPass.Handle != 0)
+        {
+            _vk.DestroyRenderPass(_device, _rasterRenderPass, null);
+        }
+        if (_device.Handle != 0 && _rasterFramebuffers.Length > 0)
+        {
+            foreach (var fb in _rasterFramebuffers)
+            {
+                _vk.DestroyFramebuffer(_device, fb, null);
+            }
+        }
+        if (_device.Handle != 0 && _rasterVertexBuffer.Handle != 0)
+        {
+            _vk.DestroyBuffer(_device, _rasterVertexBuffer, null);
+            _vk.FreeMemory(_device, _rasterVertexBufferMemory, null);
+        }
+        if (_device.Handle != 0 && _rasterIndexBuffer.Handle != 0)
+        {
+            _vk.DestroyBuffer(_device, _rasterIndexBuffer, null);
+            _vk.FreeMemory(_device, _rasterIndexBufferMemory, null);
+        }
+        if (_device.Handle != 0)
+        {
+            _vk.UnmapMemory(_device, _uniformBufferMemory);
+            _vk.DestroyBuffer(_device, _uniformBuffer, null);
+            _vk.FreeMemory(_device, _uniformBufferMemory, null);
+        }
+        if (_device.Handle != 0 && _bvhNodeBuffer.Handle != 0)
+        {
+            _vk.DestroyBuffer(_device, _bvhNodeBuffer, null);
+            _vk.FreeMemory(_device, _bvhNodeBufferMemory, null);
+        }
+        if (_device.Handle != 0 && _triangleBuffer.Handle != 0)
+        {
+            _vk.DestroyBuffer(_device, _triangleBuffer, null);
+            _vk.FreeMemory(_device, _triangleBufferMemory, null);
+        }
+        if (_device.Handle != 0 && _readbackBuffer.Handle != 0)
+        {
+            _vk.DestroyBuffer(_device, _readbackBuffer, null);
+            _vk.FreeMemory(_device, _readbackBufferMemory, null);
+        }
+        if (_device.Handle != 0)
+        {
+            _vk.DestroyDescriptorPool(_device, _descriptorPool, null);
+            _vk.DestroyPipeline(_device, _computePipeline, null);
+            _vk.DestroyPipelineLayout(_device, _computePipelineLayout, null);
+            _vk.DestroyDescriptorSetLayout(_device, _computeDescriptorSetLayout, null);
+            _vk.DestroyImageView(_device, _outputImageView, null);
+            _vk.DestroyImage(_device, _outputImage, null);
+            _vk.FreeMemory(_device, _outputImageMemory, null);
+            _vk.DestroyImageView(_device, _accumImageView, null);
+            _vk.DestroyImage(_device, _accumImage, null);
+            _vk.FreeMemory(_device, _accumImageMemory, null);
+        }
+
+        if (_device.Handle != 0)
+        {
+            foreach (var imageView in _swapchainImageViews)
+            {
+                _vk.DestroyImageView(_device, imageView, null);
+            }
+        }
+
+        if (_device.Handle != 0)
+        {
+            _khrSwapchain?.DestroySwapchain(_device, _swapchain, null);
+            _vk.DestroyDevice(_device, null);
+        }
+
+        if (_instance.Handle != 0)
+        {
+            _khrSurface?.DestroySurface(_instance, _surface, null);
+            _vk.DestroyInstance(_instance, null);
+        }
     }
 
     // Helper structs
@@ -1319,18 +2396,18 @@ layout(set = 0, binding = 1) uniform UniformBlock {
     }
 }
 
-[StructLayout(LayoutKind.Explicit, Size = 128)]
+[StructLayout(LayoutKind.Explicit, Size = 144)]
 public struct RaytracerUniforms
 {
     [FieldOffset(0)] public Vector2 Resolution;
     [FieldOffset(8)] public float Time;
-    // padding at 12
+    [FieldOffset(12)] public float Pad1;
     [FieldOffset(16)] public Vector3 CameraPos;
-    // padding at 28
+    [FieldOffset(28)] public float Pad2;
     [FieldOffset(32)] public Vector3 CameraForward;
-    // padding at 44
+    [FieldOffset(44)] public float Pad3;
     [FieldOffset(48)] public Vector3 CameraRight;
-    // padding at 60
+    [FieldOffset(60)] public float Pad4;
     [FieldOffset(64)] public Vector3 CameraUp;
     [FieldOffset(76)] public float Fov;
     [FieldOffset(80)] public Vector3 BlackHolePos;
@@ -1338,5 +2415,6 @@ public struct RaytracerUniforms
     [FieldOffset(96)] public float SchwarzschildRadius;
     [FieldOffset(100)] public float DiskInnerRadius;
     [FieldOffset(104)] public float DiskOuterRadius;
-    // padding to 128
+    [FieldOffset(112)] public Vector4 RaySettings;
+    [FieldOffset(128)] public Vector4 FrameSettings;
 }

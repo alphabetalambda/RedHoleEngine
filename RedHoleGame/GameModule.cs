@@ -1,58 +1,20 @@
 using System.Numerics;
 using RedHoleEngine.Components;
-using RedHoleEngine.Core;
 using RedHoleEngine.Core.ECS;
+using RedHoleEngine.Game;
 using RedHoleEngine.Rendering;
 using RedHoleEngine.Resources;
 
-namespace RedHoleEngine;
+namespace RedHoleGame;
 
-class Program
+public class GameModule : IGameModule
 {
-    static void Main(string[] args)
+    public string Name => "RedHoleGame";
+
+    public void BuildScene(GameContext context)
     {
-        // On macOS, the native launcher (RedHoleEngine executable) handles environment setup.
-        // On Windows/Linux, Vulkan is found through standard system paths.
-        
-        Enginedeco.EngineTitlePrint();
-        // Create and configure the application
-        var app = new Application
-        {
-            WindowWidth = 1280,
-            WindowHeight = 720,
-            WindowTitle = "RedHole Engine",
-            VSync = true
-        };
-
-        // Setup scene when initialized
-        app.OnInitialize += () =>
-        {
-            BuildShowcaseScene(app);
-            Console.WriteLine("Scene initialized with default showcase entities");
-        };
-
-        // Optional: Add custom update logic
-        app.OnUpdate += deltaTime =>
-        {
-            // Custom game logic here
-            // For example, you could query entities and update them:
-            // foreach (var entity in app.World!.Query<GravitySourceComponent>())
-            // {
-            //     // Update gravity sources
-            // }
-        };
-
-        // Run the application
-        app.Run(GraphicsBackendType.Vulkan);
-    }
-
-    private static void BuildShowcaseScene(Application app)
-    {
-        if (app.World == null)
-            throw new InvalidOperationException("No active scene for showcase initialization");
-
-        var world = app.World;
-        var resources = app.Resources;
+        var world = context.World;
+        var resources = context.Resources;
 
         resources.Add("mesh_plane", Mesh.CreatePlane(50f, 50f, 4, 4));
         resources.Add("mesh_cube", Mesh.CreateCube(1f));
@@ -69,11 +31,21 @@ class Program
             Accumulate = true
         });
 
-        app.CreateBlackHole(
-            position: new Vector3(0f, 0f, 0f),
-            mass: 2.2f,
-            withAccretionDisk: true
-        );
+        if (context.Application != null)
+        {
+            context.Application.CreateBlackHole(
+                position: new Vector3(0f, 0f, 0f),
+                mass: 2.2f,
+                withAccretionDisk: true
+            );
+        }
+        else
+        {
+            var blackHole = world.CreateEntity();
+            world.AddComponent(blackHole, new TransformComponent(new Vector3(0f, 0f, 0f)));
+            world.AddComponent(blackHole, GravitySourceComponent.CreateBlackHole(2.2f));
+            world.AddComponent(blackHole, AccretionDiskComponent.CreateForBlackHole(2.2f));
+        }
 
         var ground = world.CreateEntity();
         world.AddComponent(ground, new TransformComponent(new Vector3(0f, -2f, 0f)));

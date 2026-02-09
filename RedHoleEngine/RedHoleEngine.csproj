@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
-        <OutputType>Exe</OutputType>
+        <OutputType>Library</OutputType>
         <TargetFramework>net10.0</TargetFramework>
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
@@ -55,35 +55,5 @@
     <ItemGroup>
       <Folder Include="Audio\Dynamic sounds\" />
     </ItemGroup>
-
-    <!-- macOS: Copy Vulkan loader and compile native launcher -->
-    <Target Name="MacOSSetup" AfterTargets="Build" Condition="$([MSBuild]::IsOSPlatform('OSX'))">
-      <PropertyGroup>
-        <HomebrewVulkanLoader>/opt/homebrew/lib/libvulkan.dylib</HomebrewVulkanLoader>
-        <HomebrewVulkanLoader1>/opt/homebrew/lib/libvulkan.1.dylib</HomebrewVulkanLoader1>
-        <LauncherSource>$(MSBuildProjectDirectory)/Launcher/macos_launcher.c</LauncherSource>
-        <LauncherOutput>$(OutputPath)RedHoleEngine</LauncherOutput>
-      </PropertyGroup>
-      
-      <!-- Copy Vulkan loader -->
-      <Copy SourceFiles="$(HomebrewVulkanLoader)" 
-            DestinationFiles="$(OutputPath)libvulkan.dylib" 
-            Condition="Exists('$(HomebrewVulkanLoader)')"
-            SkipUnchangedFiles="true" />
-      <Copy SourceFiles="$(HomebrewVulkanLoader1)" 
-            DestinationFiles="$(OutputPath)libvulkan.1.dylib" 
-            Condition="Exists('$(HomebrewVulkanLoader1)')"
-            SkipUnchangedFiles="true" />
-      
-      <!-- Compile native launcher -->
-      <Exec Command="clang -O2 -o '$(LauncherOutput)' '$(LauncherSource)' -framework Foundation" 
-            Condition="Exists('$(LauncherSource)')" 
-            IgnoreExitCode="false" />
-      
-      <Message Text="macOS: Compiled native launcher and copied Vulkan loader" Importance="high" />
-      
-      <Warning Text="Vulkan loader not found. Install via: brew install vulkan-loader" 
-               Condition="!Exists('$(HomebrewVulkanLoader)')" />
-    </Target>
 
 </Project>

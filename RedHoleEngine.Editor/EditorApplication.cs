@@ -1,12 +1,20 @@
+using System;
+using System.IO;
 using System.Numerics;
+using System.Reflection;
+using System.Text.Json;
+using System.Text.RegularExpressions;
 using ImGuiNET;
 using RedHoleEngine.Components;
 using RedHoleEngine.Core.ECS;
 using RedHoleEngine.Editor.Selection;
 using RedHoleEngine.Editor.UI.Panels;
 using RedHoleEngine.Engine;
+using RedHoleEngine.Game;
 using RedHoleEngine.Physics;
 using RedHoleEngine.Rendering;
+using RedHoleEngine.Rendering.Backends;
+using RedHoleEngine.Resources;
 using Silk.NET.Input;
 using Silk.NET.Maths;
 using Silk.NET.OpenGL;
@@ -38,12 +46,28 @@ public class EditorApplication : IDisposable
     private ConsolePanel? _consolePanel;
     private RaytracerSettingsPanel? _raytracerPanel;
     private RenderSettingsPanel? _renderPanel;
+    private GameProjectPanel? _gameProjectPanel;
 
     private readonly RaytracerSettings _raytracerSettings = new();
     private readonly RenderSettings _renderSettings = new();
+    private EditorSettings _editorSettings = new();
+    private readonly ResourceManager _gameResources = new();
+    private IGameModule? _gameModule;
+    private string _gameProjectPath = string.Empty;
+    private string _gameProjectStatus = string.Empty;
 
     // Viewport state
     private Renderer? _viewportRenderer;
+    private VulkanBackend? _viewportVulkanBackend;
+    private IWindow? _vulkanViewportWindow;
+    private ViewportBackendMode _viewportBackendMode = ViewportBackendMode.Vulkan;
+    private bool _vulkanPreviewFailed;
+    private bool _openglPreviewFailed;
+    private bool _hasSavedCamera;
+    private bool _loadShowcaseOnStart = true;
+    private uint _viewportPreviewTexture;
+    private Vector2 _viewportPreviewSize;
+    private byte[] _viewportReadbackBuffer = Array.Empty<byte>();
     private Camera _viewportCamera = new(new Vector3(0f, 10f, 40f), -90f, -14f);
     private Vector2 _viewportSize;
     private float _viewportTime;
@@ -82,12 +106,18 @@ public class EditorApplication : IDisposable
         _consolePanel = new ConsolePanel();
         _raytracerPanel = new RaytracerSettingsPanel(_raytracerSettings);
         _renderPanel = new RenderSettingsPanel(_renderSettings);
+        _gameProjectPanel = new GameProjectPanel(
+            () => _gameProjectPath,
+            path => _gameProjectPath = path,
+            () => _gameProjectStatus,
+            LoadGameProjectFromSettings);
 
         _panels.Add(_hierarchyPanel);
         _panels.Add(_inspectorPanel);
         _panels.Add(_consolePanel);
         _panels.Add(_raytracerPanel);
         _panels.Add(_renderPanel);
+        _panels.Add(_gameProjectPanel);
     }
 
     /// <summary>
@@ -137,10 +167,17 @@ public class EditorApplication : IDisposable
         // Create a default world
         _world = new World();
 
+        LoadEditorSettings();
+
         // Update panel contexts
         foreach (var panel in _panels)
         {
             panel.SetContext(_world, _selection);
+        }
+
+        if (_loadShowcaseOnStart)
+        {
+            LoadActiveScene();
         }
 
         // Setup keyboard shortcuts
@@ -383,7 +420,7 @@ public class EditorApplication : IDisposable
 
             if (ImGui.Button("Showcase", new Vector2(100, 24)))
             {
-                LoadDefaultShowcaseScene();
+                LoadActiveScene();
             }
 
             // Status
@@ -413,27 +450,59 @@ public class EditorApplication : IDisposable
             var size = ImGui.GetContentRegionAvail();
             if (size.X > 1 && size.Y > 1)
             {
-                UpdateViewportCamera(ImGui.IsWindowHovered(ImGuiHoveredFlags.AllowWhenBlockedByActiveItem));
-                EnsureViewportRenderer(size);
+                bool hovered = ImGui.IsWindowHovered(ImGuiHoveredFlags.AllowWhenBlockedByActiveItem);
+                UpdateViewportCamera(hovered);
+                EnsureViewportCameraValid();
 
-                if (_viewportRenderer != null)
-                {
-                    ApplyRaytracerSettings(_viewportRenderer.RaytracerSettings);
-                    var blackHole = GetPreviewBlackHole();
-                    _viewportRenderer.RenderToTexture(_viewportCamera, blackHole, _viewportTime);
-                }
-
+                var blackHole = GetPreviewBlackHole();
                 var imageMin = ImGui.GetCursorScreenPos();
-                ImGui.Image(_viewportRenderer != null
-                    ? (IntPtr)_viewportRenderer.OutputTextureId
-                    : IntPtr.Zero,
-                    size,
-                    new Vector2(0, 1),
-                    new Vector2(1, 0));
+
+                if (_viewportBackendMode == ViewportBackendMode.Vulkan && !_vulkanPreviewFailed)
+                {
+                    EnsureVulkanViewport(size);
+                    if (_viewportVulkanBackend != null)
+                    {
+                        ApplyRaytracerSettings(_viewportVulkanBackend.RaytracerSettings);
+                        EnsureViewportPreviewTexture(size);
+                        EnsureViewportReadbackBuffer(size);
+                        _viewportVulkanBackend.RenderToReadback(_viewportCamera, blackHole, _viewportTime, _viewportReadbackBuffer);
+                        UpdateViewportPreviewTexture(size, _viewportReadbackBuffer);
+                        ImGui.Image((IntPtr)_viewportPreviewTexture, size, new Vector2(0, 1), new Vector2(1, 0));
+                    }
+                    else
+                    {
+                        ImGui.Image(IntPtr.Zero, size);
+                    }
+                }
+                else
+                {
+                    EnsureViewportRenderer(size);
+                    if (_viewportRenderer != null)
+                    {
+                        ApplyRaytracerSettings(_viewportRenderer.RaytracerSettings);
+                        _viewportRenderer.RenderToTexture(_viewportCamera, blackHole, _viewportTime);
+                        ImGui.Image((IntPtr)_viewportRenderer.OutputTextureId, size, new Vector2(0, 1), new Vector2(1, 0));
+                    }
+                    else
+                    {
+                        ImGui.Image(IntPtr.Zero, size);
+                    }
+                }
                 var imageMax = imageMin + size;
 
                 var drawList = ImGui.GetWindowDrawList();
                 DrawGizmoOverlay(drawList, imageMin, imageMax);
+
+                if (_viewportBackendMode == ViewportBackendMode.OpenGL && _openglPreviewFailed)
+                {
+                    DrawViewportFallbackMessage(drawList, imageMin, imageMax, "OpenGL compute shaders unavailable");
+                }
+                if (_viewportBackendMode == ViewportBackendMode.Vulkan && _vulkanPreviewFailed)
+                {
+                    DrawViewportFallbackMessage(drawList, imageMin, imageMax, "Vulkan preview unavailable");
+                }
+
+                DrawViewportOverlayUi(imageMin, size);
 
                 var overlayText = "Viewport  |  RMB drag to orbit, wheel to zoom";
                 var overlayPos = new Vector2(imageMin.X + 8f, imageMax.Y - 22f);
@@ -451,6 +520,12 @@ public class EditorApplication : IDisposable
         public Vector3 End;
         public uint Color;
         public float Thickness;
+    }
+
+    private enum ViewportBackendMode
+    {
+        Vulkan,
+        OpenGL
     }
 
     private void UpdateViewportCamera(bool hovered)
@@ -479,14 +554,34 @@ public class EditorApplication : IDisposable
 
     private void EnsureViewportRenderer(Vector2 size)
     {
+        if (_openglPreviewFailed)
+            return;
+
+        if (!IsOpenGLComputeSupported())
+        {
+            _openglPreviewFailed = true;
+            return;
+        }
+
         int width = Math.Max(1, (int)size.X);
         int height = Math.Max(1, (int)size.Y);
 
         if (_viewportRenderer == null)
         {
-            _viewportRenderer = new Renderer(_gl!, width, height);
-            _viewportSize = size;
-            return;
+            try
+            {
+                _viewportRenderer = new Renderer(_gl!, width, height);
+                _viewportSize = size;
+                _openglPreviewFailed = false;
+                return;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"OpenGL viewport init failed: {ex.Message}");
+                _viewportRenderer = null;
+                _openglPreviewFailed = true;
+                return;
+            }
         }
 
         if (Math.Abs(_viewportSize.X - size.X) > 0.5f || Math.Abs(_viewportSize.Y - size.Y) > 0.5f)
@@ -494,6 +589,187 @@ public class EditorApplication : IDisposable
             _viewportRenderer.Resize(width, height);
             _viewportSize = size;
         }
+    }
+
+    private bool IsOpenGLComputeSupported()
+    {
+        if (_gl == null)
+            return false;
+
+        try
+        {
+            int major = _gl.GetInteger(GLEnum.MajorVersion);
+            int minor = _gl.GetInteger(GLEnum.MinorVersion);
+            if (major > 4 || (major == 4 && minor >= 3))
+                return true;
+        }
+        catch
+        {
+            return false;
+        }
+
+        return false;
+    }
+
+    private void EnsureVulkanViewport(Vector2 size)
+    {
+        int width = Math.Max(1, (int)size.X);
+        int height = Math.Max(1, (int)size.Y);
+
+        if (_window == null)
+        {
+            _vulkanPreviewFailed = true;
+            _viewportBackendMode = ViewportBackendMode.OpenGL;
+            return;
+        }
+
+        if (_vulkanViewportWindow == null || Math.Abs(_viewportSize.X - size.X) > 0.5f || Math.Abs(_viewportSize.Y - size.Y) > 0.5f)
+        {
+            _viewportVulkanBackend?.Dispose();
+            _viewportVulkanBackend = null;
+            _vulkanViewportWindow?.Dispose();
+            _vulkanViewportWindow = null;
+
+            try
+            {
+                var options = WindowOptions.DefaultVulkan with
+                {
+                    Size = new Vector2D<int>(width, height),
+                    Title = "RedHole Preview",
+                    IsVisible = false,
+                    WindowBorder = WindowBorder.Hidden
+                };
+
+                _vulkanViewportWindow = Window.Create(options);
+                _vulkanViewportWindow.Initialize();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Vulkan preview window init failed: {ex.Message}");
+                _vulkanViewportWindow?.Dispose();
+                _vulkanViewportWindow = null;
+                _vulkanPreviewFailed = true;
+                _viewportBackendMode = ViewportBackendMode.OpenGL;
+                return;
+            }
+        }
+
+        if (_vulkanViewportWindow.VkSurface == null)
+        {
+            _vulkanPreviewFailed = true;
+            _viewportBackendMode = ViewportBackendMode.OpenGL;
+            return;
+        }
+
+        if (_viewportVulkanBackend != null && Math.Abs(_viewportSize.X - size.X) <= 0.5f && Math.Abs(_viewportSize.Y - size.Y) <= 0.5f)
+            return;
+
+        _viewportVulkanBackend?.Dispose();
+        _viewportVulkanBackend = null;
+
+        try
+        {
+            _viewportVulkanBackend = new VulkanBackend(_vulkanViewportWindow, width, height);
+            _viewportVulkanBackend.Initialize();
+            _viewportSize = size;
+            _vulkanPreviewFailed = false;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Vulkan viewport init failed: {ex}");
+            _viewportVulkanBackend?.Dispose();
+            _viewportVulkanBackend = null;
+            _viewportBackendMode = ViewportBackendMode.OpenGL;
+            _vulkanPreviewFailed = true;
+        }
+    }
+
+    private unsafe void EnsureViewportPreviewTexture(Vector2 size)
+    {
+        int width = Math.Max(1, (int)size.X);
+        int height = Math.Max(1, (int)size.Y);
+
+        if (_viewportPreviewTexture == 0)
+        {
+            _viewportPreviewTexture = _gl!.GenTexture();
+            _gl.BindTexture(TextureTarget.Texture2D, _viewportPreviewTexture);
+            _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)GLEnum.Linear);
+            _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)GLEnum.Linear);
+            _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)GLEnum.ClampToEdge);
+            _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, (int)GLEnum.ClampToEdge);
+            _viewportPreviewSize = Vector2.Zero;
+        }
+
+        if (Math.Abs(_viewportPreviewSize.X - size.X) > 0.5f || Math.Abs(_viewportPreviewSize.Y - size.Y) > 0.5f)
+        {
+            _gl!.BindTexture(TextureTarget.Texture2D, _viewportPreviewTexture);
+            _gl.TexImage2D(TextureTarget.Texture2D, 0, InternalFormat.Rgba8, (uint)width, (uint)height, 0, PixelFormat.Rgba, PixelType.UnsignedByte, (void*)0);
+            _viewportPreviewSize = size;
+        }
+    }
+
+    private void EnsureViewportReadbackBuffer(Vector2 size)
+    {
+        int width = Math.Max(1, (int)size.X);
+        int height = Math.Max(1, (int)size.Y);
+        int required = width * height * 4;
+        if (_viewportReadbackBuffer.Length != required)
+        {
+            _viewportReadbackBuffer = new byte[required];
+        }
+    }
+
+    private unsafe void UpdateViewportPreviewTexture(Vector2 size, byte[] rgba)
+    {
+        int width = Math.Max(1, (int)size.X);
+        int height = Math.Max(1, (int)size.Y);
+        _gl!.BindTexture(TextureTarget.Texture2D, _viewportPreviewTexture);
+        fixed (byte* ptr = rgba)
+        {
+            _gl.TexSubImage2D(TextureTarget.Texture2D, 0, 0, 0, (uint)width, (uint)height, PixelFormat.Rgba, PixelType.UnsignedByte, ptr);
+        }
+    }
+
+    private void DrawViewportOverlayUi(Vector2 imageMin, Vector2 size)
+    {
+        ImGui.SetCursorScreenPos(imageMin + new Vector2(8f, 8f));
+        ImGui.SetNextWindowBgAlpha(0.35f);
+        ImGui.BeginChild("ViewportOverlayUi", new Vector2(210f, 70f), ImGuiChildFlags.Border, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse);
+
+        ImGui.Text("Preview Backend");
+        ImGui.PushItemWidth(140f);
+        var current = _viewportBackendMode == ViewportBackendMode.Vulkan ? "Vulkan" : "OpenGL";
+        if (ImGui.BeginCombo("##ViewportBackend", current))
+        {
+            bool vulkanSelected = _viewportBackendMode == ViewportBackendMode.Vulkan;
+            if (ImGui.Selectable("Vulkan", vulkanSelected))
+            {
+                _viewportBackendMode = ViewportBackendMode.Vulkan;
+                _vulkanPreviewFailed = false;
+                _raytracerSettings.ResetAccumulation = true;
+            }
+
+            bool glSelected = _viewportBackendMode == ViewportBackendMode.OpenGL;
+            if (ImGui.Selectable("OpenGL", glSelected))
+            {
+                _viewportBackendMode = ViewportBackendMode.OpenGL;
+                _openglPreviewFailed = false;
+                _raytracerSettings.ResetAccumulation = true;
+            }
+
+            ImGui.EndCombo();
+        }
+        ImGui.PopItemWidth();
+
+        ImGui.EndChild();
+    }
+
+    private void DrawViewportFallbackMessage(ImDrawListPtr drawList, Vector2 imageMin, Vector2 imageMax, string message)
+    {
+        var center = (imageMin + imageMax) * 0.5f;
+        var textSize = ImGui.CalcTextSize(message);
+        var pos = center - textSize * 0.5f;
+        drawList.AddText(pos, ImGui.GetColorU32(new Vector4(1f, 0.6f, 0.3f, 0.9f)), message);
     }
 
     private void ApplyRaytracerSettings(RaytracerSettings target)
@@ -629,6 +905,8 @@ public class EditorApplication : IDisposable
     private void OnClosing()
     {
         Console.WriteLine("Closing editor...");
+
+        SaveEditorSettings();
         
         // Dispose ImGui while OpenGL context is still valid
         _imguiController?.Dispose();
@@ -636,6 +914,17 @@ public class EditorApplication : IDisposable
 
         _viewportRenderer?.Dispose();
         _viewportRenderer = null;
+
+        _viewportVulkanBackend?.Dispose();
+        _viewportVulkanBackend = null;
+        _vulkanViewportWindow?.Dispose();
+        _vulkanViewportWindow = null;
+
+        if (_viewportPreviewTexture != 0)
+        {
+            _gl?.DeleteTexture(_viewportPreviewTexture);
+            _viewportPreviewTexture = 0;
+        }
     }
 
     #region Play Mode
@@ -691,18 +980,251 @@ public class EditorApplication : IDisposable
         Console.WriteLine("Loaded default showcase scene");
     }
 
+    private void LoadActiveScene()
+    {
+        if (_gameModule != null)
+        {
+            if (LoadGameProjectScene())
+                return;
+        }
+
+        LoadDefaultShowcaseScene();
+    }
+
     private void ResetWorld()
     {
         _selection.ClearSelection();
         _world?.Dispose();
         _world = new World();
-        _viewportCamera = new Camera(new Vector3(0f, 10f, 40f), -90f, -14f);
+        if (!_hasSavedCamera)
+        {
+            SetDefaultViewportCamera();
+        }
         _viewportTime = 0f;
 
         foreach (var panel in _panels)
         {
             panel.SetContext(_world, _selection);
         }
+    }
+
+    private void LoadEditorSettings()
+    {
+        try
+        {
+            var path = GetEditorSettingsPath();
+            if (File.Exists(path))
+            {
+                var json = File.ReadAllText(path);
+                var settings = JsonSerializer.Deserialize<EditorSettings>(json);
+                if (settings != null)
+                {
+                    _editorSettings = settings;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Failed to load editor settings: {ex.Message}");
+        }
+
+        _loadShowcaseOnStart = _editorSettings.LoadShowcaseOnStart;
+        _gameProjectPath = _editorSettings.GameProjectPath;
+
+        if (string.Equals(_editorSettings.ViewportBackend, "OpenGL", StringComparison.OrdinalIgnoreCase))
+        {
+            _viewportBackendMode = ViewportBackendMode.OpenGL;
+        }
+        else
+        {
+            _viewportBackendMode = ViewportBackendMode.Vulkan;
+        }
+
+        if (_editorSettings.HasCamera && _editorSettings.CameraPosition.Length() > 0.5f)
+        {
+            _viewportCamera = new Camera(_editorSettings.CameraPosition, _editorSettings.CameraYaw, _editorSettings.CameraPitch);
+            _hasSavedCamera = true;
+        }
+        else
+        {
+            SetDefaultViewportCamera();
+            _hasSavedCamera = false;
+        }
+
+        LoadGameProjectFromSettings();
+    }
+
+    private void SetDefaultViewportCamera()
+    {
+        _viewportCamera = new Camera(new Vector3(0f, 6f, 24f), -90f, -10f);
+    }
+
+    private void EnsureViewportCameraValid()
+    {
+        if (float.IsNaN(_viewportCamera.Position.X) || float.IsNaN(_viewportCamera.Position.Y) || float.IsNaN(_viewportCamera.Position.Z))
+        {
+            SetDefaultViewportCamera();
+            _raytracerSettings.ResetAccumulation = true;
+            return;
+        }
+
+        if (_viewportCamera.Position.LengthSquared() < 1f)
+        {
+            SetDefaultViewportCamera();
+            _raytracerSettings.ResetAccumulation = true;
+        }
+    }
+
+    private void SaveEditorSettings()
+    {
+        _editorSettings.ViewportBackend = _viewportBackendMode == ViewportBackendMode.OpenGL ? "OpenGL" : "Vulkan";
+        _editorSettings.LoadShowcaseOnStart = _loadShowcaseOnStart;
+        _editorSettings.GameProjectPath = _gameProjectPath;
+        _editorSettings.HasCamera = true;
+        _editorSettings.CameraPosition = _viewportCamera.Position;
+        _editorSettings.CameraYaw = _viewportCamera.Yaw;
+        _editorSettings.CameraPitch = _viewportCamera.Pitch;
+
+        try
+        {
+            var path = GetEditorSettingsPath();
+            var json = JsonSerializer.Serialize(_editorSettings, new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(path, json);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Failed to save editor settings: {ex.Message}");
+        }
+    }
+
+    private string GetEditorSettingsPath()
+    {
+        var baseDir = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        var dir = Path.Combine(baseDir, "RedHoleEngine");
+        Directory.CreateDirectory(dir);
+        return Path.Combine(dir, "editor_settings.json");
+    }
+
+    private void LoadGameProjectFromSettings()
+    {
+        if (string.IsNullOrWhiteSpace(_gameProjectPath))
+        {
+            _gameProjectStatus = "No game project path set.";
+            _gameModule = null;
+            return;
+        }
+
+        if (TryLoadGameProject(_gameProjectPath, out var module, out var status))
+        {
+            _gameModule = module;
+            _gameProjectStatus = status;
+        }
+        else
+        {
+            _gameModule = null;
+            _gameProjectStatus = status;
+        }
+    }
+
+    private bool LoadGameProjectScene()
+    {
+        if (_gameModule == null || _world == null)
+            return false;
+
+        ResetWorld();
+        if (_world == null)
+            return false;
+
+        var context = new GameContext(_world, _gameResources, _renderSettings, _raytracerSettings, application: null, isEditor: true);
+        _gameModule.BuildScene(context);
+        Console.WriteLine($"Loaded game scene from {_gameModule.Name}");
+        return true;
+    }
+
+    private bool TryLoadGameProject(string path, out IGameModule? module, out string status)
+    {
+        module = null;
+
+        string projectDir = path;
+        string? projectFile = null;
+
+        if (File.Exists(path) && Path.GetExtension(path).Equals(".csproj", StringComparison.OrdinalIgnoreCase))
+        {
+            projectFile = path;
+            projectDir = Path.GetDirectoryName(path) ?? path;
+        }
+        else if (Directory.Exists(path))
+        {
+            var csprojFiles = Directory.GetFiles(path, "*.csproj", SearchOption.TopDirectoryOnly);
+            if (csprojFiles.Length > 0)
+            {
+                projectFile = csprojFiles[0];
+                projectDir = Path.GetDirectoryName(projectFile) ?? path;
+            }
+        }
+
+        if (projectFile == null)
+        {
+            status = "No .csproj found in the selected folder.";
+            return false;
+        }
+
+        var assemblyName = Path.GetFileNameWithoutExtension(projectFile);
+        var targetFramework = ExtractTargetFramework(projectFile) ?? "net10.0";
+        var assemblyPath = Path.Combine(projectDir, "bin", "Debug", targetFramework, assemblyName + ".dll");
+
+        if (!File.Exists(assemblyPath))
+        {
+            status = $"Build the project first. DLL not found at {assemblyPath}";
+            return false;
+        }
+
+        try
+        {
+            _gameResources.BasePath = projectDir;
+            var assembly = Assembly.LoadFrom(assemblyPath);
+            foreach (var type in assembly.GetTypes())
+            {
+                if (typeof(IGameModule).IsAssignableFrom(type) && !type.IsAbstract && !type.IsInterface)
+                {
+                    module = (IGameModule?)Activator.CreateInstance(type);
+                    if (module != null)
+                    {
+                        status = $"Loaded {module.Name} from {assemblyPath}";
+                        return true;
+                    }
+                }
+            }
+
+            status = "No IGameModule implementation found in assembly.";
+            return false;
+        }
+        catch (Exception ex)
+        {
+            status = $"Failed to load game assembly: {ex.Message}";
+            return false;
+        }
+    }
+
+    private static string? ExtractTargetFramework(string projectFile)
+    {
+        try
+        {
+            var contents = File.ReadAllText(projectFile);
+            var single = Regex.Match(contents, "<TargetFramework>([^<]+)</TargetFramework>");
+            if (single.Success)
+                return single.Groups[1].Value.Trim();
+
+            var multi = Regex.Match(contents, "<TargetFrameworks>([^<]+)</TargetFrameworks>");
+            if (multi.Success)
+                return multi.Groups[1].Value.Split(';', StringSplitOptions.RemoveEmptyEntries)[0].Trim();
+        }
+        catch
+        {
+            return null;
+        }
+
+        return null;
     }
 
     private void DeleteSelected()
@@ -820,6 +1342,8 @@ public class EditorApplication : IDisposable
         // ImGui is disposed in OnClosing while GL context is valid
         _input?.Dispose();
         _viewportRenderer?.Dispose();
+        _viewportVulkanBackend?.Dispose();
+        _vulkanViewportWindow?.Dispose();
         _world?.Dispose();
         // Window and GL are managed by Silk.NET, no need to dispose here
     }

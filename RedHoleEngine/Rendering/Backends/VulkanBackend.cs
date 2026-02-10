@@ -108,6 +108,16 @@ public unsafe class VulkanBackend : IGraphicsBackend
     private Sampler _materialTextureSampler;
     private int _materialTextureCount;
     private TextureLibrary? _textureLibrary;
+    
+    // IBL Environment Map
+    private Image _envMapImage;
+    private DeviceMemory _envMapMemory;
+    private ImageView _envMapView;
+    private Sampler _envMapSampler;
+    private EnvironmentMap? _environmentMap;
+    private bool _envMapDirty = true;
+    private int _envMapWidth;
+    private int _envMapHeight;
 
     private Image _accumImage;
     private DeviceMemory _accumImageMemory;
@@ -196,6 +206,7 @@ public unsafe class VulkanBackend : IGraphicsBackend
         CreateDescriptorSets();
         CreateUniformBuffer();
         CreateMaterialTextureSampler();
+        InitializeEnvironmentMap();
         CreateCommandPools();
         CreateCommandBuffers();
         CreateSyncObjects();
@@ -1158,6 +1169,13 @@ public unsafe class VulkanBackend : IGraphicsBackend
                 DescriptorType = DescriptorType.CombinedImageSampler,
                 DescriptorCount = MaxMaterialTextures,
                 StageFlags = ShaderStageFlags.ComputeBit
+            },
+            new() // Environment map (IBL)
+            {
+                Binding = 7,
+                DescriptorType = DescriptorType.CombinedImageSampler,
+                DescriptorCount = 1,
+                StageFlags = ShaderStageFlags.ComputeBit
             }
         };
 
@@ -1396,7 +1414,7 @@ public unsafe class VulkanBackend : IGraphicsBackend
             new() { Type = DescriptorType.StorageImage, DescriptorCount = 2 },
             new() { Type = DescriptorType.UniformBuffer, DescriptorCount = 1 },
             new() { Type = DescriptorType.StorageBuffer, DescriptorCount = 3 }, // BVH, Triangles, Materials
-            new() { Type = DescriptorType.CombinedImageSampler, DescriptorCount = MaxMaterialTextures } // Material textures
+            new() { Type = DescriptorType.CombinedImageSampler, DescriptorCount = MaxMaterialTextures + 1 } // Material textures + env map
         };
 
         fixed (DescriptorPoolSize* poolSizesPtr = poolSizes)
@@ -2103,6 +2121,241 @@ public unsafe class VulkanBackend : IGraphicsBackend
 
             _vk!.UpdateDescriptorSets(_device, 1, &write, 0, null);
         }
+    }
+    
+    /// <summary>
+    /// Set the environment map for IBL
+    /// </summary>
+    public void SetEnvironmentMap(EnvironmentMap? envMap)
+    {
+        _environmentMap = envMap;
+        _envMapDirty = true;
+    }
+    
+    private void InitializeEnvironmentMap()
+    {
+        // Create sampler for environment map
+        var samplerInfo = new SamplerCreateInfo
+        {
+            SType = StructureType.SamplerCreateInfo,
+            MagFilter = Filter.Linear,
+            MinFilter = Filter.Linear,
+            AddressModeU = SamplerAddressMode.Repeat,
+            AddressModeV = SamplerAddressMode.ClampToEdge,
+            AddressModeW = SamplerAddressMode.Repeat,
+            AnisotropyEnable = true,
+            MaxAnisotropy = 16,
+            BorderColor = BorderColor.IntOpaqueBlack,
+            UnnormalizedCoordinates = false,
+            CompareEnable = false,
+            CompareOp = CompareOp.Always,
+            MipmapMode = SamplerMipmapMode.Linear,
+            MipLodBias = 0f,
+            MinLod = 0f,
+            MaxLod = 0f
+        };
+
+        fixed (Sampler* samplerPtr = &_envMapSampler)
+        {
+            if (_vk!.CreateSampler(_device, &samplerInfo, null, samplerPtr) != Result.Success)
+            {
+                throw new Exception("Failed to create environment map sampler");
+            }
+        }
+        
+        // Create default procedural sky
+        var defaultSky = EnvironmentMap.CreateProceduralSky(512, 256);
+        UploadEnvironmentMap(defaultSky);
+        defaultSky.Dispose();
+    }
+    
+    private void UploadEnvironmentMap(EnvironmentMap envMap)
+    {
+        // Clean up existing env map
+        if (_envMapImage.Handle != 0)
+        {
+            _vk!.DestroyImageView(_device, _envMapView, null);
+            _vk.DestroyImage(_device, _envMapImage, null);
+            _vk.FreeMemory(_device, _envMapMemory, null);
+        }
+        
+        _envMapWidth = envMap.Width;
+        _envMapHeight = envMap.Height;
+        
+        // Get RGBA16F data
+        var pixelData = envMap.GetRgba16fData();
+        ulong imageSize = (ulong)(envMap.Width * envMap.Height * 4 * sizeof(ushort));
+        
+        // Create staging buffer
+        CreateBuffer(imageSize, BufferUsageFlags.TransferSrcBit,
+            MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit,
+            out var stagingBuffer, out var stagingMemory);
+        
+        // Copy pixel data to staging buffer
+        void* data;
+        _vk!.MapMemory(_device, stagingMemory, 0, imageSize, 0, &data);
+        fixed (ushort* pixelsPtr = pixelData)
+        {
+            System.Buffer.MemoryCopy(pixelsPtr, data, imageSize, imageSize);
+        }
+        _vk.UnmapMemory(_device, stagingMemory);
+        
+        // Create HDR image (RGBA16F)
+        var imageInfo = new ImageCreateInfo
+        {
+            SType = StructureType.ImageCreateInfo,
+            ImageType = ImageType.Type2D,
+            Extent = new Extent3D((uint)envMap.Width, (uint)envMap.Height, 1),
+            MipLevels = 1,
+            ArrayLayers = 1,
+            Format = Format.R16G16B16A16Sfloat,
+            Tiling = ImageTiling.Optimal,
+            InitialLayout = ImageLayout.Undefined,
+            Usage = ImageUsageFlags.TransferDstBit | ImageUsageFlags.SampledBit,
+            SharingMode = SharingMode.Exclusive,
+            Samples = SampleCountFlags.Count1Bit
+        };
+        
+        fixed (Image* imagePtr = &_envMapImage)
+        {
+            if (_vk.CreateImage(_device, &imageInfo, null, imagePtr) != Result.Success)
+            {
+                throw new Exception("Failed to create environment map image");
+            }
+        }
+        
+        // Allocate memory
+        _vk.GetImageMemoryRequirements(_device, _envMapImage, out var memRequirements);
+        
+        var allocInfo = new MemoryAllocateInfo
+        {
+            SType = StructureType.MemoryAllocateInfo,
+            AllocationSize = memRequirements.Size,
+            MemoryTypeIndex = FindMemoryType(memRequirements.MemoryTypeBits, MemoryPropertyFlags.DeviceLocalBit)
+        };
+        
+        fixed (DeviceMemory* memoryPtr = &_envMapMemory)
+        {
+            if (_vk.AllocateMemory(_device, &allocInfo, null, memoryPtr) != Result.Success)
+            {
+                throw new Exception("Failed to allocate environment map memory");
+            }
+        }
+        
+        _vk.BindImageMemory(_device, _envMapImage, _envMapMemory, 0);
+        
+        // Transition and copy
+        TransitionImageLayoutHdr(_envMapImage, ImageLayout.Undefined, ImageLayout.TransferDstOptimal);
+        CopyBufferToImage(stagingBuffer, _envMapImage, (uint)envMap.Width, (uint)envMap.Height);
+        TransitionImageLayoutHdr(_envMapImage, ImageLayout.TransferDstOptimal, ImageLayout.ShaderReadOnlyOptimal);
+        
+        // Cleanup staging
+        _vk.DestroyBuffer(_device, stagingBuffer, null);
+        _vk.FreeMemory(_device, stagingMemory, null);
+        
+        // Create image view for HDR format
+        var viewInfo = new ImageViewCreateInfo
+        {
+            SType = StructureType.ImageViewCreateInfo,
+            Image = _envMapImage,
+            ViewType = ImageViewType.Type2D,
+            Format = Format.R16G16B16A16Sfloat,
+            SubresourceRange = new ImageSubresourceRange
+            {
+                AspectMask = ImageAspectFlags.ColorBit,
+                BaseMipLevel = 0,
+                LevelCount = 1,
+                BaseArrayLayer = 0,
+                LayerCount = 1
+            }
+        };
+        
+        fixed (ImageView* viewPtr = &_envMapView)
+        {
+            if (_vk.CreateImageView(_device, &viewInfo, null, viewPtr) != Result.Success)
+            {
+                throw new Exception("Failed to create environment map image view");
+            }
+        }
+        
+        // Update descriptor
+        UpdateEnvironmentMapDescriptor();
+        _envMapDirty = false;
+        
+        Console.WriteLine($"Uploaded environment map: {envMap.Width}x{envMap.Height}");
+    }
+    
+    private void TransitionImageLayoutHdr(Image image, ImageLayout oldLayout, ImageLayout newLayout)
+    {
+        var commandBuffer = BeginSingleTimeCommands();
+
+        var barrier = new ImageMemoryBarrier
+        {
+            SType = StructureType.ImageMemoryBarrier,
+            OldLayout = oldLayout,
+            NewLayout = newLayout,
+            SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
+            DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
+            Image = image,
+            SubresourceRange = new ImageSubresourceRange
+            {
+                AspectMask = ImageAspectFlags.ColorBit,
+                BaseMipLevel = 0,
+                LevelCount = 1,
+                BaseArrayLayer = 0,
+                LayerCount = 1
+            }
+        };
+
+        PipelineStageFlags sourceStage;
+        PipelineStageFlags destinationStage;
+
+        if (oldLayout == ImageLayout.Undefined && newLayout == ImageLayout.TransferDstOptimal)
+        {
+            barrier.SrcAccessMask = 0;
+            barrier.DstAccessMask = AccessFlags.TransferWriteBit;
+            sourceStage = PipelineStageFlags.TopOfPipeBit;
+            destinationStage = PipelineStageFlags.TransferBit;
+        }
+        else if (oldLayout == ImageLayout.TransferDstOptimal && newLayout == ImageLayout.ShaderReadOnlyOptimal)
+        {
+            barrier.SrcAccessMask = AccessFlags.TransferWriteBit;
+            barrier.DstAccessMask = AccessFlags.ShaderReadBit;
+            sourceStage = PipelineStageFlags.TransferBit;
+            destinationStage = PipelineStageFlags.ComputeShaderBit;
+        }
+        else
+        {
+            throw new ArgumentException("Unsupported layout transition");
+        }
+
+        _vk!.CmdPipelineBarrier(commandBuffer, sourceStage, destinationStage, 0,
+            0, null, 0, null, 1, &barrier);
+
+        EndSingleTimeCommands(commandBuffer);
+    }
+    
+    private void UpdateEnvironmentMapDescriptor()
+    {
+        var imageInfo = new DescriptorImageInfo
+        {
+            ImageLayout = ImageLayout.ShaderReadOnlyOptimal,
+            ImageView = _envMapView,
+            Sampler = _envMapSampler
+        };
+        
+        var write = new WriteDescriptorSet
+        {
+            SType = StructureType.WriteDescriptorSet,
+            DstSet = _computeDescriptorSet,
+            DstBinding = 7,
+            DstArrayElement = 0,
+            DescriptorType = DescriptorType.CombinedImageSampler,
+            DescriptorCount = 1,
+            PImageInfo = &imageInfo
+        };
+        
+        _vk!.UpdateDescriptorSets(_device, 1, &write, 0, null);
     }
 
     private void CreateBuffer(ulong size, BufferUsageFlags usage, MemoryPropertyFlags properties, out VkBuffer buffer, out DeviceMemory memory)

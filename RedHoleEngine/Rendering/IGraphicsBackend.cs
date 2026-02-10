@@ -99,4 +99,9 @@ public interface IGraphicsBackend : IDisposable
     /// Upload PBR materials to the GPU
     /// </summary>
     void UploadMaterials(MaterialLibrary library);
+    
+    /// <summary>
+    /// Set the environment map for IBL (Image-Based Lighting)
+    /// </summary>
+    void SetEnvironmentMap(EnvironmentMap? envMap);
 }

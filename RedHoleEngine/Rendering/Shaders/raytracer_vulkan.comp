@@ -116,12 +116,63 @@ layout(std430, set = 0, binding = 5) buffer Materials {
 // All textures are stored in a single array, indexed by material texture indices
 layout(set = 0, binding = 6) uniform sampler2D materialTextures[32]; // Support up to 32 textures
 
+// Environment map for IBL (binding 7) - equirectangular HDR
+layout(set = 0, binding = 7) uniform sampler2D envMap;
+
 // Sample a texture from the array (returns vec4(1) if index is invalid)
 vec4 sampleMaterialTexture(int textureIndex, vec2 uv) {
     if (textureIndex < 0 || textureIndex >= 32) {
         return vec4(1.0);
     }
     return texture(materialTextures[textureIndex], uv);
+}
+
+// Sample environment map using direction (equirectangular mapping)
+vec3 sampleEnvironment(vec3 dir) {
+    dir = normalize(dir);
+    float u = atan(dir.z, dir.x) / (2.0 * PI) + 0.5;
+    float v = asin(clamp(dir.y, -1.0, 1.0)) / PI + 0.5;
+    return texture(envMap, vec2(u, v)).rgb;
+}
+
+// Sample environment with roughness-based blur (approximation)
+// For proper IBL, we would prefilter the environment map
+vec3 sampleEnvironmentRough(vec3 dir, float roughness) {
+    // Simple mip-like blur approximation by sampling multiple directions
+    if (roughness < 0.1) {
+        return sampleEnvironment(dir);
+    }
+    
+    // Create tangent space for the reflection direction
+    vec3 N = normalize(dir);
+    vec3 up = abs(N.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3 T = normalize(cross(up, N));
+    vec3 B = cross(N, T);
+    
+    // Sample in a cone around the reflection direction
+    vec3 result = vec3(0.0);
+    float coneAngle = roughness * 0.5; // Cone half-angle based on roughness
+    
+    const int NUM_SAMPLES = 4;
+    float weights = 0.0;
+    
+    for (int i = 0; i < NUM_SAMPLES; i++) {
+        // Distribute samples in a pattern
+        float angle = float(i) / float(NUM_SAMPLES) * 2.0 * PI;
+        float r = coneAngle * (0.5 + 0.5 * float(i % 2)); // Vary radius
+        
+        vec3 offset = T * cos(angle) * r + B * sin(angle) * r;
+        vec3 sampleDir = normalize(N + offset);
+        
+        float w = 1.0 - length(offset);
+        result += sampleEnvironment(sampleDir) * w;
+        weights += w;
+    }
+    
+    result /= weights;
+    
+    // Blend with center sample
+    return mix(sampleEnvironment(dir), result, roughness);
 }
 
 // Constants
@@ -456,9 +507,20 @@ vec3 evaluateClearcoat(
 // PBR Shading with Simple Environment Light
 // ============================================
 
-// Simple sky color for ambient/environment lighting
+// IBL ambient/environment lighting using environment map
 vec3 getSkyColor(vec3 direction) {
-    // Gradient from dark blue (down) to light blue (up)
+    // Sample environment map for IBL
+    vec3 envColor = sampleEnvironment(direction);
+    
+    // Check if we have a valid environment (not pure black)
+    float brightness = dot(envColor, vec3(0.299, 0.587, 0.114));
+    
+    if (brightness > 0.001) {
+        // Scale down for ambient to avoid over-brightness
+        return envColor * 0.3;
+    }
+    
+    // Fallback to procedural sky gradient
     float t = direction.y * 0.5 + 0.5;
     vec3 horizonColor = vec3(0.5, 0.7, 1.0) * 0.3;
     vec3 zenithColor = vec3(0.1, 0.2, 0.5) * 0.5;
@@ -468,6 +530,11 @@ vec3 getSkyColor(vec3 direction) {
         return mix(horizonColor, groundColor, -direction.y);
     }
     return mix(horizonColor, zenithColor, direction.y);
+}
+
+// IBL specular - sample environment with roughness-based blur
+vec3 getSpecularIBL(vec3 R, float roughness) {
+    return sampleEnvironmentRough(R, roughness) * 0.5;
 }
 
 // Shade a surface hit using PBR
@@ -626,15 +693,18 @@ vec3 shadePBRWithUV(
     vec3 rimColor = vec3(0.8, 0.7, 0.6) * 0.3;
     result += evaluateBRDF(albedo, metallic, roughness, mat.ior, N, V, rimDir, rimColor);
     
-    // === Ambient/Environment ===
+    // === IBL Ambient/Environment ===
     vec3 F0 = calculateF0(albedo, metallic, mat.ior);
     vec3 F = fresnelSchlickRoughness(max(dot(N, V), 0.0), F0, roughness);
     vec3 kS = F;
     vec3 kD = (1.0 - kS) * (1.0 - metallic);
     
+    // Diffuse IBL (irradiance)
     vec3 ambientDiffuse = getSkyColor(N) * albedo * kD;
+    
+    // Specular IBL (pre-filtered environment)
     vec3 R = reflect(-V, N);
-    vec3 ambientSpecular = getSkyColor(R) * F * (1.0 - roughness * 0.9);
+    vec3 ambientSpecular = getSpecularIBL(R, roughness) * F;
     
     result += (ambientDiffuse + ambientSpecular) * mat.occlusionStrength;
     
@@ -1408,8 +1478,8 @@ bool intersectBvh(vec3 ro, vec3 rd, int nodeCount, int triCount, out vec3 hitPos
     return hit;
 }
 
-// Procedural starfield on unit sphere
-vec3 starfield(vec3 dir) {
+// Procedural starfield fallback (used if env map is black/empty)
+vec3 proceduralStarfield(vec3 dir) {
     // Normalize direction
     dir = normalize(dir);
     
@@ -1450,6 +1520,22 @@ vec3 starfield(vec3 dir) {
     }
     
     return bgColor;
+}
+
+// Sample sky/environment - uses environment map with procedural fallback
+vec3 starfield(vec3 dir) {
+    // Sample environment map
+    vec3 envColor = sampleEnvironment(dir);
+    
+    // Check if environment map has content (not pure black)
+    float envBrightness = dot(envColor, vec3(0.299, 0.587, 0.114));
+    
+    // If environment is very dark, add procedural stars
+    if (envBrightness < 0.01) {
+        return proceduralStarfield(dir);
+    }
+    
+    return envColor;
 }
 
 // ============================================

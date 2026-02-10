@@ -2157,9 +2157,9 @@ void main() {
     vignette = smoothstep(0.2, 1.0, vignette);
     finalColor *= mix(0.85, 1.0, vignette);
     
-    // Film grain for organic feel (subtle)
-    float grain = hash(vec2(pixelCoord) + u_Time) * 0.02;
-    finalColor += vec3(grain - 0.01);
+    // Film grain disabled - was causing visible noise on dark surfaces
+    // float grain = hash(vec2(pixelCoord) + u_Time) * 0.02;
+    // finalColor += vec3(grain - 0.01);
     
     // Gamma correction (sRGB)
     finalColor = pow(max(finalColor, vec3(0.0)), vec3(0.4545));

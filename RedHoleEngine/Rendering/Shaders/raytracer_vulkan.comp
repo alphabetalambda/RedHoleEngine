@@ -72,7 +72,347 @@ layout(std430, set = 0, binding = 3) buffer Triangles {
 
 // Constants
 const float PI = 3.14159265359;
+const float INV_PI = 0.31830988618;
+const float EPSILON = 0.0001;
 
+// ============================================
+// PBR Material Structure
+// ============================================
+
+struct PbrMaterial {
+    vec4 baseColorFactor;      // RGBA base color
+    float metallic;            // 0 = dielectric, 1 = metal
+    float roughness;           // 0 = smooth, 1 = rough
+    float normalScale;         // Normal map intensity
+    float occlusionStrength;   // AO intensity
+    vec3 emissiveFactor;       // Emissive color
+    float emissiveIntensity;   // Emissive multiplier
+    float ior;                 // Index of refraction
+    float specularFactor;      // Specular intensity
+    float clearcoat;           // Clearcoat intensity
+    float clearcoatRoughness;  // Clearcoat roughness
+};
+
+// Default PBR material
+PbrMaterial defaultMaterial() {
+    PbrMaterial mat;
+    mat.baseColorFactor = vec4(1.0);
+    mat.metallic = 0.0;
+    mat.roughness = 0.5;
+    mat.normalScale = 1.0;
+    mat.occlusionStrength = 1.0;
+    mat.emissiveFactor = vec3(0.0);
+    mat.emissiveIntensity = 1.0;
+    mat.ior = 1.5;
+    mat.specularFactor = 1.0;
+    mat.clearcoat = 0.0;
+    mat.clearcoatRoughness = 0.0;
+    return mat;
+}
+
+// Create material from triangle data (temporary until material buffer is added)
+PbrMaterial materialFromTriangle(GpuTriangle tri) {
+    PbrMaterial mat = defaultMaterial();
+    mat.baseColorFactor = tri.albedo;
+    mat.emissiveFactor = tri.emissive.rgb;
+    mat.emissiveIntensity = max(tri.emissive.a, 1.0);
+    // Decode metallic/roughness from albedo alpha if needed
+    // For now, use defaults based on color brightness
+    float brightness = dot(tri.albedo.rgb, vec3(0.299, 0.587, 0.114));
+    mat.roughness = 0.3 + 0.4 * (1.0 - brightness);
+    return mat;
+}
+
+// ============================================
+// PBR BRDF Functions (GGX/Smith/Schlick)
+// ============================================
+
+// Fresnel-Schlick approximation
+// F0 = reflectance at normal incidence
+vec3 fresnelSchlick(float cosTheta, vec3 F0) {
+    return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+
+// Fresnel-Schlick with roughness (for IBL)
+vec3 fresnelSchlickRoughness(float cosTheta, vec3 F0, float roughness) {
+    return F0 + (max(vec3(1.0 - roughness), F0) - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+
+// GGX/Trowbridge-Reitz Normal Distribution Function
+float distributionGGX(vec3 N, vec3 H, float roughness) {
+    float a = roughness * roughness;
+    float a2 = a * a;
+    float NdotH = max(dot(N, H), 0.0);
+    float NdotH2 = NdotH * NdotH;
+    
+    float denom = NdotH2 * (a2 - 1.0) + 1.0;
+    denom = PI * denom * denom;
+    
+    return a2 / max(denom, EPSILON);
+}
+
+// Smith's Schlick-GGX Geometry function (single direction)
+float geometrySchlickGGX(float NdotV, float roughness) {
+    float r = roughness + 1.0;
+    float k = (r * r) / 8.0;
+    
+    return NdotV / (NdotV * (1.0 - k) + k);
+}
+
+// Smith's Geometry function (combines view and light directions)
+float geometrySmith(vec3 N, vec3 V, vec3 L, float roughness) {
+    float NdotV = max(dot(N, V), 0.0);
+    float NdotL = max(dot(N, L), 0.0);
+    float ggx2 = geometrySchlickGGX(NdotV, roughness);
+    float ggx1 = geometrySchlickGGX(NdotL, roughness);
+    
+    return ggx1 * ggx2;
+}
+
+// Calculate F0 (base reflectivity) for dielectric materials from IOR
+vec3 calculateF0(vec3 albedo, float metallic, float ior) {
+    // Dielectric F0 from IOR: F0 = ((n1 - n2) / (n1 + n2))^2
+    float f0Dielectric = pow((1.0 - ior) / (1.0 + ior), 2.0);
+    vec3 F0 = vec3(f0Dielectric);
+    
+    // For metals, F0 is the albedo color
+    // For dielectrics, F0 is grayscale based on IOR
+    return mix(F0, albedo, metallic);
+}
+
+// Cook-Torrance BRDF evaluation
+// Returns the outgoing radiance for a given light direction
+vec3 evaluateBRDF(
+    vec3 albedo,
+    float metallic,
+    float roughness,
+    float ior,
+    vec3 N,       // Surface normal
+    vec3 V,       // View direction (toward camera)
+    vec3 L,       // Light direction (toward light)
+    vec3 radiance // Incoming light radiance
+) {
+    vec3 H = normalize(V + L);
+    
+    float NdotL = max(dot(N, L), 0.0);
+    float NdotV = max(dot(N, V), 0.0);
+    float HdotV = max(dot(H, V), 0.0);
+    
+    if (NdotL <= 0.0) return vec3(0.0);
+    
+    // Calculate F0
+    vec3 F0 = calculateF0(albedo, metallic, ior);
+    
+    // Cook-Torrance BRDF
+    float D = distributionGGX(N, H, roughness);
+    float G = geometrySmith(N, V, L, roughness);
+    vec3 F = fresnelSchlick(HdotV, F0);
+    
+    // Specular term
+    vec3 numerator = D * G * F;
+    float denominator = 4.0 * NdotV * NdotL + EPSILON;
+    vec3 specular = numerator / denominator;
+    
+    // Diffuse term (energy conservation)
+    // kS is the specular contribution (Fresnel)
+    // kD is the diffuse contribution
+    vec3 kS = F;
+    vec3 kD = vec3(1.0) - kS;
+    
+    // Metals have no diffuse reflection
+    kD *= 1.0 - metallic;
+    
+    // Lambertian diffuse
+    vec3 diffuse = kD * albedo * INV_PI;
+    
+    return (diffuse + specular) * radiance * NdotL;
+}
+
+// Importance sample GGX distribution for indirect lighting
+// Returns a microfacet normal based on roughness
+vec3 importanceSampleGGX(vec2 Xi, vec3 N, float roughness) {
+    float a = roughness * roughness;
+    
+    float phi = 2.0 * PI * Xi.x;
+    float cosTheta = sqrt((1.0 - Xi.y) / (1.0 + (a * a - 1.0) * Xi.y));
+    float sinTheta = sqrt(1.0 - cosTheta * cosTheta);
+    
+    // Spherical to Cartesian
+    vec3 H;
+    H.x = cos(phi) * sinTheta;
+    H.y = sin(phi) * sinTheta;
+    H.z = cosTheta;
+    
+    // Tangent space to world space
+    vec3 up = abs(N.z) < 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
+    vec3 tangent = normalize(cross(up, N));
+    vec3 bitangent = cross(N, tangent);
+    
+    return normalize(tangent * H.x + bitangent * H.y + N * H.z);
+}
+
+// Sample direction for next bounce based on material properties
+vec3 sampleBRDF(
+    vec3 N,
+    vec3 V,
+    float roughness,
+    float metallic,
+    vec2 random,
+    out float pdf
+) {
+    // For highly rough surfaces or dielectrics, use cosine-weighted hemisphere
+    // For smooth metals, use GGX importance sampling
+    
+    float specularWeight = mix(0.04, 1.0, metallic) * (1.0 - roughness);
+    
+    if (random.x < specularWeight) {
+        // Specular bounce - importance sample GGX
+        vec3 H = importanceSampleGGX(random, N, roughness);
+        vec3 L = reflect(-V, H);
+        
+        float NdotH = max(dot(N, H), 0.0);
+        float HdotV = max(dot(H, V), 0.0);
+        float D = distributionGGX(N, H, roughness);
+        
+        pdf = D * NdotH / (4.0 * HdotV + EPSILON);
+        return L;
+    } else {
+        // Diffuse bounce - cosine-weighted hemisphere
+        float r1 = random.x / (1.0 - specularWeight);
+        float r2 = random.y;
+        
+        float sinTheta = sqrt(r1);
+        float cosTheta = sqrt(1.0 - r1);
+        float phi = 2.0 * PI * r2;
+        
+        vec3 H;
+        H.x = sinTheta * cos(phi);
+        H.y = sinTheta * sin(phi);
+        H.z = cosTheta;
+        
+        vec3 up = abs(N.z) < 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
+        vec3 tangent = normalize(cross(up, N));
+        vec3 bitangent = cross(N, tangent);
+        
+        vec3 L = normalize(tangent * H.x + bitangent * H.y + N * H.z);
+        
+        pdf = max(dot(N, L), 0.0) * INV_PI;
+        return L;
+    }
+}
+
+// Clearcoat BRDF layer (simplified GGX for top coat)
+vec3 evaluateClearcoat(
+    float clearcoat,
+    float clearcoatRoughness,
+    vec3 N,
+    vec3 V,
+    vec3 L
+) {
+    if (clearcoat <= 0.0) return vec3(0.0);
+    
+    vec3 H = normalize(V + L);
+    float NdotL = max(dot(N, L), 0.0);
+    float NdotV = max(dot(N, V), 0.0);
+    float HdotV = max(dot(H, V), 0.0);
+    
+    // Clearcoat is always dielectric with IOR ~1.5 (F0 = 0.04)
+    vec3 F = fresnelSchlick(HdotV, vec3(0.04));
+    float D = distributionGGX(N, H, clearcoatRoughness);
+    float G = geometrySmith(N, V, L, clearcoatRoughness);
+    
+    vec3 specular = (D * G * F) / (4.0 * NdotV * NdotL + EPSILON);
+    
+    return specular * clearcoat * NdotL;
+}
+
+// ============================================
+// PBR Shading with Simple Environment Light
+// ============================================
+
+// Simple sky color for ambient/environment lighting
+vec3 getSkyColor(vec3 direction) {
+    // Gradient from dark blue (down) to light blue (up)
+    float t = direction.y * 0.5 + 0.5;
+    vec3 horizonColor = vec3(0.5, 0.7, 1.0) * 0.3;
+    vec3 zenithColor = vec3(0.1, 0.2, 0.5) * 0.5;
+    vec3 groundColor = vec3(0.1, 0.08, 0.06) * 0.2;
+    
+    if (direction.y < 0.0) {
+        return mix(horizonColor, groundColor, -direction.y);
+    }
+    return mix(horizonColor, zenithColor, direction.y);
+}
+
+// Shade a surface hit using PBR
+vec3 shadePBR(
+    vec3 hitPos,
+    vec3 normal,
+    vec3 viewDir,  // Direction toward camera
+    GpuTriangle tri
+) {
+    // Create PBR material from triangle data
+    PbrMaterial mat = materialFromTriangle(tri);
+    
+    vec3 N = normalize(normal);
+    vec3 V = normalize(viewDir);
+    
+    vec3 albedo = mat.baseColorFactor.rgb;
+    float metallic = mat.metallic;
+    float roughness = max(mat.roughness, 0.04); // Avoid zero roughness
+    
+    vec3 result = vec3(0.0);
+    
+    // === Direct Lighting from Key Light ===
+    // Simple directional light from above-right
+    vec3 lightDir = normalize(vec3(0.5, 1.0, 0.3));
+    vec3 lightColor = vec3(1.0, 0.98, 0.95) * 2.0;
+    
+    result += evaluateBRDF(albedo, metallic, roughness, mat.ior, N, V, lightDir, lightColor);
+    
+    // === Fill Light ===
+    vec3 fillDir = normalize(vec3(-0.7, 0.3, -0.5));
+    vec3 fillColor = vec3(0.3, 0.4, 0.6) * 0.5;
+    result += evaluateBRDF(albedo, metallic, roughness, mat.ior, N, V, fillDir, fillColor);
+    
+    // === Rim/Back Light ===
+    vec3 rimDir = normalize(vec3(0.0, 0.2, -1.0));
+    vec3 rimColor = vec3(0.8, 0.7, 0.6) * 0.3;
+    result += evaluateBRDF(albedo, metallic, roughness, mat.ior, N, V, rimDir, rimColor);
+    
+    // === Ambient/Environment ===
+    // Approximate image-based lighting with sky color
+    vec3 F0 = calculateF0(albedo, metallic, mat.ior);
+    vec3 F = fresnelSchlickRoughness(max(dot(N, V), 0.0), F0, roughness);
+    
+    vec3 kS = F;
+    vec3 kD = (1.0 - kS) * (1.0 - metallic);
+    
+    // Diffuse ambient from hemisphere
+    vec3 ambientDiffuse = getSkyColor(N) * albedo * kD;
+    
+    // Specular ambient from reflection direction
+    vec3 R = reflect(-V, N);
+    vec3 ambientSpecular = getSkyColor(R) * F;
+    
+    // Roughness reduces specular contribution
+    ambientSpecular *= 1.0 - roughness * 0.9;
+    
+    float ao = mat.occlusionStrength;
+    result += (ambientDiffuse + ambientSpecular) * ao;
+    
+    // === Clearcoat ===
+    if (mat.clearcoat > 0.0) {
+        result += evaluateClearcoat(mat.clearcoat, mat.clearcoatRoughness, N, V, lightDir) * lightColor;
+    }
+    
+    // === Emissive ===
+    result += mat.emissiveFactor * mat.emissiveIntensity;
+    
+    return result;
+}
+
+// ============================================
 // Lensing quality settings from uniforms (with fallback defaults)
 int getMaxSteps() { return u_LensingSettings.x > 0.0 ? int(u_LensingSettings.x) : 64; }
 float getStepSize() { return u_LensingSettings.y > 0.0 ? u_LensingSettings.y : 0.4; }
@@ -742,6 +1082,7 @@ bool intersectBvh(vec3 ro, vec3 rd, int nodeCount, int triCount, out vec3 hitPos
 
     float tClosest = 1e20;
     bool hit = false;
+    int hitTriIndex = -1;
 
     int stack[64];
     int stackPtr = 0;
@@ -768,8 +1109,8 @@ bool intersectBvh(vec3 ro, vec3 rd, int nodeCount, int triCount, out vec3 hitPos
                 if (intersectTriangle(ro, rd, tri, t) && t < tClosest) {
                     tClosest = t;
                     hit = true;
+                    hitTriIndex = triIndex;
                     hitNormal = tri.normal;
-                    hitColor = tri.albedo.rgb + tri.emissive.rgb;
                 }
             }
         } else {
@@ -780,8 +1121,13 @@ bool intersectBvh(vec3 ro, vec3 rd, int nodeCount, int triCount, out vec3 hitPos
         }
     }
 
-    if (hit) {
+    if (hit && hitTriIndex >= 0) {
         hitPos = ro + rd * tClosest;
+        GpuTriangle hitTri = triangles[hitTriIndex];
+        
+        // Use PBR shading for the hit
+        vec3 viewDir = -rd; // Direction toward camera
+        hitColor = shadePBR(hitPos, hitNormal, viewDir, hitTri);
     }
     return hit;
 }
@@ -851,6 +1197,7 @@ bool intersectBvhSegment(vec3 ro, vec3 rd, float maxDist, int nodeCount, int tri
 
     float tClosest = maxDist;
     bool hit = false;
+    int hitTriIndex = -1;
 
     int stack[64];
     int stackPtr = 0;
@@ -876,8 +1223,8 @@ bool intersectBvhSegment(vec3 ro, vec3 rd, float maxDist, int nodeCount, int tri
                 if (intersectTriangle(ro, rd, tri, t) && t < tClosest && t > 0.001) {
                     tClosest = t;
                     hit = true;
+                    hitTriIndex = triIndex;
                     hitNormal = tri.normal;
-                    hitColor = tri.albedo.rgb + tri.emissive.rgb;
                 }
             }
         } else {
@@ -888,8 +1235,14 @@ bool intersectBvhSegment(vec3 ro, vec3 rd, float maxDist, int nodeCount, int tri
         }
     }
 
-    if (hit) {
+    if (hit && hitTriIndex >= 0) {
         hitT = tClosest;
+        vec3 hitPos = ro + rd * tClosest;
+        GpuTriangle hitTri = triangles[hitTriIndex];
+        
+        // Use PBR shading
+        vec3 viewDir = -rd;
+        hitColor = shadePBR(hitPos, hitNormal, viewDir, hitTri);
     }
     return hit;
 }

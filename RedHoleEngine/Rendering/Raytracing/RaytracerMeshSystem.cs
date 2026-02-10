@@ -238,6 +238,19 @@ public class RaytracerMeshSystem : GameSystem
             var v2 = transform.Transform.TransformPoint(vertices[i2].Position);
 
             var normal = Vector3.Normalize(Vector3.Cross(v1 - v0, v2 - v0));
+            
+            // Extract UV coordinates from mesh vertices
+            var uv0 = vertices[i0].TexCoord;
+            var uv1 = vertices[i1].TexCoord;
+            var uv2 = vertices[i2].TexCoord;
+            
+            // Transform tangent to world space (only xyz, preserve w for handedness)
+            var tangent = vertices[i0].Tangent;
+            var tangentDir = Vector3.TransformNormal(
+                new Vector3(tangent.X, tangent.Y, tangent.Z),
+                transform.Transform.WorldMatrix);
+            tangentDir = Vector3.Normalize(tangentDir);
+            var worldTangent = new Vector4(tangentDir, tangent.W);
 
             triangles.Add(new RaytracerTriangle
             {
@@ -246,6 +259,10 @@ public class RaytracerMeshSystem : GameSystem
                 V2 = v2,
                 MaterialIndex = material.PbrMaterialId, // -1 if using inline, or valid material index
                 Normal = normal,
+                UV0 = uv0,
+                UV1 = uv1,
+                UV2 = uv2,
+                Tangent = worldTangent,
                 Albedo = material.BaseColor,
                 Emissive = new Vector4(material.EmissiveColor, 1f)
             });

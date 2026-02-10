@@ -517,6 +517,23 @@ public class EditorApplication : IDisposable
                 ImGui.PopStyleColor();
             if (ImGui.IsItemHovered()) ImGui.SetTooltip("Scale (R)");
 
+            ImGui.SameLine(0, 8);
+            
+            // World/Local space toggle
+            var spaceLabel = _transformGizmo.Space == GizmoSpace.World ? "World" : "Local";
+            var spaceColor = _transformGizmo.Space == GizmoSpace.Local 
+                ? new Vector4(0.6f, 0.4f, 0.7f, 1f) 
+                : new Vector4(0.4f, 0.6f, 0.4f, 1f);
+            ImGui.PushStyleColor(ImGuiCol.Button, spaceColor);
+            if (ImGui.Button(spaceLabel, new Vector2(50, 24)))
+            {
+                _transformGizmo.Space = _transformGizmo.Space == GizmoSpace.World 
+                    ? GizmoSpace.Local 
+                    : GizmoSpace.World;
+            }
+            ImGui.PopStyleColor();
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("Toggle World/Local space (G)");
+
             ImGui.SameLine();
             ImGui.Separator();
             ImGui.SameLine();
@@ -1186,6 +1203,11 @@ public class EditorApplication : IDisposable
                 break;
             case Key.R:
                 _transformGizmo.Mode = GizmoMode.Scale;
+                break;
+            case Key.G:
+                _transformGizmo.Space = _transformGizmo.Space == GizmoSpace.World 
+                    ? GizmoSpace.Local 
+                    : GizmoSpace.World;
                 break;
         }
     }

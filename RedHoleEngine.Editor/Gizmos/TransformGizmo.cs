@@ -78,6 +78,11 @@ public class TransformGizmo
     
     // Cached for undo
     private TransformComponent _originalTransform;
+    
+    // Cached axes for dragging (local or world)
+    private Vector3 _dragAxisX;
+    private Vector3 _dragAxisY;
+    private Vector3 _dragAxisZ;
 
     /// <summary>
     /// Whether the gizmo is currently being dragged
@@ -128,20 +133,23 @@ public class TransformGizmo
         float screenScale = distanceToCamera * 0.1f;
         float scaledAxisLength = AxisLength * screenScale;
 
+        // Get local axes based on space mode
+        var (axisX, axisY, axisZ) = GetAxes(transform.Rotation);
+
         if (!_isDragging)
         {
             // Hit testing
-            _hoveredAxis = HitTest(origin, scaledAxisLength, viewProj, viewportMin, viewportSize, mousePos);
+            _hoveredAxis = HitTest(origin, axisX, axisY, axisZ, scaledAxisLength, viewProj, viewportMin, viewportSize, mousePos);
 
             if (mouseClicked && _hoveredAxis != GizmoAxis.None)
             {
-                StartDrag(ref transform, mousePos, origin, camera, viewProj, viewportMin, viewportSize);
+                StartDrag(ref transform, mousePos, origin, axisX, axisY, axisZ, camera, viewProj, viewportMin, viewportSize);
             }
         }
         else
         {
             // Continue dragging
-            UpdateDrag(ref transform, mousePos, origin, camera, viewProj, viewportMin, viewportSize, screenScale);
+            UpdateDrag(ref transform, mousePos, origin, axisX, axisY, axisZ, camera, viewProj, viewportMin, viewportSize, screenScale);
 
             if (mouseReleased)
             {
@@ -150,7 +158,7 @@ public class TransformGizmo
         }
     }
 
-    private void StartDrag(ref TransformComponent transform, Vector2 mousePos, Vector3 origin, Camera camera, Matrix4x4 viewProj, Vector2 viewportMin, Vector2 viewportSize)
+    private void StartDrag(ref TransformComponent transform, Vector2 mousePos, Vector3 origin, Vector3 axisX, Vector3 axisY, Vector3 axisZ, Camera camera, Matrix4x4 viewProj, Vector2 viewportMin, Vector2 viewportSize)
     {
         _isDragging = true;
         _activeAxis = _hoveredAxis;
@@ -159,9 +167,14 @@ public class TransformGizmo
         _dragStartRotation = transform.LocalRotation;
         _dragStartScale = transform.LocalScale;
         _originalTransform = transform;
+        
+        // Store axes for use during drag
+        _dragAxisX = axisX;
+        _dragAxisY = axisY;
+        _dragAxisZ = axisZ;
 
         // Calculate drag plane based on mode and axis
-        CalculateDragPlane(origin, camera);
+        CalculateDragPlane(origin, axisX, axisY, axisZ, camera);
 
         if (Mode == GizmoMode.Rotate)
         {
@@ -169,7 +182,7 @@ public class TransformGizmo
         }
     }
 
-    private void UpdateDrag(ref TransformComponent transform, Vector2 mousePos, Vector3 origin, Camera camera, Matrix4x4 viewProj, Vector2 viewportMin, Vector2 viewportSize, float screenScale)
+    private void UpdateDrag(ref TransformComponent transform, Vector2 mousePos, Vector3 origin, Vector3 axisX, Vector3 axisY, Vector3 axisZ, Camera camera, Matrix4x4 viewProj, Vector2 viewportMin, Vector2 viewportSize, float screenScale)
     {
         switch (Mode)
         {
@@ -193,32 +206,39 @@ public class TransformGizmo
         // Intersect with drag plane
         if (RayPlaneIntersection(ray.Origin, ray.Direction, _dragPlaneOrigin, _dragPlaneNormal, out var hitPoint))
         {
-            var delta = hitPoint - _dragPlaneOrigin;
+            var worldDelta = hitPoint - _dragPlaneOrigin;
 
-            // Constrain to axis if single axis selected
+            // Constrain to axis if single axis selected (using stored axes)
+            Vector3 constrainedDelta;
             switch (_activeAxis)
             {
                 case GizmoAxis.X:
-                    delta = new Vector3(Vector3.Dot(delta, Vector3.UnitX), 0, 0);
+                    constrainedDelta = _dragAxisX * Vector3.Dot(worldDelta, _dragAxisX);
                     break;
                 case GizmoAxis.Y:
-                    delta = new Vector3(0, Vector3.Dot(delta, Vector3.UnitY), 0);
+                    constrainedDelta = _dragAxisY * Vector3.Dot(worldDelta, _dragAxisY);
                     break;
                 case GizmoAxis.Z:
-                    delta = new Vector3(0, 0, Vector3.Dot(delta, Vector3.UnitZ));
+                    constrainedDelta = _dragAxisZ * Vector3.Dot(worldDelta, _dragAxisZ);
                     break;
                 case GizmoAxis.XY:
-                    delta = new Vector3(delta.X, delta.Y, 0);
+                    constrainedDelta = _dragAxisX * Vector3.Dot(worldDelta, _dragAxisX) +
+                                       _dragAxisY * Vector3.Dot(worldDelta, _dragAxisY);
                     break;
                 case GizmoAxis.XZ:
-                    delta = new Vector3(delta.X, 0, delta.Z);
+                    constrainedDelta = _dragAxisX * Vector3.Dot(worldDelta, _dragAxisX) +
+                                       _dragAxisZ * Vector3.Dot(worldDelta, _dragAxisZ);
                     break;
                 case GizmoAxis.YZ:
-                    delta = new Vector3(0, delta.Y, delta.Z);
+                    constrainedDelta = _dragAxisY * Vector3.Dot(worldDelta, _dragAxisY) +
+                                       _dragAxisZ * Vector3.Dot(worldDelta, _dragAxisZ);
+                    break;
+                default:
+                    constrainedDelta = worldDelta;
                     break;
             }
 
-            transform.LocalPosition = _dragStartPosition + delta;
+            transform.LocalPosition = _dragStartPosition + constrainedDelta;
         }
     }
 
@@ -227,12 +247,13 @@ public class TransformGizmo
         float currentAngle = CalculateAngleOnPlane(mousePos, origin, viewProj, viewportMin, viewportSize);
         float deltaAngle = currentAngle - _dragStartAngle;
 
+        // Use stored axes for rotation
         Vector3 axis = _activeAxis switch
         {
-            GizmoAxis.X => Vector3.UnitX,
-            GizmoAxis.Y => Vector3.UnitY,
-            GizmoAxis.Z => Vector3.UnitZ,
-            _ => Vector3.UnitY
+            GizmoAxis.X => _dragAxisX,
+            GizmoAxis.Y => _dragAxisY,
+            GizmoAxis.Z => _dragAxisZ,
+            _ => _dragAxisY
         };
 
         var rotation = Quaternion.CreateFromAxisAngle(axis, deltaAngle);
@@ -285,7 +306,7 @@ public class TransformGizmo
         }
     }
 
-    private void CalculateDragPlane(Vector3 origin, Camera camera)
+    private void CalculateDragPlane(Vector3 origin, Vector3 axisX, Vector3 axisY, Vector3 axisZ, Camera camera)
     {
         _dragPlaneOrigin = origin;
         var cameraForward = camera.Forward;
@@ -294,25 +315,25 @@ public class TransformGizmo
         {
             case GizmoAxis.X:
                 // Use plane perpendicular to X that faces camera most
-                _dragPlaneNormal = Math.Abs(cameraForward.Y) > Math.Abs(cameraForward.Z) 
-                    ? Vector3.UnitY : Vector3.UnitZ;
+                _dragPlaneNormal = Math.Abs(Vector3.Dot(cameraForward, axisY)) > Math.Abs(Vector3.Dot(cameraForward, axisZ)) 
+                    ? axisY : axisZ;
                 break;
             case GizmoAxis.Y:
-                _dragPlaneNormal = Math.Abs(cameraForward.X) > Math.Abs(cameraForward.Z) 
-                    ? Vector3.UnitX : Vector3.UnitZ;
+                _dragPlaneNormal = Math.Abs(Vector3.Dot(cameraForward, axisX)) > Math.Abs(Vector3.Dot(cameraForward, axisZ)) 
+                    ? axisX : axisZ;
                 break;
             case GizmoAxis.Z:
-                _dragPlaneNormal = Math.Abs(cameraForward.X) > Math.Abs(cameraForward.Y) 
-                    ? Vector3.UnitX : Vector3.UnitY;
+                _dragPlaneNormal = Math.Abs(Vector3.Dot(cameraForward, axisX)) > Math.Abs(Vector3.Dot(cameraForward, axisY)) 
+                    ? axisX : axisY;
                 break;
             case GizmoAxis.XY:
-                _dragPlaneNormal = Vector3.UnitZ;
+                _dragPlaneNormal = axisZ;
                 break;
             case GizmoAxis.XZ:
-                _dragPlaneNormal = Vector3.UnitY;
+                _dragPlaneNormal = axisY;
                 break;
             case GizmoAxis.YZ:
-                _dragPlaneNormal = Vector3.UnitX;
+                _dragPlaneNormal = axisX;
                 break;
             default:
                 _dragPlaneNormal = -cameraForward;
@@ -333,15 +354,15 @@ public class TransformGizmo
     /// <summary>
     /// Perform hit testing against gizmo axes
     /// </summary>
-    private GizmoAxis HitTest(Vector3 origin, float axisLength, Matrix4x4 viewProj, Vector2 viewportMin, Vector2 viewportSize, Vector2 mousePos)
+    private GizmoAxis HitTest(Vector3 origin, Vector3 axisX, Vector3 axisY, Vector3 axisZ, float axisLength, Matrix4x4 viewProj, Vector2 viewportMin, Vector2 viewportSize, Vector2 mousePos)
     {
         if (!TryProject(origin, viewProj, viewportMin, viewportSize, out var screenOrigin))
             return GizmoAxis.None;
 
         // Test axis endpoints
-        var xEnd = origin + Vector3.UnitX * axisLength;
-        var yEnd = origin + Vector3.UnitY * axisLength;
-        var zEnd = origin + Vector3.UnitZ * axisLength;
+        var xEnd = origin + axisX * axisLength;
+        var yEnd = origin + axisY * axisLength;
+        var zEnd = origin + axisZ * axisLength;
 
         TryProject(xEnd, viewProj, viewportMin, viewportSize, out var screenX);
         TryProject(yEnd, viewProj, viewportMin, viewportSize, out var screenY);
@@ -399,57 +420,60 @@ public class TransformGizmo
         float distanceToCamera = Vector3.Distance(origin, camera.Position);
         float screenScale = distanceToCamera * 0.1f;
         float scaledAxisLength = AxisLength * screenScale;
+        
+        // Get axes based on space mode
+        var (axisX, axisY, axisZ) = GetAxes(transform.Rotation);
 
         switch (Mode)
         {
             case GizmoMode.Translate:
-                DrawTranslateGizmo(drawList, origin, scaledAxisLength, viewProj, viewportMin, viewportSize);
+                DrawTranslateGizmo(drawList, origin, axisX, axisY, axisZ, scaledAxisLength, viewProj, viewportMin, viewportSize);
                 break;
             case GizmoMode.Rotate:
-                DrawRotateGizmo(drawList, origin, scaledAxisLength, viewProj, viewportMin, viewportSize);
+                DrawRotateGizmo(drawList, origin, axisX, axisY, axisZ, scaledAxisLength, viewProj, viewportMin, viewportSize);
                 break;
             case GizmoMode.Scale:
-                DrawScaleGizmo(drawList, origin, scaledAxisLength, viewProj, viewportMin, viewportSize);
+                DrawScaleGizmo(drawList, origin, axisX, axisY, axisZ, scaledAxisLength, viewProj, viewportMin, viewportSize);
                 break;
         }
     }
 
-    private void DrawTranslateGizmo(ImDrawListPtr drawList, Vector3 origin, float axisLength, Matrix4x4 viewProj, Vector2 viewportMin, Vector2 viewportSize)
+    private void DrawTranslateGizmo(ImDrawListPtr drawList, Vector3 origin, Vector3 axisX, Vector3 axisY, Vector3 axisZ, float axisLength, Matrix4x4 viewProj, Vector2 viewportMin, Vector2 viewportSize)
     {
         if (!TryProject(origin, viewProj, viewportMin, viewportSize, out var screenOrigin))
             return;
 
         // Draw axes with arrows
-        DrawAxis(drawList, origin, Vector3.UnitX, axisLength, GetAxisColor(GizmoAxis.X), viewProj, viewportMin, viewportSize);
-        DrawAxis(drawList, origin, Vector3.UnitY, axisLength, GetAxisColor(GizmoAxis.Y), viewProj, viewportMin, viewportSize);
-        DrawAxis(drawList, origin, Vector3.UnitZ, axisLength, GetAxisColor(GizmoAxis.Z), viewProj, viewportMin, viewportSize);
+        DrawAxis(drawList, origin, axisX, axisLength, GetAxisColor(GizmoAxis.X), viewProj, viewportMin, viewportSize);
+        DrawAxis(drawList, origin, axisY, axisLength, GetAxisColor(GizmoAxis.Y), viewProj, viewportMin, viewportSize);
+        DrawAxis(drawList, origin, axisZ, axisLength, GetAxisColor(GizmoAxis.Z), viewProj, viewportMin, viewportSize);
 
         // Draw plane handles
         float planeOffset = axisLength * PlaneSize;
-        DrawPlaneHandle(drawList, origin, Vector3.UnitX, Vector3.UnitY, planeOffset, GizmoAxis.XY, viewProj, viewportMin, viewportSize);
-        DrawPlaneHandle(drawList, origin, Vector3.UnitX, Vector3.UnitZ, planeOffset, GizmoAxis.XZ, viewProj, viewportMin, viewportSize);
-        DrawPlaneHandle(drawList, origin, Vector3.UnitY, Vector3.UnitZ, planeOffset, GizmoAxis.YZ, viewProj, viewportMin, viewportSize);
+        DrawPlaneHandle(drawList, origin, axisX, axisY, planeOffset, GizmoAxis.XY, viewProj, viewportMin, viewportSize);
+        DrawPlaneHandle(drawList, origin, axisX, axisZ, planeOffset, GizmoAxis.XZ, viewProj, viewportMin, viewportSize);
+        DrawPlaneHandle(drawList, origin, axisY, axisZ, planeOffset, GizmoAxis.YZ, viewProj, viewportMin, viewportSize);
     }
 
-    private void DrawRotateGizmo(ImDrawListPtr drawList, Vector3 origin, float axisLength, Matrix4x4 viewProj, Vector2 viewportMin, Vector2 viewportSize)
+    private void DrawRotateGizmo(ImDrawListPtr drawList, Vector3 origin, Vector3 axisX, Vector3 axisY, Vector3 axisZ, float axisLength, Matrix4x4 viewProj, Vector2 viewportMin, Vector2 viewportSize)
     {
         float radius = axisLength * RotationRingRadius;
 
         // Draw rotation rings for each axis
-        DrawRotationRing(drawList, origin, Vector3.UnitX, radius, GetAxisColor(GizmoAxis.X), viewProj, viewportMin, viewportSize);
-        DrawRotationRing(drawList, origin, Vector3.UnitY, radius, GetAxisColor(GizmoAxis.Y), viewProj, viewportMin, viewportSize);
-        DrawRotationRing(drawList, origin, Vector3.UnitZ, radius, GetAxisColor(GizmoAxis.Z), viewProj, viewportMin, viewportSize);
+        DrawRotationRing(drawList, origin, axisX, radius, GetAxisColor(GizmoAxis.X), viewProj, viewportMin, viewportSize);
+        DrawRotationRing(drawList, origin, axisY, radius, GetAxisColor(GizmoAxis.Y), viewProj, viewportMin, viewportSize);
+        DrawRotationRing(drawList, origin, axisZ, radius, GetAxisColor(GizmoAxis.Z), viewProj, viewportMin, viewportSize);
     }
 
-    private void DrawScaleGizmo(ImDrawListPtr drawList, Vector3 origin, float axisLength, Matrix4x4 viewProj, Vector2 viewportMin, Vector2 viewportSize)
+    private void DrawScaleGizmo(ImDrawListPtr drawList, Vector3 origin, Vector3 axisX, Vector3 axisY, Vector3 axisZ, float axisLength, Matrix4x4 viewProj, Vector2 viewportMin, Vector2 viewportSize)
     {
         if (!TryProject(origin, viewProj, viewportMin, viewportSize, out var screenOrigin))
             return;
 
         // Draw axes with boxes at ends
-        DrawAxisWithBox(drawList, origin, Vector3.UnitX, axisLength, GetAxisColor(GizmoAxis.X), viewProj, viewportMin, viewportSize);
-        DrawAxisWithBox(drawList, origin, Vector3.UnitY, axisLength, GetAxisColor(GizmoAxis.Y), viewProj, viewportMin, viewportSize);
-        DrawAxisWithBox(drawList, origin, Vector3.UnitZ, axisLength, GetAxisColor(GizmoAxis.Z), viewProj, viewportMin, viewportSize);
+        DrawAxisWithBox(drawList, origin, axisX, axisLength, GetAxisColor(GizmoAxis.X), viewProj, viewportMin, viewportSize);
+        DrawAxisWithBox(drawList, origin, axisY, axisLength, GetAxisColor(GizmoAxis.Y), viewProj, viewportMin, viewportSize);
+        DrawAxisWithBox(drawList, origin, axisZ, axisLength, GetAxisColor(GizmoAxis.Z), viewProj, viewportMin, viewportSize);
 
         // Draw center box for uniform scale
         var centerColor = (_hoveredAxis == GizmoAxis.All || _activeAxis == GizmoAxis.All) ? ColorHighlight : new Vector4(0.8f, 0.8f, 0.8f, 1f);
@@ -560,6 +584,25 @@ public class TransformGizmo
             GizmoAxis.Z => ColorZ,
             _ => new Vector4(0.8f, 0.8f, 0.8f, 1f)
         };
+    }
+
+    /// <summary>
+    /// Get the axis directions based on space mode and entity rotation
+    /// </summary>
+    private (Vector3 X, Vector3 Y, Vector3 Z) GetAxes(Quaternion rotation)
+    {
+        if (Space == GizmoSpace.World)
+        {
+            return (Vector3.UnitX, Vector3.UnitY, Vector3.UnitZ);
+        }
+        else
+        {
+            // Local space - transform axes by entity rotation
+            var x = Vector3.Transform(Vector3.UnitX, rotation);
+            var y = Vector3.Transform(Vector3.UnitY, rotation);
+            var z = Vector3.Transform(Vector3.UnitZ, rotation);
+            return (Vector3.Normalize(x), Vector3.Normalize(y), Vector3.Normalize(z));
+        }
     }
 
     #region Math Helpers

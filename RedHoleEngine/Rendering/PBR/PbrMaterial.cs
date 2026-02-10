@@ -317,10 +317,12 @@ public enum AlphaMode
 /// <summary>
 /// GPU-compatible material data structure for shader upload.
 /// Matches the layout expected by the compute shader.
+/// Size: 80 bytes (must be multiple of 16 for std430)
 /// </summary>
-[StructLayout(LayoutKind.Explicit, Size = 64)]
+[StructLayout(LayoutKind.Explicit, Size = 80)]
 public struct GpuMaterial
 {
+    // Base properties (64 bytes)
     [FieldOffset(0)]  public Vector4 BaseColorFactor;      // 16 bytes
     [FieldOffset(16)] public float MetallicFactor;         // 4 bytes
     [FieldOffset(20)] public float RoughnessFactor;        // 4 bytes
@@ -332,22 +334,45 @@ public struct GpuMaterial
     [FieldOffset(52)] public float SpecularFactor;         // 4 bytes
     [FieldOffset(56)] public float ClearcoatFactor;        // 4 bytes
     [FieldOffset(60)] public float ClearcoatRoughness;     // 4 bytes
-    // Total: 64 bytes
     
-    public static GpuMaterial FromPbrMaterial(PbrMaterial mat) => new()
+    // Texture indices (16 bytes) - -1 means no texture
+    [FieldOffset(64)] public int BaseColorTextureIndex;         // 4 bytes
+    [FieldOffset(68)] public int MetallicRoughnessTextureIndex; // 4 bytes
+    [FieldOffset(72)] public int NormalTextureIndex;            // 4 bytes
+    [FieldOffset(76)] public int EmissiveTextureIndex;          // 4 bytes
+    // Total: 80 bytes
+    
+    /// <summary>
+    /// Create GpuMaterial from PbrMaterial with texture indices resolved by a TextureLibrary
+    /// </summary>
+    public static GpuMaterial FromPbrMaterial(PbrMaterial mat, Func<string?, int>? resolveTexture = null)
     {
-        BaseColorFactor = mat.BaseColorFactor,
-        MetallicFactor = mat.MetallicFactor,
-        RoughnessFactor = mat.RoughnessFactor,
-        NormalScale = mat.NormalScale,
-        OcclusionStrength = mat.OcclusionStrength,
-        EmissiveFactor = mat.EmissiveFactor,
-        EmissiveIntensity = mat.EmissiveIntensity,
-        IndexOfRefraction = mat.IndexOfRefraction,
-        SpecularFactor = mat.SpecularFactor,
-        ClearcoatFactor = mat.ClearcoatFactor,
-        ClearcoatRoughness = mat.ClearcoatRoughness
-    };
+        resolveTexture ??= _ => -1;
+        
+        return new GpuMaterial
+        {
+            BaseColorFactor = mat.BaseColorFactor,
+            MetallicFactor = mat.MetallicFactor,
+            RoughnessFactor = mat.RoughnessFactor,
+            NormalScale = mat.NormalScale,
+            OcclusionStrength = mat.OcclusionStrength,
+            EmissiveFactor = mat.EmissiveFactor,
+            EmissiveIntensity = mat.EmissiveIntensity,
+            IndexOfRefraction = mat.IndexOfRefraction,
+            SpecularFactor = mat.SpecularFactor,
+            ClearcoatFactor = mat.ClearcoatFactor,
+            ClearcoatRoughness = mat.ClearcoatRoughness,
+            BaseColorTextureIndex = resolveTexture(mat.BaseColorTexturePath),
+            MetallicRoughnessTextureIndex = resolveTexture(mat.MetallicRoughnessTexturePath),
+            NormalTextureIndex = resolveTexture(mat.NormalTexturePath),
+            EmissiveTextureIndex = resolveTexture(mat.EmissiveTexturePath)
+        };
+    }
+    
+    /// <summary>
+    /// Create GpuMaterial from PbrMaterial without textures
+    /// </summary>
+    public static GpuMaterial FromPbrMaterial(PbrMaterial mat) => FromPbrMaterial(mat, null);
     
     public static GpuMaterial Default => new()
     {
@@ -361,6 +386,10 @@ public struct GpuMaterial
         IndexOfRefraction = 1.5f,
         SpecularFactor = 1f,
         ClearcoatFactor = 0f,
-        ClearcoatRoughness = 0f
+        ClearcoatRoughness = 0f,
+        BaseColorTextureIndex = -1,
+        MetallicRoughnessTextureIndex = -1,
+        NormalTextureIndex = -1,
+        EmissiveTextureIndex = -1
     };
 }

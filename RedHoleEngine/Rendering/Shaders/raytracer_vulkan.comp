@@ -70,9 +70,10 @@ layout(std430, set = 0, binding = 3) buffer Triangles {
     GpuTriangle triangles[];
 };
 
-// GPU Material buffer - matches GpuMaterial struct in C# (64 bytes per material)
+// GPU Material buffer - matches GpuMaterial struct in C# (80 bytes per material)
 // Layout: baseColorFactor(16), metallic(4), roughness(4), normalScale(4), occlusionStrength(4),
-//         emissiveFactor(12), emissiveIntensity(4), ior(4), specularFactor(4), clearcoat(4), clearcoatRoughness(4)
+//         emissiveFactor(12), emissiveIntensity(4), ior(4), specularFactor(4), clearcoat(4), clearcoatRoughness(4),
+//         textureIndices(16): baseColor, metallicRoughness, normal, emissive
 struct GpuMaterial {
     vec4 baseColorFactor;      // 16 bytes (offset 0)
     float metallic;            // 4 bytes (offset 16)
@@ -85,11 +86,28 @@ struct GpuMaterial {
     float specularFactor;      // 4 bytes (offset 52)
     float clearcoat;           // 4 bytes (offset 56)
     float clearcoatRoughness;  // 4 bytes (offset 60)
+    // Texture indices (-1 = no texture)
+    int baseColorTextureIndex;          // 4 bytes (offset 64)
+    int metallicRoughnessTextureIndex;  // 4 bytes (offset 68)
+    int normalTextureIndex;             // 4 bytes (offset 72)
+    int emissiveTextureIndex;           // 4 bytes (offset 76)
 };
 
 layout(std430, set = 0, binding = 5) buffer Materials {
     GpuMaterial materials[];
 };
+
+// Texture array for PBR materials (binding 6)
+// All textures are stored in a single array, indexed by material texture indices
+layout(set = 0, binding = 6) uniform sampler2D materialTextures[32]; // Support up to 32 textures
+
+// Sample a texture from the array (returns vec4(1) if index is invalid)
+vec4 sampleMaterialTexture(int textureIndex, vec2 uv) {
+    if (textureIndex < 0 || textureIndex >= 32) {
+        return vec4(1.0);
+    }
+    return texture(materialTextures[textureIndex], uv);
+}
 
 // Constants
 const float PI = 3.14159265359;
@@ -131,8 +149,24 @@ PbrMaterial defaultMaterial() {
     return mat;
 }
 
+// Generate procedural UV from world position (triplanar-style)
+vec2 generateProceduralUV(vec3 worldPos, vec3 normal) {
+    // Use dominant axis for UV projection
+    vec3 absNormal = abs(normal);
+    vec2 uv;
+    if (absNormal.x > absNormal.y && absNormal.x > absNormal.z) {
+        uv = worldPos.yz;
+    } else if (absNormal.y > absNormal.z) {
+        uv = worldPos.xz;
+    } else {
+        uv = worldPos.xy;
+    }
+    return fract(uv); // Tile the UV
+}
+
 // Get material for a triangle, using the material buffer if available
-PbrMaterial getMaterial(GpuTriangle tri) {
+// worldPos is used for procedural UV generation when textures are present
+PbrMaterial getMaterialWithTextures(GpuTriangle tri, vec3 worldPos, vec3 normal) {
     PbrMaterial mat = defaultMaterial();
     
     // Check if triangle has a valid material index
@@ -151,6 +185,32 @@ PbrMaterial getMaterial(GpuTriangle tri) {
         mat.specularFactor = gpuMat.specularFactor;
         mat.clearcoat = gpuMat.clearcoat;
         mat.clearcoatRoughness = gpuMat.clearcoatRoughness;
+        
+        // Sample textures if available (using procedural UVs)
+        vec2 uv = generateProceduralUV(worldPos, normal);
+        
+        // Base color texture
+        if (gpuMat.baseColorTextureIndex >= 0) {
+            vec4 texColor = sampleMaterialTexture(gpuMat.baseColorTextureIndex, uv);
+            mat.baseColorFactor *= texColor; // Multiply factor with texture
+        }
+        
+        // Metallic-Roughness texture (G=roughness, B=metallic)
+        if (gpuMat.metallicRoughnessTextureIndex >= 0) {
+            vec4 mrTex = sampleMaterialTexture(gpuMat.metallicRoughnessTextureIndex, uv);
+            mat.roughness *= mrTex.g;
+            mat.metallic *= mrTex.b;
+        }
+        
+        // Emissive texture
+        if (gpuMat.emissiveTextureIndex >= 0) {
+            vec4 emTex = sampleMaterialTexture(gpuMat.emissiveTextureIndex, uv);
+            mat.emissiveFactor *= emTex.rgb;
+        }
+        
+        // Note: Normal mapping requires tangent space calculation, 
+        // which needs proper UVs - skipped for procedural UVs
+        
     } else {
         // Fallback: derive material from triangle's embedded color data
         mat.baseColorFactor = tri.albedo;
@@ -162,6 +222,11 @@ PbrMaterial getMaterial(GpuTriangle tri) {
     }
     
     return mat;
+}
+
+// Get material without texture sampling (backward compatibility)
+PbrMaterial getMaterial(GpuTriangle tri) {
+    return getMaterialWithTextures(tri, vec3(0.0), vec3(0.0, 1.0, 0.0));
 }
 
 // Legacy alias for compatibility

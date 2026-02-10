@@ -129,16 +129,58 @@ public class MaterialLibrary
     }
     
     /// <summary>
-    /// Get GPU-ready material array for shader upload
+    /// Get GPU-ready material array for shader upload (without textures)
     /// </summary>
     public GpuMaterial[] GetGpuMaterials()
+    {
+        return GetGpuMaterials(null);
+    }
+    
+    /// <summary>
+    /// Get GPU-ready material array for shader upload with texture support
+    /// </summary>
+    /// <param name="textureLibrary">Optional texture library for resolving texture indices</param>
+    public GpuMaterial[] GetGpuMaterials(TextureLibrary? textureLibrary)
     {
         if (_isDirty || _gpuMaterials.Length != _materials.Count)
         {
             _gpuMaterials = new GpuMaterial[_materials.Count];
+            
+            // Create texture resolver if we have a texture library
+            Func<string?, int>? resolveBaseColor = null;
+            Func<string?, int>? resolveMetallicRoughness = null;
+            Func<string?, int>? resolveNormal = null;
+            Func<string?, int>? resolveEmissive = null;
+            
+            if (textureLibrary != null)
+            {
+                resolveBaseColor = path => textureLibrary.GetTextureIndex(path, PbrTextureType.BaseColor);
+                resolveMetallicRoughness = path => textureLibrary.GetTextureIndex(path, PbrTextureType.MetallicRoughness);
+                resolveNormal = path => textureLibrary.GetTextureIndex(path, PbrTextureType.Normal);
+                resolveEmissive = path => textureLibrary.GetTextureIndex(path, PbrTextureType.Emissive);
+            }
+            
             for (int i = 0; i < _materials.Count; i++)
             {
-                _gpuMaterials[i] = GpuMaterial.FromPbrMaterial(_materials[i]);
+                var mat = _materials[i];
+                _gpuMaterials[i] = new GpuMaterial
+                {
+                    BaseColorFactor = mat.BaseColorFactor,
+                    MetallicFactor = mat.MetallicFactor,
+                    RoughnessFactor = mat.RoughnessFactor,
+                    NormalScale = mat.NormalScale,
+                    OcclusionStrength = mat.OcclusionStrength,
+                    EmissiveFactor = mat.EmissiveFactor,
+                    EmissiveIntensity = mat.EmissiveIntensity,
+                    IndexOfRefraction = mat.IndexOfRefraction,
+                    SpecularFactor = mat.SpecularFactor,
+                    ClearcoatFactor = mat.ClearcoatFactor,
+                    ClearcoatRoughness = mat.ClearcoatRoughness,
+                    BaseColorTextureIndex = resolveBaseColor?.Invoke(mat.BaseColorTexturePath) ?? -1,
+                    MetallicRoughnessTextureIndex = resolveMetallicRoughness?.Invoke(mat.MetallicRoughnessTexturePath) ?? -1,
+                    NormalTextureIndex = resolveNormal?.Invoke(mat.NormalTexturePath) ?? -1,
+                    EmissiveTextureIndex = resolveEmissive?.Invoke(mat.EmissiveTexturePath) ?? -1
+                };
             }
             _isDirty = false;
         }

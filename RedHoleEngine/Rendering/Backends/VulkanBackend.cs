@@ -100,6 +100,15 @@ public unsafe class VulkanBackend : IGraphicsBackend
     private ulong _materialBufferSize;
     private int _materialCount;
 
+    // PBR Texture array
+    private const int MaxMaterialTextures = 32;
+    private Image[] _materialTextureImages = Array.Empty<Image>();
+    private DeviceMemory[] _materialTextureMemories = Array.Empty<DeviceMemory>();
+    private ImageView[] _materialTextureViews = Array.Empty<ImageView>();
+    private Sampler _materialTextureSampler;
+    private int _materialTextureCount;
+    private TextureLibrary? _textureLibrary;
+
     private Image _accumImage;
     private DeviceMemory _accumImageMemory;
     private ImageView _accumImageView;
@@ -186,6 +195,7 @@ public unsafe class VulkanBackend : IGraphicsBackend
         CreateDescriptorPool();
         CreateDescriptorSets();
         CreateUniformBuffer();
+        CreateMaterialTextureSampler();
         CreateCommandPools();
         CreateCommandBuffers();
         CreateSyncObjects();
@@ -1141,6 +1151,13 @@ public unsafe class VulkanBackend : IGraphicsBackend
                 DescriptorType = DescriptorType.StorageBuffer,
                 DescriptorCount = 1,
                 StageFlags = ShaderStageFlags.ComputeBit
+            },
+            new() // Material textures array
+            {
+                Binding = 6,
+                DescriptorType = DescriptorType.CombinedImageSampler,
+                DescriptorCount = MaxMaterialTextures,
+                StageFlags = ShaderStageFlags.ComputeBit
             }
         };
 
@@ -1378,7 +1395,8 @@ public unsafe class VulkanBackend : IGraphicsBackend
         {
             new() { Type = DescriptorType.StorageImage, DescriptorCount = 2 },
             new() { Type = DescriptorType.UniformBuffer, DescriptorCount = 1 },
-            new() { Type = DescriptorType.StorageBuffer, DescriptorCount = 3 } // BVH, Triangles, Materials
+            new() { Type = DescriptorType.StorageBuffer, DescriptorCount = 3 }, // BVH, Triangles, Materials
+            new() { Type = DescriptorType.CombinedImageSampler, DescriptorCount = MaxMaterialTextures } // Material textures
         };
 
         fixed (DescriptorPoolSize* poolSizesPtr = poolSizes)
@@ -1742,8 +1760,349 @@ public unsafe class VulkanBackend : IGraphicsBackend
     /// </summary>
     public void UploadMaterials(MaterialLibrary library)
     {
-        var gpuMaterials = library.GetGpuMaterials();
+        // Store reference to texture library if we have one
+        _textureLibrary ??= new TextureLibrary();
+        
+        // Preload textures from materials
+        _textureLibrary.PreloadMaterialTextures(library);
+        
+        // Upload textures if they changed
+        if (_textureLibrary.IsDirty)
+        {
+            UploadMaterialTextures(_textureLibrary);
+        }
+        
+        // Get GPU materials with texture indices resolved
+        var gpuMaterials = library.GetGpuMaterials(_textureLibrary);
         UploadMaterials(gpuMaterials);
+    }
+
+    private void CreateMaterialTextureSampler()
+    {
+        var samplerInfo = new SamplerCreateInfo
+        {
+            SType = StructureType.SamplerCreateInfo,
+            MagFilter = Filter.Linear,
+            MinFilter = Filter.Linear,
+            AddressModeU = SamplerAddressMode.Repeat,
+            AddressModeV = SamplerAddressMode.Repeat,
+            AddressModeW = SamplerAddressMode.Repeat,
+            AnisotropyEnable = true,
+            MaxAnisotropy = 16,
+            BorderColor = BorderColor.IntOpaqueBlack,
+            UnnormalizedCoordinates = false,
+            CompareEnable = false,
+            CompareOp = CompareOp.Always,
+            MipmapMode = SamplerMipmapMode.Linear,
+            MipLodBias = 0f,
+            MinLod = 0f,
+            MaxLod = 0f
+        };
+
+        fixed (Sampler* samplerPtr = &_materialTextureSampler)
+        {
+            if (_vk!.CreateSampler(_device, &samplerInfo, null, samplerPtr) != Result.Success)
+            {
+                throw new Exception("Failed to create material texture sampler");
+            }
+        }
+        
+        // Initialize empty texture array with placeholder white textures
+        InitializePlaceholderTextures();
+    }
+
+    private void InitializePlaceholderTextures()
+    {
+        _materialTextureImages = new Image[MaxMaterialTextures];
+        _materialTextureMemories = new DeviceMemory[MaxMaterialTextures];
+        _materialTextureViews = new ImageView[MaxMaterialTextures];
+
+        // Create a single 1x1 white pixel for placeholder
+        byte[] whitePixel = { 255, 255, 255, 255 };
+
+        for (int i = 0; i < MaxMaterialTextures; i++)
+        {
+            CreateTextureImage(whitePixel, 1, 1, out _materialTextureImages[i], out _materialTextureMemories[i]);
+            _materialTextureViews[i] = CreateTextureImageView(_materialTextureImages[i]);
+        }
+
+        // Update descriptor set with placeholder textures
+        UpdateMaterialTextureDescriptors();
+    }
+
+    private void UploadMaterialTextures(TextureLibrary textureLibrary)
+    {
+        var textures = textureLibrary.Textures;
+        _materialTextureCount = Math.Min(textures.Count, MaxMaterialTextures);
+
+        for (int i = 0; i < _materialTextureCount; i++)
+        {
+            var texture = textures[i];
+            
+            // Destroy old texture if it exists (not the placeholder)
+            if (_materialTextureImages[i].Handle != 0)
+            {
+                _vk!.DestroyImageView(_device, _materialTextureViews[i], null);
+                _vk.DestroyImage(_device, _materialTextureImages[i], null);
+                _vk.FreeMemory(_device, _materialTextureMemories[i], null);
+            }
+
+            // Create new texture
+            CreateTextureImage(texture.PixelData, texture.Width, texture.Height, 
+                out _materialTextureImages[i], out _materialTextureMemories[i]);
+            _materialTextureViews[i] = CreateTextureImageView(_materialTextureImages[i]);
+        }
+
+        // Update descriptor set
+        UpdateMaterialTextureDescriptors();
+        textureLibrary.MarkClean();
+        
+        Console.WriteLine($"Uploaded {_materialTextureCount} material textures to GPU");
+    }
+
+    private void CreateTextureImage(byte[] pixels, int width, int height, out Image image, out DeviceMemory memory)
+    {
+        ulong imageSize = (ulong)(width * height * 4);
+
+        // Create staging buffer
+        CreateBuffer(imageSize, BufferUsageFlags.TransferSrcBit,
+            MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit,
+            out var stagingBuffer, out var stagingMemory);
+
+        // Copy pixel data to staging buffer
+        void* data;
+        _vk!.MapMemory(_device, stagingMemory, 0, imageSize, 0, &data);
+        fixed (byte* pixelsPtr = pixels)
+        {
+            System.Buffer.MemoryCopy(pixelsPtr, data, imageSize, imageSize);
+        }
+        _vk.UnmapMemory(_device, stagingMemory);
+
+        // Create image
+        var imageInfo = new ImageCreateInfo
+        {
+            SType = StructureType.ImageCreateInfo,
+            ImageType = ImageType.Type2D,
+            Extent = new Extent3D((uint)width, (uint)height, 1),
+            MipLevels = 1,
+            ArrayLayers = 1,
+            Format = Format.R8G8B8A8Srgb,
+            Tiling = ImageTiling.Optimal,
+            InitialLayout = ImageLayout.Undefined,
+            Usage = ImageUsageFlags.TransferDstBit | ImageUsageFlags.SampledBit,
+            SharingMode = SharingMode.Exclusive,
+            Samples = SampleCountFlags.Count1Bit
+        };
+
+        fixed (Image* imagePtr = &image)
+        {
+            if (_vk.CreateImage(_device, &imageInfo, null, imagePtr) != Result.Success)
+            {
+                throw new Exception("Failed to create texture image");
+            }
+        }
+
+        // Allocate memory
+        _vk.GetImageMemoryRequirements(_device, image, out var memRequirements);
+
+        var allocInfo = new MemoryAllocateInfo
+        {
+            SType = StructureType.MemoryAllocateInfo,
+            AllocationSize = memRequirements.Size,
+            MemoryTypeIndex = FindMemoryType(memRequirements.MemoryTypeBits, MemoryPropertyFlags.DeviceLocalBit)
+        };
+
+        fixed (DeviceMemory* memoryPtr = &memory)
+        {
+            if (_vk.AllocateMemory(_device, &allocInfo, null, memoryPtr) != Result.Success)
+            {
+                throw new Exception("Failed to allocate texture image memory");
+            }
+        }
+
+        _vk.BindImageMemory(_device, image, memory, 0);
+
+        // Transition image layout and copy data
+        TransitionImageLayout(image, ImageLayout.Undefined, ImageLayout.TransferDstOptimal);
+        CopyBufferToImage(stagingBuffer, image, (uint)width, (uint)height);
+        TransitionImageLayout(image, ImageLayout.TransferDstOptimal, ImageLayout.ShaderReadOnlyOptimal);
+
+        // Cleanup staging buffer
+        _vk.DestroyBuffer(_device, stagingBuffer, null);
+        _vk.FreeMemory(_device, stagingMemory, null);
+    }
+
+    private ImageView CreateTextureImageView(Image image)
+    {
+        var viewInfo = new ImageViewCreateInfo
+        {
+            SType = StructureType.ImageViewCreateInfo,
+            Image = image,
+            ViewType = ImageViewType.Type2D,
+            Format = Format.R8G8B8A8Srgb,
+            SubresourceRange = new ImageSubresourceRange
+            {
+                AspectMask = ImageAspectFlags.ColorBit,
+                BaseMipLevel = 0,
+                LevelCount = 1,
+                BaseArrayLayer = 0,
+                LayerCount = 1
+            }
+        };
+
+        ImageView imageView;
+        if (_vk!.CreateImageView(_device, &viewInfo, null, &imageView) != Result.Success)
+        {
+            throw new Exception("Failed to create texture image view");
+        }
+
+        return imageView;
+    }
+
+    private void TransitionImageLayout(Image image, ImageLayout oldLayout, ImageLayout newLayout)
+    {
+        var commandBuffer = BeginSingleTimeCommands();
+
+        var barrier = new ImageMemoryBarrier
+        {
+            SType = StructureType.ImageMemoryBarrier,
+            OldLayout = oldLayout,
+            NewLayout = newLayout,
+            SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
+            DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
+            Image = image,
+            SubresourceRange = new ImageSubresourceRange
+            {
+                AspectMask = ImageAspectFlags.ColorBit,
+                BaseMipLevel = 0,
+                LevelCount = 1,
+                BaseArrayLayer = 0,
+                LayerCount = 1
+            }
+        };
+
+        PipelineStageFlags sourceStage;
+        PipelineStageFlags destinationStage;
+
+        if (oldLayout == ImageLayout.Undefined && newLayout == ImageLayout.TransferDstOptimal)
+        {
+            barrier.SrcAccessMask = 0;
+            barrier.DstAccessMask = AccessFlags.TransferWriteBit;
+            sourceStage = PipelineStageFlags.TopOfPipeBit;
+            destinationStage = PipelineStageFlags.TransferBit;
+        }
+        else if (oldLayout == ImageLayout.TransferDstOptimal && newLayout == ImageLayout.ShaderReadOnlyOptimal)
+        {
+            barrier.SrcAccessMask = AccessFlags.TransferWriteBit;
+            barrier.DstAccessMask = AccessFlags.ShaderReadBit;
+            sourceStage = PipelineStageFlags.TransferBit;
+            destinationStage = PipelineStageFlags.ComputeShaderBit;
+        }
+        else
+        {
+            throw new ArgumentException("Unsupported layout transition");
+        }
+
+        _vk!.CmdPipelineBarrier(commandBuffer, sourceStage, destinationStage, 0,
+            0, null, 0, null, 1, &barrier);
+
+        EndSingleTimeCommands(commandBuffer);
+    }
+
+    private void CopyBufferToImage(VkBuffer buffer, Image image, uint width, uint height)
+    {
+        var commandBuffer = BeginSingleTimeCommands();
+
+        var region = new BufferImageCopy
+        {
+            BufferOffset = 0,
+            BufferRowLength = 0,
+            BufferImageHeight = 0,
+            ImageSubresource = new ImageSubresourceLayers
+            {
+                AspectMask = ImageAspectFlags.ColorBit,
+                MipLevel = 0,
+                BaseArrayLayer = 0,
+                LayerCount = 1
+            },
+            ImageOffset = new Offset3D(0, 0, 0),
+            ImageExtent = new Extent3D(width, height, 1)
+        };
+
+        _vk!.CmdCopyBufferToImage(commandBuffer, buffer, image, ImageLayout.TransferDstOptimal, 1, &region);
+
+        EndSingleTimeCommands(commandBuffer);
+    }
+
+    private CommandBuffer BeginSingleTimeCommands()
+    {
+        var allocInfo = new CommandBufferAllocateInfo
+        {
+            SType = StructureType.CommandBufferAllocateInfo,
+            Level = CommandBufferLevel.Primary,
+            CommandPool = _graphicsCommandPool,
+            CommandBufferCount = 1
+        };
+
+        CommandBuffer commandBuffer;
+        _vk!.AllocateCommandBuffers(_device, &allocInfo, &commandBuffer);
+
+        var beginInfo = new CommandBufferBeginInfo
+        {
+            SType = StructureType.CommandBufferBeginInfo,
+            Flags = CommandBufferUsageFlags.OneTimeSubmitBit
+        };
+
+        _vk.BeginCommandBuffer(commandBuffer, &beginInfo);
+
+        return commandBuffer;
+    }
+
+    private void EndSingleTimeCommands(CommandBuffer commandBuffer)
+    {
+        _vk!.EndCommandBuffer(commandBuffer);
+
+        var submitInfo = new SubmitInfo
+        {
+            SType = StructureType.SubmitInfo,
+            CommandBufferCount = 1,
+            PCommandBuffers = &commandBuffer
+        };
+
+        _vk.QueueSubmit(_graphicsQueue, 1, &submitInfo, default);
+        _vk.QueueWaitIdle(_graphicsQueue);
+
+        _vk.FreeCommandBuffers(_device, _graphicsCommandPool, 1, &commandBuffer);
+    }
+
+    private void UpdateMaterialTextureDescriptors()
+    {
+        var imageInfos = new DescriptorImageInfo[MaxMaterialTextures];
+        for (int i = 0; i < MaxMaterialTextures; i++)
+        {
+            imageInfos[i] = new DescriptorImageInfo
+            {
+                ImageLayout = ImageLayout.ShaderReadOnlyOptimal,
+                ImageView = _materialTextureViews[i],
+                Sampler = _materialTextureSampler
+            };
+        }
+
+        fixed (DescriptorImageInfo* imageInfosPtr = imageInfos)
+        {
+            var write = new WriteDescriptorSet
+            {
+                SType = StructureType.WriteDescriptorSet,
+                DstSet = _computeDescriptorSet,
+                DstBinding = 6,
+                DstArrayElement = 0,
+                DescriptorType = DescriptorType.CombinedImageSampler,
+                DescriptorCount = MaxMaterialTextures,
+                PImageInfo = imageInfosPtr
+            };
+
+            _vk!.UpdateDescriptorSets(_device, 1, &write, 0, null);
+        }
     }
 
     private void CreateBuffer(ulong size, BufferUsageFlags usage, MemoryPropertyFlags properties, out VkBuffer buffer, out DeviceMemory memory)

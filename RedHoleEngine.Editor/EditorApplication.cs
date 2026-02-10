@@ -1111,7 +1111,8 @@ public class EditorApplication : IDisposable
             }
         }
 
-        return BlackHole.CreateDefault();
+        // No black hole in scene - return one with zero mass (no lensing effect)
+        return new BlackHole(Vector3.Zero, 0f);
     }
 
     private void DrawGizmoOverlay(ImDrawListPtr drawList, Vector2 imageMin, Vector2 imageMax)

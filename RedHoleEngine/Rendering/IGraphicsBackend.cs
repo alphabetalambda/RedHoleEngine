@@ -3,6 +3,7 @@ using RedHoleEngine.Engine;
 using RedHoleEngine.Particles;
 using RedHoleEngine.Physics;
 using RedHoleEngine.Rendering.Debug;
+using RedHoleEngine.Rendering.PBR;
 using RedHoleEngine.Rendering.Raytracing;
 using RedHoleEngine.Rendering.Rasterization;
 using RedHoleEngine.Rendering.UI;
@@ -93,4 +94,9 @@ public interface IGraphicsBackend : IDisposable
     /// Update UI draw data
     /// </summary>
     void SetUiDrawData(UiDrawData drawData);
+
+    /// <summary>
+    /// Upload PBR materials to the GPU
+    /// </summary>
+    void UploadMaterials(MaterialLibrary library);
 }

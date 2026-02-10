@@ -6,6 +6,7 @@ using RedHoleEngine.Core.ECS;
 using RedHoleEngine.Engine;
 using RedHoleEngine.Physics;
 using RedHoleEngine.Rendering;
+using RedHoleEngine.Rendering.PBR;
 using RedHoleEngine.Rendering.Raytracing;
 using RedHoleEngine.Resources;
 
@@ -18,8 +19,10 @@ public class RaytracerMeshSystem : GameSystem
 {
     private IGraphicsBackend? _backend;
     private Camera? _camera;
+    private MaterialLibrary? _materialLibrary;
     private int _lastSceneHash;
     private int _lastTriangleCount;
+    private int _lastMaterialHash;
 
     public override int Priority => -50;
 
@@ -31,6 +34,14 @@ public class RaytracerMeshSystem : GameSystem
     public void SetCamera(Camera camera)
     {
         _camera = camera;
+    }
+
+    /// <summary>
+    /// Set the material library for PBR material lookups
+    /// </summary>
+    public void SetMaterialLibrary(MaterialLibrary library)
+    {
+        _materialLibrary = library;
     }
 
     public override void Update(float deltaTime)
@@ -86,7 +97,19 @@ public class RaytracerMeshSystem : GameSystem
         }
 
         int sceneHash = hash.ToHashCode();
-        if (sceneHash == _lastSceneHash && triangles.Count == _lastTriangleCount)
+        
+        // Check if materials need uploading
+        int materialHash = _materialLibrary?.GetHashCode() ?? 0;
+        bool materialsChanged = materialHash != _lastMaterialHash;
+        
+        if (materialsChanged && _materialLibrary != null)
+        {
+            // Upload materials to GPU
+            _backend.UploadMaterials(_materialLibrary);
+            _lastMaterialHash = materialHash;
+        }
+        
+        if (sceneHash == _lastSceneHash && triangles.Count == _lastTriangleCount && !materialsChanged)
             return;
 
         var data = RaytracerMeshBuilder.Build(triangles);
@@ -221,6 +244,7 @@ public class RaytracerMeshSystem : GameSystem
                 V0 = v0,
                 V1 = v1,
                 V2 = v2,
+                MaterialIndex = material.PbrMaterialId, // -1 if using inline, or valid material index
                 Normal = normal,
                 Albedo = material.BaseColor,
                 Emissive = new Vector4(material.EmissiveColor, 1f)
@@ -231,6 +255,7 @@ public class RaytracerMeshSystem : GameSystem
     private static void AddHash(ref HashCode hash, string meshId, MaterialComponent material, TransformComponent transform)
     {
         hash.Add(meshId ?? string.Empty);
+        hash.Add(material.PbrMaterialId); // Include PBR material ID in hash
         hash.Add(material.BaseColor.X);
         hash.Add(material.BaseColor.Y);
         hash.Add(material.BaseColor.Z);

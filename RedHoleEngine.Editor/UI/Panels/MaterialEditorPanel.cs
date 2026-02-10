@@ -2,6 +2,7 @@ using System.Numerics;
 using ImGuiNET;
 using RedHoleEngine.Editor.Project;
 using RedHoleEngine.Rendering.PBR;
+using Silk.NET.OpenGL;
 
 namespace RedHoleEngine.Editor.UI.Panels;
 
@@ -39,6 +40,17 @@ public class MaterialEditorPanel : EditorPanel
     private string _normalTexturePath = string.Empty;
     private string _emissiveTexturePath = string.Empty;
     
+    // Preview rendering
+    private GL? _gl;
+    private MaterialPreviewRenderer? _previewRenderer;
+    private uint _previewTexture;
+    private const int PreviewSize = 192;
+    private bool _previewNeedsUpdate = true;
+    private float _previewRotationX;
+    private float _previewRotationY;
+    private bool _isDraggingPreview;
+    private Vector2 _lastMousePos;
+    
     private static readonly string[] TextureFilter = { "png", "jpg", "jpeg", "tga", "bmp" };
     
     private static readonly string[] AlphaModeNames = { "Opaque", "Mask", "Blend" };
@@ -67,6 +79,45 @@ public class MaterialEditorPanel : EditorPanel
     public PbrMaterial? CurrentMaterial => _currentMaterial;
     
     /// <summary>
+    /// Initialize the preview renderer with OpenGL context.
+    /// Must be called after GL is available.
+    /// </summary>
+    public void InitializePreview(GL gl)
+    {
+        _gl = gl;
+        _previewRenderer = new MaterialPreviewRenderer(PreviewSize, PreviewSize);
+        
+        // Create preview texture
+        _previewTexture = _gl.GenTexture();
+        _gl.BindTexture(TextureTarget.Texture2D, _previewTexture);
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)GLEnum.Linear);
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)GLEnum.Linear);
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)GLEnum.ClampToEdge);
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, (int)GLEnum.ClampToEdge);
+        
+        // Initialize with empty data
+        unsafe
+        {
+            _gl.TexImage2D(TextureTarget.Texture2D, 0, InternalFormat.Rgba8, 
+                PreviewSize, PreviewSize, 0, PixelFormat.Rgba, PixelType.UnsignedByte, (void*)0);
+        }
+        
+        _previewNeedsUpdate = true;
+    }
+    
+    /// <summary>
+    /// Clean up preview resources
+    /// </summary>
+    public void DisposePreview()
+    {
+        if (_previewTexture != 0 && _gl != null)
+        {
+            _gl.DeleteTexture(_previewTexture);
+            _previewTexture = 0;
+        }
+    }
+    
+    /// <summary>
     /// Whether there are unsaved changes
     /// </summary>
     public bool IsDirty => _isDirty;
@@ -79,6 +130,7 @@ public class MaterialEditorPanel : EditorPanel
         _currentMaterial = PbrMaterial.Default();
         _currentFilePath = string.Empty;
         _isDirty = false;
+        _previewNeedsUpdate = true;
         SyncFromMaterial();
     }
     
@@ -92,6 +144,7 @@ public class MaterialEditorPanel : EditorPanel
             _currentMaterial = material;
             _currentFilePath = filePath;
             _isDirty = false;
+            _previewNeedsUpdate = true;
             SyncFromMaterial();
             _onMaterialSelected?.Invoke(filePath);
             return true;
@@ -163,7 +216,7 @@ public class MaterialEditorPanel : EditorPanel
         
         _currentMaterial.Name = PresetNames[presetIndex];
         SyncFromMaterial();
-        _isDirty = true;
+        MarkDirty();
     }
     
     private void SyncFromMaterial()
@@ -211,6 +264,12 @@ public class MaterialEditorPanel : EditorPanel
         _currentMaterial.NormalTexturePath = string.IsNullOrEmpty(_normalTexturePath) ? null : _normalTexturePath;
         _currentMaterial.EmissiveTexturePath = string.IsNullOrEmpty(_emissiveTexturePath) ? null : _emissiveTexturePath;
     }
+    
+    private void MarkDirty()
+    {
+        MarkDirty();
+        _previewNeedsUpdate = true;
+    }
 
     protected override void OnDraw()
     {
@@ -234,7 +293,7 @@ public class MaterialEditorPanel : EditorPanel
         if (ImGui.InputText("Name", ref name, 256))
         {
             _currentMaterial.Name = name;
-            _isDirty = true;
+            MarkDirty();
         }
         
         // File path (read-only)
@@ -268,7 +327,7 @@ public class MaterialEditorPanel : EditorPanel
         {
             if (ImGui.ColorEdit4("Color##Base", ref _baseColor))
             {
-                _isDirty = true;
+                MarkDirty();
             }
             
             // Texture slot
@@ -280,12 +339,12 @@ public class MaterialEditorPanel : EditorPanel
         {
             if (ImGui.SliderFloat("Metallic", ref _metallic, 0f, 1f))
             {
-                _isDirty = true;
+                MarkDirty();
             }
             
             if (ImGui.SliderFloat("Roughness", ref _roughness, 0f, 1f))
             {
-                _isDirty = true;
+                MarkDirty();
             }
             
             // Quick buttons for common values
@@ -295,21 +354,21 @@ public class MaterialEditorPanel : EditorPanel
             {
                 _metallic = 0f;
                 _roughness = 0.5f;
-                _isDirty = true;
+                MarkDirty();
             }
             ImGui.SameLine();
             if (ImGui.SmallButton("Metal"))
             {
                 _metallic = 1f;
                 _roughness = 0.3f;
-                _isDirty = true;
+                MarkDirty();
             }
             ImGui.SameLine();
             if (ImGui.SmallButton("Mirror"))
             {
                 _metallic = 1f;
                 _roughness = 0f;
-                _isDirty = true;
+                MarkDirty();
             }
             
             ImGui.Separator();
@@ -329,12 +388,12 @@ public class MaterialEditorPanel : EditorPanel
         {
             if (ImGui.ColorEdit3("Color##Emissive", ref _emissiveColor))
             {
-                _isDirty = true;
+                MarkDirty();
             }
             
             if (ImGui.SliderFloat("Intensity##Emissive", ref _emissiveIntensity, 0f, 20f))
             {
-                _isDirty = true;
+                MarkDirty();
             }
             
             // Quick buttons
@@ -344,19 +403,19 @@ public class MaterialEditorPanel : EditorPanel
             {
                 _emissiveColor = Vector3.Zero;
                 _emissiveIntensity = 1f;
-                _isDirty = true;
+                MarkDirty();
             }
             ImGui.SameLine();
             if (ImGui.SmallButton("Glow"))
             {
                 _emissiveIntensity = 5f;
-                _isDirty = true;
+                MarkDirty();
             }
             ImGui.SameLine();
             if (ImGui.SmallButton("Bright"))
             {
                 _emissiveIntensity = 15f;
-                _isDirty = true;
+                MarkDirty();
             }
             
             ImGui.Separator();
@@ -368,7 +427,7 @@ public class MaterialEditorPanel : EditorPanel
         {
             if (ImGui.SliderFloat("IOR", ref _ior, 1f, 3f, "%.2f"))
             {
-                _isDirty = true;
+                MarkDirty();
             }
             if (ImGui.IsItemHovered())
             {
@@ -377,20 +436,20 @@ public class MaterialEditorPanel : EditorPanel
             
             if (ImGui.Combo("Alpha Mode", ref _alphaMode, AlphaModeNames, AlphaModeNames.Length))
             {
-                _isDirty = true;
+                MarkDirty();
             }
             
             if (_alphaMode == 1) // Mask
             {
                 if (ImGui.SliderFloat("Alpha Cutoff", ref _alphaCutoff, 0f, 1f))
                 {
-                    _isDirty = true;
+                    MarkDirty();
                 }
             }
             
             if (ImGui.Checkbox("Double Sided", ref _doubleSided))
             {
-                _isDirty = true;
+                MarkDirty();
             }
         }
         
@@ -399,25 +458,27 @@ public class MaterialEditorPanel : EditorPanel
         {
             if (ImGui.SliderFloat("Clearcoat", ref _clearcoat, 0f, 1f))
             {
-                _isDirty = true;
+                MarkDirty();
             }
             
             if (_clearcoat > 0f)
             {
                 if (ImGui.SliderFloat("Clearcoat Roughness", ref _clearcoatRoughness, 0f, 1f))
                 {
-                    _isDirty = true;
+                    MarkDirty();
                 }
             }
             
             ImGui.TextDisabled("Use for car paint, lacquered wood, etc.");
         }
         
-        // Preview (placeholder)
+        // Preview
         ImGui.Separator();
-        if (ImGui.CollapsingHeader("Preview"))
+        if (ImGui.CollapsingHeader("Preview", ImGuiTreeNodeFlags.DefaultOpen))
         {
-            ImGui.TextDisabled("Material preview coming soon...");
+            DrawPreview();
+            
+            ImGui.Separator();
             
             // Show a summary
             ImGui.Text($"Type: {(_metallic > 0.5f ? "Metal" : "Dielectric")}");
@@ -430,6 +491,92 @@ public class MaterialEditorPanel : EditorPanel
             {
                 ImGui.Text("Clearcoat: Yes");
             }
+        }
+    }
+    
+    private void DrawPreview()
+    {
+        if (_previewRenderer == null || _gl == null || _previewTexture == 0)
+        {
+            ImGui.TextDisabled("Preview not available");
+            ImGui.TextDisabled("(GL context not initialized)");
+            return;
+        }
+        
+        // Update preview if material changed
+        if (_previewNeedsUpdate && _currentMaterial != null)
+        {
+            SyncToMaterial();
+            _previewRenderer.SetRotation(_previewRotationX, _previewRotationY);
+            _previewRenderer.Render(_currentMaterial);
+            
+            // Upload to texture
+            unsafe
+            {
+                fixed (byte* ptr = _previewRenderer.Buffer)
+                {
+                    _gl.BindTexture(TextureTarget.Texture2D, _previewTexture);
+                    _gl.TexSubImage2D(TextureTarget.Texture2D, 0, 0, 0, 
+                        (uint)PreviewSize, (uint)PreviewSize, 
+                        PixelFormat.Rgba, PixelType.UnsignedByte, ptr);
+                }
+            }
+            
+            _previewNeedsUpdate = false;
+        }
+        
+        // Center the preview image
+        var availWidth = ImGui.GetContentRegionAvail().X;
+        var offset = (availWidth - PreviewSize) * 0.5f;
+        if (offset > 0)
+            ImGui.SetCursorPosX(ImGui.GetCursorPosX() + offset);
+        
+        // Draw the preview image
+        var cursorPos = ImGui.GetCursorScreenPos();
+        ImGui.Image((IntPtr)_previewTexture, new Vector2(PreviewSize, PreviewSize));
+        
+        // Handle mouse interaction for rotation
+        if (ImGui.IsItemHovered())
+        {
+            ImGui.SetTooltip("Drag to rotate");
+            
+            if (ImGui.IsMouseClicked(ImGuiMouseButton.Left))
+            {
+                _isDraggingPreview = true;
+                _lastMousePos = ImGui.GetMousePos();
+            }
+        }
+        
+        if (_isDraggingPreview)
+        {
+            if (ImGui.IsMouseDown(ImGuiMouseButton.Left))
+            {
+                var mousePos = ImGui.GetMousePos();
+                var delta = mousePos - _lastMousePos;
+                
+                _previewRotationY += delta.X * 0.01f;
+                _previewRotationX += delta.Y * 0.01f;
+                
+                // Clamp X rotation to avoid flipping
+                _previewRotationX = Math.Clamp(_previewRotationX, -MathF.PI * 0.4f, MathF.PI * 0.4f);
+                
+                _lastMousePos = mousePos;
+                _previewNeedsUpdate = true;
+            }
+            else
+            {
+                _isDraggingPreview = false;
+            }
+        }
+        
+        // Reset rotation button
+        if (offset > 0)
+            ImGui.SetCursorPosX(ImGui.GetCursorPosX() + offset);
+        if (ImGui.SmallButton("Reset View"))
+        {
+            _previewRotationX = 0;
+            _previewRotationY = 0;
+            _previewNeedsUpdate = true;
         }
     }
     
@@ -582,7 +729,7 @@ public class MaterialEditorPanel : EditorPanel
             if (ImGui.SmallButton("X"))
             {
                 texturePath = string.Empty;
-                _isDirty = true;
+                MarkDirty();
             }
             if (ImGui.IsItemHovered())
             {
@@ -594,7 +741,7 @@ public class MaterialEditorPanel : EditorPanel
         ImGui.SetNextItemWidth(-1);
         if (ImGui.InputText("##path", ref texturePath, 512))
         {
-            _isDirty = true;
+            MarkDirty();
         }
         
         ImGui.PopID();

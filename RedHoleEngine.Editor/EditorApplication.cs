@@ -209,6 +209,9 @@ public class EditorApplication : IDisposable
         {
             panel.SetContext(_world, _selection, _undoRedo);
         }
+        
+        // Initialize material preview with GL context
+        _materialEditorPanel.InitializePreview(_gl);
 
         // Hook undo system to mark scene dirty for auto-save
         _undoRedo.StateChanged += () => _autoSaveManager?.MarkDirty();
@@ -1277,6 +1280,9 @@ public class EditorApplication : IDisposable
             _gl?.DeleteTexture(_viewportPreviewTexture);
             _viewportPreviewTexture = 0;
         }
+        
+        // Dispose material preview
+        _materialEditorPanel.DisposePreview();
     }
 
     #region Scene Save/Load

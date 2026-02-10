@@ -206,9 +206,9 @@ public unsafe class VulkanBackend : IGraphicsBackend
         CreateDescriptorSets();
         CreateUniformBuffer();
         CreateMaterialTextureSampler();
-        InitializeEnvironmentMap();
         CreateCommandPools();
         CreateCommandBuffers();
+        InitializeEnvironmentMap();
         CreateSyncObjects();
         InitializeDebugRenderer();
         InitializeUiRenderer();

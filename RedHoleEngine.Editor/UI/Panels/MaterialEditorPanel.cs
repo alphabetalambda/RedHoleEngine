@@ -51,6 +51,10 @@ public class MaterialEditorPanel : EditorPanel
     private bool _isDraggingPreview;
     private Vector2 _lastMousePos;
     
+    // File dialog for texture selection
+    private readonly FileDialog _textureFileDialog = new();
+    private string _pendingTextureSlot = string.Empty;
+    
     private static readonly string[] TextureFilter = { "png", "jpg", "jpeg", "tga", "bmp" };
     
     private static readonly string[] AlphaModeNames = { "Opaque", "Mask", "Blend" };
@@ -492,6 +496,9 @@ public class MaterialEditorPanel : EditorPanel
                 ImGui.Text("Clearcoat: Yes");
             }
         }
+        
+        // Draw texture file dialog (must be called every frame when open)
+        DrawTextureFileDialog();
     }
     
     private void DrawPreview()
@@ -709,13 +716,18 @@ public class MaterialEditorPanel : EditorPanel
         ImGui.SameLine();
         if (ImGui.SmallButton("..."))
         {
-            // For now, just show the textures folder
-            var texturesPath = GetTexturesPath();
-            if (!string.IsNullOrEmpty(texturesPath))
+            _pendingTextureSlot = uniqueId;
+            var startDir = GetTexturesPath();
+            if (string.IsNullOrEmpty(startDir) || !Directory.Exists(startDir))
             {
-                Console.WriteLine($"Textures folder: {texturesPath}");
-                // In a real implementation, this would open a file dialog
+                startDir = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
             }
+            _textureFileDialog.Open(
+                FileDialogMode.Open, 
+                "Texture", 
+                startDir, 
+                "Image Files|*.png|*.jpg|*.jpeg|*.tga|*.bmp|*.hdr",
+                "");
         }
         if (ImGui.IsItemHovered())
         {
@@ -757,5 +769,38 @@ public class MaterialEditorPanel : EditorPanel
             return string.Empty;
             
         return Path.Combine(assetsPath, "Textures");
+    }
+    
+    private void DrawTextureFileDialog()
+    {
+        var result = _textureFileDialog.Draw();
+        
+        if (result == FileDialogResult.Ok)
+        {
+            var path = _textureFileDialog.SelectedPath;
+            
+            switch (_pendingTextureSlot)
+            {
+                case "BaseColor":
+                    _baseColorTexturePath = path;
+                    break;
+                case "MetallicRoughness":
+                    _metallicRoughnessTexturePath = path;
+                    break;
+                case "Normal":
+                    _normalTexturePath = path;
+                    break;
+                case "Emissive":
+                    _emissiveTexturePath = path;
+                    break;
+            }
+            
+            _pendingTextureSlot = string.Empty;
+            MarkDirty();
+        }
+        else if (result == FileDialogResult.Cancel)
+        {
+            _pendingTextureSlot = string.Empty;
+        }
     }
 }

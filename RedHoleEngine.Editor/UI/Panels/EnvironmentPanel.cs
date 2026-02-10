@@ -18,6 +18,9 @@ public class EnvironmentPanel : EditorPanel
     private int _selectedPreset = -1;
     private bool _isDirty;
     
+    // File dialog for HDR loading
+    private readonly FileDialog _envFileDialog = new();
+    
     // Callbacks
     private readonly Action<EnvironmentMap?>? _onEnvironmentChanged;
     
@@ -108,10 +111,21 @@ public class EnvironmentPanel : EditorPanel
         if (ImGui.CollapsingHeader("Load HDR File"))
         {
             ImGui.Text("Path:");
-            ImGui.SetNextItemWidth(-70);
+            ImGui.SetNextItemWidth(-140);
             if (ImGui.InputText("##EnvPath", ref _envMapPath, 512))
             {
                 // Path changed
+            }
+            ImGui.SameLine();
+            if (ImGui.Button("Browse", new Vector2(65, 0)))
+            {
+                var startDir = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+                _envFileDialog.Open(
+                    FileDialogMode.Open,
+                    "Environment Map",
+                    startDir,
+                    "HDR Files (*.hdr)|*.hdr|All Images|*.png|*.jpg|*.hdr",
+                    "");
             }
             ImGui.SameLine();
             if (ImGui.Button("Load", new Vector2(60, 0)))
@@ -125,6 +139,9 @@ public class EnvironmentPanel : EditorPanel
             ImGui.Spacing();
             ImGui.TextDisabled("Drop HDR file here or enter path above");
         }
+        
+        // Draw environment file dialog
+        DrawEnvFileDialog();
         
         // Settings
         if (ImGui.CollapsingHeader("Settings", ImGuiTreeNodeFlags.DefaultOpen))
@@ -254,6 +271,17 @@ public class EnvironmentPanel : EditorPanel
     private void NotifyChanged()
     {
         _onEnvironmentChanged?.Invoke(_environmentMap);
+    }
+    
+    private void DrawEnvFileDialog()
+    {
+        var result = _envFileDialog.Draw();
+        
+        if (result == FileDialogResult.Ok)
+        {
+            _envMapPath = _envFileDialog.SelectedPath;
+            LoadEnvironmentMap(_envMapPath);
+        }
     }
     
     // Procedural sky generators

@@ -237,13 +237,13 @@ public class Renderer : IDisposable
     /// <summary>
     /// Render a frame using the raytracer
     /// </summary>
-    public void Render(Camera camera, BlackHole blackHole, float time)
+    public void Render(Camera camera, BlackHole? blackHole, float time)
     {
         RenderToTexture(camera, blackHole, time);
         DrawFullscreenQuad();
     }
 
-    public void RenderToTexture(Camera camera, BlackHole blackHole, float time)
+    public void RenderToTexture(Camera camera, BlackHole? blackHole, float time)
     {
         // Step 1: Run compute shader to raytrace
         _gl.UseProgram(_computeProgram);
@@ -280,12 +280,12 @@ public class Renderer : IDisposable
             RaytracerSettings.Accumulate ? 1f : 0f,
             RaytracerSettings.Denoise ? 1f : 0f));
         
-        // Black hole parameters
-        SetUniform(_computeProgram, "u_BlackHolePos", blackHole.Position);
-        SetUniform(_computeProgram, "u_BlackHoleMass", blackHole.Mass);
-        SetUniform(_computeProgram, "u_SchwarzschildRadius", blackHole.SchwarzschildRadius);
-        SetUniform(_computeProgram, "u_DiskInnerRadius", blackHole.DiskInnerRadius);
-        SetUniform(_computeProgram, "u_DiskOuterRadius", blackHole.DiskOuterRadius);
+        // Black hole parameters - all zero when no black hole (disables lensing)
+        SetUniform(_computeProgram, "u_BlackHolePos", blackHole?.Position ?? Vector3.Zero);
+        SetUniform(_computeProgram, "u_BlackHoleMass", blackHole?.Mass ?? 0f);
+        SetUniform(_computeProgram, "u_SchwarzschildRadius", blackHole?.SchwarzschildRadius ?? 0f);
+        SetUniform(_computeProgram, "u_DiskInnerRadius", blackHole?.DiskInnerRadius ?? 0f);
+        SetUniform(_computeProgram, "u_DiskOuterRadius", blackHole?.DiskOuterRadius ?? 0f);
 
         // Dispatch compute shader (16x16 workgroups)
         uint groupsX = (uint)Math.Ceiling(_width / 16.0);

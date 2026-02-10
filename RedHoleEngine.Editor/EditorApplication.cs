@@ -1095,7 +1095,7 @@ public class EditorApplication : IDisposable
             _raytracerSettings.ResetAccumulation = false;
     }
 
-    private BlackHole GetPreviewBlackHole()
+    private BlackHole? GetPreviewBlackHole()
     {
         if (_world != null)
         {
@@ -1111,8 +1111,8 @@ public class EditorApplication : IDisposable
             }
         }
 
-        // No black hole in scene - return one with zero mass (no lensing effect)
-        return new BlackHole(Vector3.Zero, 0f);
+        // No black hole in scene
+        return null;
     }
 
     private void DrawGizmoOverlay(ImDrawListPtr drawList, Vector2 imageMin, Vector2 imageMax)

@@ -1951,17 +1951,17 @@ public unsafe class VulkanBackend : IGraphicsBackend
         UploadBufferData(data.Indices, _rasterIndexBuffer);
     }
 
-    public void Render(Camera camera, BlackHole blackHole, float time)
+    public void Render(Camera camera, BlackHole? blackHole, float time)
     {
         Render(camera, blackHole, time, null, null);
     }
 
-    public void Render(Camera camera, BlackHole blackHole, float time, DebugDrawManager? debugDraw)
+    public void Render(Camera camera, BlackHole? blackHole, float time, DebugDrawManager? debugDraw)
     {
         Render(camera, blackHole, time, debugDraw, null);
     }
 
-    public void Render(Camera camera, BlackHole blackHole, float time, DebugDrawManager? debugDraw, ParticlePool? particles)
+    public void Render(Camera camera, BlackHole? blackHole, float time, DebugDrawManager? debugDraw, ParticlePool? particles)
     {
         var renderTimer = Profiler.Instance.GetOrCreateTimer("VulkanRender", "GPU");
         renderTimer.Start();
@@ -1987,11 +1987,12 @@ public unsafe class VulkanBackend : IGraphicsBackend
             CameraRight = camera.Right,
             CameraUp = camera.Up,
             Fov = camera.FieldOfView,
-            BlackHolePos = blackHole.Position,
-            BlackHoleMass = blackHole.Mass,
-            SchwarzschildRadius = blackHole.SchwarzschildRadius,
-            DiskInnerRadius = blackHole.DiskInnerRadius,
-            DiskOuterRadius = blackHole.DiskOuterRadius,
+            // When no black hole, set all parameters to 0 to disable lensing
+            BlackHolePos = blackHole?.Position ?? Vector3.Zero,
+            BlackHoleMass = blackHole?.Mass ?? 0f,
+            SchwarzschildRadius = blackHole?.SchwarzschildRadius ?? 0f,
+            DiskInnerRadius = blackHole?.DiskInnerRadius ?? 0f,
+            DiskOuterRadius = blackHole?.DiskOuterRadius ?? 0f,
             RaySettings = new Vector4(
                 RaytracerSettings.RaysPerPixel,
                 RaytracerSettings.MaxBounces,
@@ -2007,19 +2008,19 @@ public unsafe class VulkanBackend : IGraphicsBackend
                 RaytracerSettings.LensingStepSize,
                 RaytracerSettings.LensingBvhCheckInterval,
                 RaytracerSettings.LensingMaxDistance),
-            // Kerr parameters
-            BlackHoleSpin = blackHole.Spin,
-            KerrParameter = blackHole.KerrParameter,
-            OuterHorizonRadius = blackHole.OuterHorizonRadius,
-            ErgosphereRadius = blackHole.ErgosphereEquatorialRadius,
-            BlackHoleSpinAxis = blackHole.SpinAxis,
+            // Kerr parameters - all zero when no black hole
+            BlackHoleSpin = blackHole?.Spin ?? 0f,
+            KerrParameter = blackHole?.KerrParameter ?? 0f,
+            OuterHorizonRadius = blackHole?.OuterHorizonRadius ?? 0f,
+            ErgosphereRadius = blackHole?.ErgosphereEquatorialRadius ?? 0f,
+            BlackHoleSpinAxis = blackHole?.SpinAxis ?? Vector3.UnitY,
             ShowErgosphere = RaytracerSettings.ShowErgosphere ? 1f : 0f,
             ErgosphereOpacity = RaytracerSettings.ErgosphereOpacity,
-            DiskISCO = blackHole.CalculateProgradeISCO(),
+            DiskISCO = blackHole?.CalculateProgradeISCO() ?? 0f,
             DiskThickness = 0f,  // Thin disk only - volumetric causes rendering artifacts
             ShowPhotonSphere = RaytracerSettings.ShowPhotonSphere ? 1f : 0f,
             PhotonSphereOpacity = RaytracerSettings.PhotonSphereOpacity,
-            PhotonSphereRadius = blackHole.CalculatePhotonSphereRadius()
+            PhotonSphereRadius = blackHole?.CalculatePhotonSphereRadius() ?? 0f
         };
         Unsafe.Copy(_uniformBufferMapped, ref uniforms);
 
@@ -2070,7 +2071,7 @@ public unsafe class VulkanBackend : IGraphicsBackend
         Profiler.Instance.SetCounter("Triangles", _triangleCount, "Raytracer");
     }
 
-    public void RenderToReadback(Camera camera, BlackHole blackHole, float time, byte[] rgbaBuffer)
+    public void RenderToReadback(Camera camera, BlackHole? blackHole, float time, byte[] rgbaBuffer)
     {
         UpdateAccumulationState(camera);
 
@@ -2084,11 +2085,12 @@ public unsafe class VulkanBackend : IGraphicsBackend
             CameraRight = camera.Right,
             CameraUp = camera.Up,
             Fov = camera.FieldOfView,
-            BlackHolePos = blackHole.Position,
-            BlackHoleMass = blackHole.Mass,
-            SchwarzschildRadius = blackHole.SchwarzschildRadius,
-            DiskInnerRadius = blackHole.DiskInnerRadius,
-            DiskOuterRadius = blackHole.DiskOuterRadius,
+            // When no black hole, set all parameters to 0 to disable lensing
+            BlackHolePos = blackHole?.Position ?? Vector3.Zero,
+            BlackHoleMass = blackHole?.Mass ?? 0f,
+            SchwarzschildRadius = blackHole?.SchwarzschildRadius ?? 0f,
+            DiskInnerRadius = blackHole?.DiskInnerRadius ?? 0f,
+            DiskOuterRadius = blackHole?.DiskOuterRadius ?? 0f,
             RaySettings = new Vector4(
                 RaytracerSettings.RaysPerPixel,
                 RaytracerSettings.MaxBounces,
@@ -2104,19 +2106,19 @@ public unsafe class VulkanBackend : IGraphicsBackend
                 RaytracerSettings.LensingStepSize,
                 RaytracerSettings.LensingBvhCheckInterval,
                 RaytracerSettings.LensingMaxDistance),
-            // Kerr parameters
-            BlackHoleSpin = blackHole.Spin,
-            KerrParameter = blackHole.KerrParameter,
-            OuterHorizonRadius = blackHole.OuterHorizonRadius,
-            ErgosphereRadius = blackHole.ErgosphereEquatorialRadius,
-            BlackHoleSpinAxis = blackHole.SpinAxis,
+            // Kerr parameters - all zero when no black hole
+            BlackHoleSpin = blackHole?.Spin ?? 0f,
+            KerrParameter = blackHole?.KerrParameter ?? 0f,
+            OuterHorizonRadius = blackHole?.OuterHorizonRadius ?? 0f,
+            ErgosphereRadius = blackHole?.ErgosphereEquatorialRadius ?? 0f,
+            BlackHoleSpinAxis = blackHole?.SpinAxis ?? Vector3.UnitY,
             ShowErgosphere = RaytracerSettings.ShowErgosphere ? 1f : 0f,
             ErgosphereOpacity = RaytracerSettings.ErgosphereOpacity,
-            DiskISCO = blackHole.CalculateProgradeISCO(),
+            DiskISCO = blackHole?.CalculateProgradeISCO() ?? 0f,
             DiskThickness = 0f,  // Thin disk only - volumetric causes rendering artifacts
             ShowPhotonSphere = RaytracerSettings.ShowPhotonSphere ? 1f : 0f,
             PhotonSphereOpacity = RaytracerSettings.PhotonSphereOpacity,
-            PhotonSphereRadius = blackHole.CalculatePhotonSphereRadius()
+            PhotonSphereRadius = blackHole?.CalculatePhotonSphereRadius() ?? 0f
         };
         Unsafe.Copy(_uniformBufferMapped, ref uniforms);
 

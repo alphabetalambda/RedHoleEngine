@@ -25,6 +25,9 @@ public class MaterialPreviewRenderer
     private float _rotationY;
     private float _rotationX;
     
+    // Environment map for IBL
+    private EnvironmentMap? _environmentMap;
+    
     // Lighting setup (3-point lighting)
     private static readonly LightInfo[] Lights = {
         new(new Vector3(2f, 2f, 3f), new Vector3(1f, 0.98f, 0.95f), 3f),   // Key light (warm)
@@ -32,10 +35,10 @@ public class MaterialPreviewRenderer
         new(new Vector3(0f, -1f, -2f), new Vector3(1f, 1f, 1f), 0.8f),     // Rim/back light
     };
     
-    // Environment color for ambient
+    // Fallback colors when no environment map
     private static readonly Vector3 AmbientColor = new(0.03f, 0.03f, 0.04f);
-    private static readonly Vector3 GroundColor = new(0.02f, 0.02f, 0.02f);
-    private static readonly Vector3 SkyColor = new(0.1f, 0.12f, 0.15f);
+    private static readonly Vector3 GroundColor = new(0.15f, 0.12f, 0.1f);
+    private static readonly Vector3 SkyColor = new(0.4f, 0.5f, 0.7f);
     
     public MaterialPreviewRenderer(int width, int height)
     {
@@ -56,6 +59,14 @@ public class MaterialPreviewRenderer
     {
         _rotationX = rotationX;
         _rotationY = rotationY;
+    }
+    
+    /// <summary>
+    /// Set the environment map for IBL (optional)
+    /// </summary>
+    public void SetEnvironmentMap(EnvironmentMap? envMap)
+    {
+        _environmentMap = envMap;
     }
     
     /// <summary>
@@ -119,9 +130,61 @@ public class MaterialPreviewRenderer
             return ShadePBR(hitPos, normal, viewDir, material);
         }
         
-        // Background gradient
-        float skyFactor = rayDir.Y * 0.5f + 0.5f;
+        // Background - use environment map or gradient
+        return SampleEnvironment(rayDir);
+    }
+    
+    /// <summary>
+    /// Sample the environment for a direction (IBL or fallback gradient)
+    /// </summary>
+    private Vector3 SampleEnvironment(Vector3 direction)
+    {
+        if (_environmentMap != null && _environmentMap.IsLoaded)
+        {
+            return _environmentMap.Sample(direction);
+        }
+        
+        // Fallback gradient
+        float skyFactor = direction.Y * 0.5f + 0.5f;
         return Vector3.Lerp(GroundColor, SkyColor, skyFactor);
+    }
+    
+    /// <summary>
+    /// Sample environment with roughness-based blur for specular IBL
+    /// </summary>
+    private Vector3 SampleEnvironmentRough(Vector3 direction, float roughness)
+    {
+        if (_environmentMap == null || !_environmentMap.IsLoaded || roughness < 0.1f)
+        {
+            return SampleEnvironment(direction);
+        }
+        
+        // Simple blur approximation by sampling multiple directions
+        Vector3 N = Vector3.Normalize(direction);
+        Vector3 up = MathF.Abs(N.Y) < 0.999f ? Vector3.UnitY : Vector3.UnitX;
+        Vector3 T = Vector3.Normalize(Vector3.Cross(up, N));
+        Vector3 B = Vector3.Cross(N, T);
+        
+        Vector3 result = Vector3.Zero;
+        float coneAngle = roughness * 0.5f;
+        float weights = 0f;
+        
+        const int NUM_SAMPLES = 4;
+        for (int i = 0; i < NUM_SAMPLES; i++)
+        {
+            float angle = i / (float)NUM_SAMPLES * 2f * MathF.PI;
+            float r = coneAngle * (0.5f + 0.5f * (i % 2));
+            
+            Vector3 offset = T * MathF.Cos(angle) * r + B * MathF.Sin(angle) * r;
+            Vector3 sampleDir = Vector3.Normalize(N + offset);
+            
+            float w = 1f - offset.Length();
+            result += SampleEnvironment(sampleDir) * w;
+            weights += w;
+        }
+        
+        result /= weights;
+        return Vector3.Lerp(SampleEnvironment(direction), result, roughness);
     }
     
     private Vector3 ShadePBR(Vector3 position, Vector3 normal, Vector3 viewDir, PbrMaterial material)
@@ -172,10 +235,25 @@ public class MaterialPreviewRenderer
             }
         }
         
-        // Ambient contribution (hemisphere)
+        // IBL Ambient contribution
         float ambientOcclusion = 1f; // No AO texture for now
-        var ambient = AmbientColor * baseColor * ambientOcclusion;
-        result += ambient;
+        
+        // Fresnel for ambient
+        float NdotV_ambient = Math.Max(0.001f, Vector3.Dot(normal, viewDir));
+        var F_ambient = FresnelSchlickRoughness(NdotV_ambient, f0, roughness);
+        var kS_ambient = F_ambient;
+        var kD_ambient = (Vector3.One - kS_ambient) * (1f - metallic);
+        
+        // Diffuse IBL (irradiance from environment)
+        var irradiance = SampleEnvironment(normal) * 0.3f;
+        var ambientDiffuse = irradiance * diffuseColor * kD_ambient;
+        
+        // Specular IBL (reflection from environment)
+        var R = Vector3.Reflect(-viewDir, normal);
+        var prefilteredColor = SampleEnvironmentRough(R, roughness) * 0.5f;
+        var ambientSpecular = prefilteredColor * F_ambient;
+        
+        result += (ambientDiffuse + ambientSpecular) * ambientOcclusion;
         
         // Emissive
         var emissive = material.EmissiveFactor * material.EmissiveIntensity;
@@ -232,6 +310,14 @@ public class MaterialPreviewRenderer
     {
         float t = MathF.Pow(1f - cosTheta, 5f);
         return f0 + (Vector3.One - f0) * t;
+    }
+    
+    // Fresnel with roughness factor (for IBL)
+    private static Vector3 FresnelSchlickRoughness(float cosTheta, Vector3 f0, float roughness)
+    {
+        float t = MathF.Pow(1f - cosTheta, 5f);
+        var maxReflect = new Vector3(Math.Max(1f - roughness, f0.X), Math.Max(1f - roughness, f0.Y), Math.Max(1f - roughness, f0.Z));
+        return f0 + (maxReflect - f0) * t;
     }
     
     private readonly struct LightInfo

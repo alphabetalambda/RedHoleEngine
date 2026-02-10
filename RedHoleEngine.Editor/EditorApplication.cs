@@ -64,6 +64,7 @@ public class EditorApplication : IDisposable
     private readonly SceneSerializer _sceneSerializer = new();
     private readonly ProjectManager _projectManager = new();
     private readonly BuildSystem _buildSystem;
+    private AutoSaveManager? _autoSaveManager;
     private IGameModule? _gameModule;
     private string _currentScenePath = string.Empty;
     private VirtualFileSystem _terminalFileSystem = new();
@@ -121,6 +122,11 @@ public class EditorApplication : IDisposable
         _terminalSession = new TerminalSession(_terminalFileSystem);
         _terminalSaveManager = new GameSaveManager("Editor");
         _buildSystem = new BuildSystem(_projectManager);
+        _autoSaveManager = new AutoSaveManager(
+            _projectManager,
+            () => _currentScenePath,
+            () => true, // TODO: track actual unsaved changes
+            SaveScene);
 
         // Create panels
         _hierarchyPanel = new SceneHierarchyPanel();
@@ -199,6 +205,9 @@ public class EditorApplication : IDisposable
             panel.SetContext(_world, _selection, _undoRedo);
         }
 
+        // Hook undo system to mark scene dirty for auto-save
+        _undoRedo.StateChanged += () => _autoSaveManager?.MarkDirty();
+
         if (_loadShowcaseOnStart)
         {
             LoadActiveScene();
@@ -230,6 +239,9 @@ public class EditorApplication : IDisposable
         {
             _world.Update((float)deltaTime);
         }
+
+        // Auto-save check
+        _autoSaveManager?.Update();
     }
 
     private void OnRender(double deltaTime)
@@ -554,6 +566,23 @@ public class EditorApplication : IDisposable
             else
             {
                 ImGui.TextDisabled("EDITOR");
+            }
+
+            // Auto-save status (right-aligned)
+            if (_autoSaveManager != null && _projectManager.HasProject)
+            {
+                var autoSaveText = _autoSaveManager.GetStatusText();
+                var textWidth = ImGui.CalcTextSize(autoSaveText).X;
+                ImGui.SameLine(ImGui.GetWindowWidth() - textWidth - 20);
+                
+                if (_autoSaveManager.HasUnsavedChanges)
+                {
+                    ImGui.TextColored(new Vector4(1f, 0.8f, 0.3f, 0.8f), autoSaveText);
+                }
+                else
+                {
+                    ImGui.TextDisabled(autoSaveText);
+                }
             }
         }
         ImGui.End();
@@ -1309,6 +1338,9 @@ public class EditorApplication : IDisposable
             _sceneSerializer.SaveToFile(_world, path);
             _currentScenePath = path;
             Console.WriteLine($"Scene saved to: {path}");
+            
+            // Mark auto-save as saved (manual save resets the timer)
+            _autoSaveManager?.MarkSaved();
             
             // Update window title
             var fileName = Path.GetFileName(path);

@@ -33,6 +33,14 @@ public class MaterialEditorPanel : EditorPanel
     private float _alphaCutoff;
     private bool _doubleSided;
     
+    // Texture paths
+    private string _baseColorTexturePath = string.Empty;
+    private string _metallicRoughnessTexturePath = string.Empty;
+    private string _normalTexturePath = string.Empty;
+    private string _emissiveTexturePath = string.Empty;
+    
+    private static readonly string[] TextureFilter = { "png", "jpg", "jpeg", "tga", "bmp" };
+    
     private static readonly string[] AlphaModeNames = { "Opaque", "Mask", "Blend" };
     private static readonly string[] PresetNames = 
     {
@@ -173,6 +181,12 @@ public class MaterialEditorPanel : EditorPanel
         _alphaMode = (int)_currentMaterial.AlphaMode;
         _alphaCutoff = _currentMaterial.AlphaCutoff;
         _doubleSided = _currentMaterial.DoubleSided;
+        
+        // Texture paths
+        _baseColorTexturePath = _currentMaterial.BaseColorTexturePath ?? string.Empty;
+        _metallicRoughnessTexturePath = _currentMaterial.MetallicRoughnessTexturePath ?? string.Empty;
+        _normalTexturePath = _currentMaterial.NormalTexturePath ?? string.Empty;
+        _emissiveTexturePath = _currentMaterial.EmissiveTexturePath ?? string.Empty;
     }
     
     private void SyncToMaterial()
@@ -190,6 +204,12 @@ public class MaterialEditorPanel : EditorPanel
         _currentMaterial.AlphaMode = (AlphaMode)_alphaMode;
         _currentMaterial.AlphaCutoff = _alphaCutoff;
         _currentMaterial.DoubleSided = _doubleSided;
+        
+        // Texture paths
+        _currentMaterial.BaseColorTexturePath = string.IsNullOrEmpty(_baseColorTexturePath) ? null : _baseColorTexturePath;
+        _currentMaterial.MetallicRoughnessTexturePath = string.IsNullOrEmpty(_metallicRoughnessTexturePath) ? null : _metallicRoughnessTexturePath;
+        _currentMaterial.NormalTexturePath = string.IsNullOrEmpty(_normalTexturePath) ? null : _normalTexturePath;
+        _currentMaterial.EmissiveTexturePath = string.IsNullOrEmpty(_emissiveTexturePath) ? null : _emissiveTexturePath;
     }
 
     protected override void OnDraw()
@@ -251,12 +271,8 @@ public class MaterialEditorPanel : EditorPanel
                 _isDirty = true;
             }
             
-            // Texture slot (placeholder)
-            ImGui.TextDisabled("Texture: (none)");
-            if (ImGui.Button("Browse...##BaseTexture"))
-            {
-                // TODO: Open file dialog for texture
-            }
+            // Texture slot
+            DrawTextureSlot("Albedo Texture", ref _baseColorTexturePath, "BaseColor");
         }
         
         // Metallic-Roughness
@@ -295,6 +311,17 @@ public class MaterialEditorPanel : EditorPanel
                 _roughness = 0f;
                 _isDirty = true;
             }
+            
+            ImGui.Separator();
+            DrawTextureSlot("Metallic/Roughness Map", ref _metallicRoughnessTexturePath, "MetallicRoughness");
+            ImGui.TextDisabled("Green=Roughness, Blue=Metallic");
+        }
+        
+        // Normal Map
+        if (ImGui.CollapsingHeader("Normal Map"))
+        {
+            DrawTextureSlot("Normal Map", ref _normalTexturePath, "Normal");
+            ImGui.TextDisabled("Tangent-space normal map");
         }
         
         // Emission
@@ -331,6 +358,9 @@ public class MaterialEditorPanel : EditorPanel
                 _emissiveIntensity = 15f;
                 _isDirty = true;
             }
+            
+            ImGui.Separator();
+            DrawTextureSlot("Emissive Map", ref _emissiveTexturePath, "Emissive");
         }
         
         // Advanced
@@ -502,5 +532,83 @@ public class MaterialEditorPanel : EditorPanel
             return string.Empty;
             
         return Path.Combine(assetsPath, "Materials");
+    }
+    
+    private void DrawTextureSlot(string label, ref string texturePath, string uniqueId)
+    {
+        ImGui.PushID(uniqueId);
+        
+        bool hasTexture = !string.IsNullOrEmpty(texturePath);
+        string displayText = hasTexture ? Path.GetFileName(texturePath) : "(none)";
+        
+        ImGui.Text(label + ":");
+        ImGui.SameLine();
+        
+        // Show texture path or (none)
+        if (hasTexture)
+        {
+            ImGui.TextColored(new Vector4(0.5f, 0.8f, 0.5f, 1f), displayText);
+            if (ImGui.IsItemHovered())
+            {
+                ImGui.SetTooltip(texturePath);
+            }
+        }
+        else
+        {
+            ImGui.TextDisabled(displayText);
+        }
+        
+        // Browse button
+        ImGui.SameLine();
+        if (ImGui.SmallButton("..."))
+        {
+            // For now, just show the textures folder
+            var texturesPath = GetTexturesPath();
+            if (!string.IsNullOrEmpty(texturesPath))
+            {
+                Console.WriteLine($"Textures folder: {texturesPath}");
+                // In a real implementation, this would open a file dialog
+            }
+        }
+        if (ImGui.IsItemHovered())
+        {
+            ImGui.SetTooltip("Browse for texture file");
+        }
+        
+        // Clear button (only show if texture is set)
+        if (hasTexture)
+        {
+            ImGui.SameLine();
+            if (ImGui.SmallButton("X"))
+            {
+                texturePath = string.Empty;
+                _isDirty = true;
+            }
+            if (ImGui.IsItemHovered())
+            {
+                ImGui.SetTooltip("Clear texture");
+            }
+        }
+        
+        // Manual path input
+        ImGui.SetNextItemWidth(-1);
+        if (ImGui.InputText("##path", ref texturePath, 512))
+        {
+            _isDirty = true;
+        }
+        
+        ImGui.PopID();
+    }
+    
+    private string GetTexturesPath()
+    {
+        if (!_projectManager.HasProject)
+            return string.Empty;
+            
+        var assetsPath = _projectManager.GetAssetPath();
+        if (string.IsNullOrEmpty(assetsPath))
+            return string.Empty;
+            
+        return Path.Combine(assetsPath, "Textures");
     }
 }

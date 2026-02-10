@@ -1,5 +1,6 @@
 using ImGuiNET;
 using RedHoleEngine.Core.ECS;
+using RedHoleEngine.Editor.Commands;
 using RedHoleEngine.Editor.Selection;
 
 namespace RedHoleEngine.Editor.UI.Panels;
@@ -35,12 +36,18 @@ public abstract class EditorPanel
     protected SelectionManager? Selection { get; private set; }
 
     /// <summary>
+    /// Reference to the undo/redo manager
+    /// </summary>
+    protected UndoRedoManager? UndoRedo { get; private set; }
+
+    /// <summary>
     /// Set references to shared editor state
     /// </summary>
-    public void SetContext(World? world, SelectionManager? selection)
+    public void SetContext(World? world, SelectionManager? selection, UndoRedoManager? undoRedo = null)
     {
         World = world;
         Selection = selection;
+        UndoRedo = undoRedo;
     }
 
     /// <summary>

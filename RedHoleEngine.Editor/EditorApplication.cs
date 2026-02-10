@@ -196,7 +196,7 @@ public class EditorApplication : IDisposable
         // Update panel contexts
         foreach (var panel in _panels)
         {
-            panel.SetContext(_world, _selection);
+            panel.SetContext(_world, _selection, _undoRedo);
         }
 
         if (_loadShowcaseOnStart)
@@ -1469,7 +1469,7 @@ public class EditorApplication : IDisposable
 
         foreach (var panel in _panels)
         {
-            panel.SetContext(_world, _selection);
+            panel.SetContext(_world, _selection, _undoRedo);
         }
     }
 

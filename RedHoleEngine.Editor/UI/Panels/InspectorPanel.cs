@@ -4,6 +4,7 @@ using ImGuiNET;
 using RedHoleEngine.Audio;
 using RedHoleEngine.Components;
 using RedHoleEngine.Core.ECS;
+using RedHoleEngine.Editor.Commands;
 using RedHoleEngine.Physics;
 using RedHoleEngine.Physics.Collision;
 using RedHoleEngine.Rendering;
@@ -16,6 +17,20 @@ namespace RedHoleEngine.Editor.UI.Panels;
 public class InspectorPanel : EditorPanel
 {
     public override string Title => "Inspector";
+
+    // Undo tracking - stores component state when editing starts
+    private TransformComponent? _editStartTransform;
+    private RigidBodyComponent? _editStartRigidBody;
+    private ColliderComponent? _editStartCollider;
+    private CameraComponent? _editStartCamera;
+    private GravitySourceComponent? _editStartGravity;
+    private AccretionDiskComponent? _editStartAccretion;
+    private AudioSourceComponent? _editStartAudioSource;
+    private CollisionSoundComponent? _editStartCollisionSound;
+    private RenderSettingsComponent? _editStartRenderSettings;
+    
+    private Entity _editingEntity;
+    private string _editingProperty = "";
 
     protected override void OnDraw()
     {
@@ -76,28 +91,98 @@ public class InspectorPanel : EditorPanel
 
             // Position
             var position = transform.Position;
+            BeginPropertyEdit(entity, "Position", ref transform, ref _editStartTransform);
             if (ImGui.DragFloat3("Position", ref position, 0.1f))
             {
                 transform.Position = position;
             }
+            EndPropertyEdit(entity, "Position", ref transform, ref _editStartTransform);
 
             // Rotation (as Euler angles)
             var euler = QuaternionToEuler(transform.Rotation);
+            BeginPropertyEdit(entity, "Rotation", ref transform, ref _editStartTransform);
             if (ImGui.DragFloat3("Rotation", ref euler, 1f))
             {
                 transform.Rotation = EulerToQuaternion(euler);
             }
+            EndPropertyEdit(entity, "Rotation", ref transform, ref _editStartTransform);
 
             // Scale
             var scale = transform.LocalScale;
+            BeginPropertyEdit(entity, "Scale", ref transform, ref _editStartTransform);
             if (ImGui.DragFloat3("Scale", ref scale, 0.1f, 0.01f, 100f))
             {
                 transform.LocalScale = scale;
             }
+            EndPropertyEdit(entity, "Scale", ref transform, ref _editStartTransform);
 
             ImGui.Spacing();
         }
     }
+
+    #region Undo Helpers
+
+    /// <summary>
+    /// Call before an ImGui edit widget to capture initial state
+    /// </summary>
+    private void BeginPropertyEdit<T>(Entity entity, string propertyName, ref T current, ref T? stored) where T : struct, IComponent
+    {
+        if (ImGui.IsItemActivated())
+        {
+            stored = current;
+            _editingEntity = entity;
+            _editingProperty = propertyName;
+        }
+    }
+
+    /// <summary>
+    /// Call after an ImGui edit widget to create undo command if changed
+    /// </summary>
+    private void EndPropertyEdit<T>(Entity entity, string propertyName, ref T current, ref T? stored) where T : struct, IComponent
+    {
+        if (ImGui.IsItemDeactivatedAfterEdit() && stored.HasValue && UndoRedo != null && World != null)
+        {
+            // Create undo command
+            var command = new ModifyComponentCommand<T>(
+                World, entity, stored.Value, current, propertyName);
+            
+            // Execute without re-applying (already applied during drag)
+            UndoRedo.ExecuteCommand(new AlreadyAppliedCommand(command));
+            
+            stored = null;
+        }
+    }
+
+    /// <summary>
+    /// Helper command that wraps an already-applied modification for undo
+    /// </summary>
+    private class AlreadyAppliedCommand : ICommand
+    {
+        private readonly ICommand _inner;
+        private bool _firstExecute = true;
+
+        public string Description => _inner.Description;
+
+        public AlreadyAppliedCommand(ICommand inner)
+        {
+            _inner = inner;
+        }
+
+        public void Execute()
+        {
+            // Skip first execute since change was already applied during drag
+            if (_firstExecute)
+            {
+                _firstExecute = false;
+                return;
+            }
+            _inner.Execute();
+        }
+
+        public void Undo() => _inner.Undo();
+    }
+
+    #endregion
 
     private void DrawRigidBodyComponent(Entity entity)
     {
@@ -122,58 +207,72 @@ public class InspectorPanel : EditorPanel
         // Body type
         var types = new[] { "Dynamic", "Static", "Kinematic" };
         int currentType = (int)rb.Type;
+        BeginPropertyEdit(entity, "Type", ref rb, ref _editStartRigidBody);
         if (ImGui.Combo("Type", ref currentType, types, types.Length))
         {
             rb.Type = (RigidBodyType)currentType;
         }
+        EndPropertyEdit(entity, "Type", ref rb, ref _editStartRigidBody);
 
         // Mass (only for dynamic)
         if (rb.Type == RigidBodyType.Dynamic)
         {
             var mass = rb.Mass;
+            BeginPropertyEdit(entity, "Mass", ref rb, ref _editStartRigidBody);
             if (ImGui.DragFloat("Mass", ref mass, 0.1f, 0.001f, 10000f))
             {
                 rb.Mass = mass;
             }
+            EndPropertyEdit(entity, "Mass", ref rb, ref _editStartRigidBody);
         }
 
         // Material properties
         var restitution = rb.Restitution;
+        BeginPropertyEdit(entity, "Restitution", ref rb, ref _editStartRigidBody);
         if (ImGui.DragFloat("Restitution", ref restitution, 0.01f, 0f, 1f))
         {
             rb.Restitution = restitution;
         }
+        EndPropertyEdit(entity, "Restitution", ref rb, ref _editStartRigidBody);
 
         var friction = rb.Friction;
+        BeginPropertyEdit(entity, "Friction", ref rb, ref _editStartRigidBody);
         if (ImGui.DragFloat("Friction", ref friction, 0.01f, 0f, 1f))
         {
             rb.Friction = friction;
         }
+        EndPropertyEdit(entity, "Friction", ref rb, ref _editStartRigidBody);
 
         // Damping
         if (ImGui.TreeNode("Damping"))
         {
             var linearDamping = rb.LinearDamping;
+            BeginPropertyEdit(entity, "LinearDamping", ref rb, ref _editStartRigidBody);
             if (ImGui.DragFloat("Linear", ref linearDamping, 0.01f, 0f, 1f))
             {
                 rb.LinearDamping = linearDamping;
             }
+            EndPropertyEdit(entity, "LinearDamping", ref rb, ref _editStartRigidBody);
 
             var angularDamping = rb.AngularDamping;
+            BeginPropertyEdit(entity, "AngularDamping", ref rb, ref _editStartRigidBody);
             if (ImGui.DragFloat("Angular", ref angularDamping, 0.01f, 0f, 1f))
             {
                 rb.AngularDamping = angularDamping;
             }
+            EndPropertyEdit(entity, "AngularDamping", ref rb, ref _editStartRigidBody);
 
             ImGui.TreePop();
         }
 
         // Gravity
         var useGravity = rb.UseGravity;
+        BeginPropertyEdit(entity, "UseGravity", ref rb, ref _editStartRigidBody);
         if (ImGui.Checkbox("Use Gravity", ref useGravity))
         {
             rb.UseGravity = useGravity;
         }
+        EndPropertyEdit(entity, "UseGravity", ref rb, ref _editStartRigidBody);
 
         // Constraints
         if (ImGui.TreeNode("Constraints"))
@@ -383,41 +482,51 @@ public class InspectorPanel : EditorPanel
         // Gravity type
         var types = Enum.GetNames<GravityType>();
         int currentType = (int)gravity.GravityType;
+        BeginPropertyEdit(entity, "GravityType", ref gravity, ref _editStartGravity);
         if (ImGui.Combo("Type", ref currentType, types, types.Length))
         {
             gravity.GravityType = (GravityType)currentType;
         }
+        EndPropertyEdit(entity, "GravityType", ref gravity, ref _editStartGravity);
 
         // Mass
         var mass = gravity.Mass;
+        BeginPropertyEdit(entity, "Mass", ref gravity, ref _editStartGravity);
         if (ImGui.DragFloat("Mass", ref mass, 1000f, 0f, float.MaxValue, "%.0f"))
         {
             gravity.Mass = mass;
         }
+        EndPropertyEdit(entity, "Mass", ref gravity, ref _editStartGravity);
 
         // Spin (for Kerr black holes)
         if (gravity.GravityType == GravityType.Kerr)
         {
             var spin = gravity.SpinParameter;
+            BeginPropertyEdit(entity, "SpinParameter", ref gravity, ref _editStartGravity);
             if (ImGui.DragFloat("Spin Parameter", ref spin, 0.01f, 0f, 1f))
             {
                 gravity.SpinParameter = spin;
             }
+            EndPropertyEdit(entity, "SpinParameter", ref gravity, ref _editStartGravity);
         }
 
         // Range
         var maxRange = gravity.MaxRange;
+        BeginPropertyEdit(entity, "MaxRange", ref gravity, ref _editStartGravity);
         if (ImGui.DragFloat("Max Range", ref maxRange, 1f, 0f, 10000f))
         {
             gravity.MaxRange = maxRange;
         }
+        EndPropertyEdit(entity, "MaxRange", ref gravity, ref _editStartGravity);
 
         // Affects Light
         var affectsLight = gravity.AffectsLight;
+        BeginPropertyEdit(entity, "AffectsLight", ref gravity, ref _editStartGravity);
         if (ImGui.Checkbox("Affects Light", ref affectsLight))
         {
             gravity.AffectsLight = affectsLight;
         }
+        EndPropertyEdit(entity, "AffectsLight", ref gravity, ref _editStartGravity);
 
         // Computed values (read-only)
         if (ImGui.TreeNode("Computed Radii"))

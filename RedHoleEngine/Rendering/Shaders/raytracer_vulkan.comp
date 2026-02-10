@@ -552,6 +552,124 @@ bool isInsideDiskVolume(vec3 pos, vec3 diskNormal, float innerR, float outerR, f
 }
 
 // ============================================
+// Volumetric Light Scattering
+// ============================================
+
+// Calculate volumetric scattering contribution along a ray
+// This simulates light scattering through dust/gas near the black hole
+vec3 volumetricScattering(vec3 rayOrigin, vec3 rayDir, float maxDist, float rs) {
+    if (rs <= 0.0) return vec3(0.0); // No black hole, no scattering
+    
+    vec3 scatterColor = vec3(0.0);
+    float scatterDensity = 0.0;
+    
+    int numSteps = 16;
+    float stepSize = min(maxDist, rs * 15.0) / float(numSteps);
+    
+    vec3 diskNormal = length(u_BlackHoleSpinAxis) > 0.5 ? normalize(u_BlackHoleSpinAxis) : vec3(0.0, 1.0, 0.0);
+    float innerRadius = u_DiskISCO > 0.0 ? u_DiskISCO : u_DiskInnerRadius;
+    float outerRadius = u_DiskOuterRadius;
+    
+    for (int i = 0; i < numSteps; i++) {
+        float t = (float(i) + 0.5) * stepSize;
+        vec3 samplePos = rayOrigin + rayDir * t;
+        
+        // Distance from black hole
+        vec3 toSample = samplePos - u_BlackHolePos;
+        float distFromBH = length(toSample);
+        
+        // Height above disk plane
+        float heightAboveDisk = abs(dot(toSample, diskNormal));
+        
+        // Radial distance in disk plane
+        vec3 inPlane = toSample - dot(toSample, diskNormal) * diskNormal;
+        float radialDist = length(inPlane);
+        
+        // Skip if inside event horizon
+        if (distFromBH < rs) continue;
+        
+        // Scattering medium density falls off with distance from disk
+        // and with radial distance from optimal disk region
+        float diskProximity = 0.0;
+        if (radialDist > innerRadius * 0.5 && radialDist < outerRadius * 1.5) {
+            // Exponential falloff from disk plane
+            float diskHeight = rs * 0.5;
+            diskProximity = exp(-heightAboveDisk * heightAboveDisk / (diskHeight * diskHeight));
+            
+            // Radial distribution - peaks in middle of disk
+            float radialT = (radialDist - innerRadius) / (outerRadius - innerRadius);
+            radialT = clamp(radialT, 0.0, 1.0);
+            float radialDensity = sin(radialT * PI) * 0.5 + 0.5;
+            diskProximity *= radialDensity;
+        }
+        
+        // Add scattered light contribution
+        if (diskProximity > 0.01) {
+            // Color from disk emission (approximate)
+            vec3 emissionColor = mix(vec3(1.0, 0.6, 0.2), vec3(1.0, 0.9, 0.8), 
+                                     clamp(1.0 - radialDist / outerRadius, 0.0, 1.0));
+            
+            // Phase function - forward scattering bias (Henyey-Greenstein approximation)
+            float g = 0.7; // Forward scattering
+            vec3 toLight = normalize(u_BlackHolePos - samplePos);
+            float cosAngle = dot(rayDir, toLight);
+            float phase = (1.0 - g * g) / pow(1.0 + g * g - 2.0 * g * cosAngle, 1.5) / (4.0 * PI);
+            
+            // Accumulate scattering
+            float localDensity = diskProximity * 0.02;
+            scatterColor += emissionColor * phase * localDensity * stepSize;
+            scatterDensity += localDensity * stepSize;
+        }
+    }
+    
+    // Apply atmospheric attenuation
+    float attenuation = exp(-scatterDensity * 2.0);
+    return scatterColor * (1.0 - attenuation);
+}
+
+// God ray effect - light streaming from bright disk regions
+vec3 godRays(vec3 rayOrigin, vec3 rayDir, float rs) {
+    if (rs <= 0.0) return vec3(0.0);
+    
+    // Check if ray passes near the accretion disk region
+    vec3 toBH = u_BlackHolePos - rayOrigin;
+    float closestApproach = length(cross(toBH, rayDir));
+    float outerRadius = u_DiskOuterRadius;
+    
+    if (closestApproach > outerRadius * 2.0) return vec3(0.0);
+    
+    // Sample along ray for god ray contribution
+    vec3 godRayColor = vec3(0.0);
+    int numSamples = 8;
+    float maxT = length(toBH) + outerRadius * 2.0;
+    
+    for (int i = 0; i < numSamples; i++) {
+        float t = (float(i) + 0.5) / float(numSamples) * maxT;
+        vec3 samplePos = rayOrigin + rayDir * t;
+        
+        vec3 toSample = samplePos - u_BlackHolePos;
+        float dist = length(toSample);
+        
+        if (dist < rs || dist > outerRadius * 1.5) continue;
+        
+        // Light intensity based on proximity to disk
+        float innerR = u_DiskISCO > 0.0 ? u_DiskISCO : u_DiskInnerRadius;
+        float radialDist = length(toSample - dot(toSample, vec3(0.0, 1.0, 0.0)) * vec3(0.0, 1.0, 0.0));
+        
+        if (radialDist >= innerR && radialDist <= outerRadius) {
+            float radialT = (radialDist - innerR) / (outerRadius - innerR);
+            float intensity = exp(-radialT * 2.0) * 0.1;
+            
+            // Warm glow color
+            vec3 glowColor = mix(vec3(1.0, 0.8, 0.5), vec3(1.0, 0.5, 0.2), radialT);
+            godRayColor += glowColor * intensity / float(numSamples);
+        }
+    }
+    
+    return godRayColor;
+}
+
+// ============================================
 // Procedural Starfield
 // ============================================
 
@@ -560,11 +678,35 @@ float hash(vec2 p) {
     return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
 }
 
+float hash3(vec3 p) {
+    return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453);
+}
+
 vec2 rand2(vec2 p) {
     return vec2(
         hash(p + vec2(11.3, 17.7)),
         hash(p + vec2(31.7, 47.9))
     );
+}
+
+// Halton sequence for better quasi-random sampling (reduces noise)
+float halton(int index, int base) {
+    float f = 1.0;
+    float r = 0.0;
+    int i = index;
+    while (i > 0) {
+        f /= float(base);
+        r += f * float(i % base);
+        i /= base;
+    }
+    return r;
+}
+
+// Blue noise-like distribution for TAA jitter
+vec2 taaJitter(int frameIdx, int sampleIdx) {
+    // Use Halton sequence bases 2 and 3 for good 2D distribution
+    int idx = frameIdx * 8 + sampleIdx;
+    return vec2(halton(idx + 1, 2), halton(idx + 1, 3)) - 0.5;
 }
 
 bool intersectAabb(vec3 ro, vec3 rd, vec3 bmin, vec3 bmax, out float tmin, out float tmax) {
@@ -1020,6 +1162,12 @@ bool traceOnce(vec3 rayOrigin, vec3 rayDir, out vec3 outColor, out vec3 hitPos, 
             
             // Blend visualization effects with starfield
             outColor = starfield(vel);
+            
+            // Add volumetric scattering contribution
+            vec3 volumetric = volumetricScattering(rayOrigin, vel, totalDist, rs);
+            vec3 godRayContrib = godRays(rayOrigin, vel, rs);
+            outColor += volumetric + godRayContrib;
+            
             if (showErgo && ergoDistAccum > 0.0) {
                 float ergoAlpha = min(ergoDistAccum * u_ErgosphereOpacity * 0.1, 0.5);
                 outColor = mix(outColor, ergoColorAccum / ergoDistAccum, ergoAlpha);
@@ -1041,6 +1189,11 @@ bool traceOnce(vec3 rayOrigin, vec3 rayDir, out vec3 outColor, out vec3 hitPos, 
     
     // Max iterations reached - return starfield based on final direction
     outColor = starfield(vel);
+    
+    // Add volumetric effects
+    vec3 volumetric = volumetricScattering(rayOrigin, vel, totalDist, rs);
+    vec3 godRayContrib = godRays(rayOrigin, vel, rs);
+    outColor += volumetric + godRayContrib;
     
     // Blend visualization effects
     if (showErgo && ergoDistAccum > 0.0) {
@@ -1087,8 +1240,14 @@ void main() {
 
     int totalSamples = raysPerPixel * samplesPerFrame;
     for (int sampleIndex = 0; sampleIndex < totalSamples; sampleIndex++) {
-        vec2 jitter = (rand2(vec2(pixelCoord) + vec2(sampleIndex + frameIndex * 13, u_Time * 10.0)) - 0.5) / u_Resolution;
-        vec2 uv = ((vec2(pixelCoord) + jitter) / u_Resolution) * 2.0 - 1.0;
+        // Use Halton sequence for temporal anti-aliasing (better coverage than random)
+        vec2 taaOffset = taaJitter(frameIndex, sampleIndex);
+        
+        // Combine TAA jitter with additional random jitter for intra-pixel sampling
+        vec2 randomJitter = (rand2(vec2(pixelCoord) + vec2(sampleIndex, frameIndex)) - 0.5) * 0.5;
+        vec2 jitter = (taaOffset + randomJitter) / u_Resolution;
+        
+        vec2 uv = ((vec2(pixelCoord) + 0.5 + jitter * u_Resolution) / u_Resolution) * 2.0 - 1.0;
         uv.y = -uv.y; // Flip Y for Vulkan coordinate system (origin at top-left)
         uv.x *= u_Resolution.x / u_Resolution.y; // Aspect ratio correction
         
@@ -1115,9 +1274,18 @@ void main() {
                 break;
             }
 
-            throughput *= 0.6;
+            // Better bounce attenuation based on surface roughness approximation
+            throughput *= 0.5;
             origin = hitPos + hitNormal * 0.02;
-            dir = reflect(dir, hitNormal);
+            
+            // Add slight randomization to reflection for softer bounces
+            vec3 randomDir = normalize(vec3(
+                hash(vec2(pixelCoord) + vec2(bounce, sampleIndex)) - 0.5,
+                hash(vec2(pixelCoord) + vec2(bounce + 1, sampleIndex)) - 0.5,
+                hash(vec2(pixelCoord) + vec2(bounce + 2, sampleIndex)) - 0.5
+            ));
+            vec3 reflectDir = reflect(dir, hitNormal);
+            dir = normalize(mix(reflectDir, randomDir, 0.1)); // Slightly rough reflection
         }
 
         color += sampleColor;
@@ -1138,7 +1306,9 @@ void main() {
 
     if (denoiseEnabled) {
         vec3 sum = finalColor;
-        int count = 1;
+        float totalWeight = 1.0;
+        
+        // Edge-aware bilateral filter for better denoising
         for (int oy = -1; oy <= 1; oy++) {
             for (int ox = -1; ox <= 1; ox++) {
                 if (ox == 0 && oy == 0) continue;
@@ -1146,18 +1316,103 @@ void main() {
                 if (np.x < 0 || np.y < 0 || np.x >= resolution.x || np.y >= resolution.y) continue;
                 vec4 nacc = imageLoad(accumImage, np);
                 vec3 ncol = nacc.rgb / max(nacc.a, 1.0);
-                sum += ncol;
-                count++;
+                
+                // Edge-aware weight based on color similarity
+                float colorDiff = length(ncol - finalColor);
+                float weight = exp(-colorDiff * colorDiff * 10.0);
+                
+                sum += ncol * weight;
+                totalWeight += weight;
             }
         }
-        finalColor = sum / float(count);
+        finalColor = sum / totalWeight;
     }
     
-    // Simple tone mapping
-    finalColor = finalColor / (finalColor + vec3(1.0));
+    // ============================================
+    // Bloom extraction and application
+    // ============================================
     
-    // Gamma correction
-    finalColor = pow(finalColor, vec3(0.4545)); // 1.0/2.2 = 0.4545
+    // Extract bright areas for bloom
+    float brightness = dot(finalColor, vec3(0.2126, 0.7152, 0.0722));
+    float bloomThreshold = 1.2;
+    float bloomIntensity = 0.15;
+    
+    vec3 bloomColor = vec3(0.0);
+    if (brightness > bloomThreshold) {
+        // Sample neighboring pixels for bloom spread (simple 5x5 gaussian-like)
+        float bloomWeight = 0.0;
+        for (int by = -2; by <= 2; by++) {
+            for (int bx = -2; bx <= 2; bx++) {
+                ivec2 bp = pixelCoord + ivec2(bx, by);
+                if (bp.x < 0 || bp.y < 0 || bp.x >= resolution.x || bp.y >= resolution.y) continue;
+                vec4 bacc = imageLoad(accumImage, bp);
+                vec3 bcol = bacc.rgb / max(bacc.a, 1.0);
+                float bBright = dot(bcol, vec3(0.2126, 0.7152, 0.0722));
+                if (bBright > bloomThreshold) {
+                    float dist = length(vec2(bx, by));
+                    float w = exp(-dist * dist * 0.3);
+                    bloomColor += bcol * (bBright - bloomThreshold) * w;
+                    bloomWeight += w;
+                }
+            }
+        }
+        if (bloomWeight > 0.0) {
+            bloomColor /= bloomWeight;
+        }
+    }
+    
+    // Add bloom
+    finalColor += bloomColor * bloomIntensity;
+    
+    // ============================================
+    // ACES Filmic Tone Mapping
+    // ============================================
+    // Based on the ACES filmic tone mapping curve
+    // Attempt to match the Academy Color Encoding System
+    
+    // Apply exposure adjustment
+    float exposure = 1.0;
+    finalColor *= exposure;
+    
+    // ACES input transform (sRGB to ACES)
+    mat3 aces_input_matrix = mat3(
+        0.59719, 0.07600, 0.02840,
+        0.35458, 0.90834, 0.13383,
+        0.04823, 0.01566, 0.83777
+    );
+    
+    // ACES output transform (ACES to sRGB)
+    mat3 aces_output_matrix = mat3(
+         1.60475, -0.10208, -0.00327,
+        -0.53108,  1.10813, -0.07276,
+        -0.07367, -0.00605,  1.07602
+    );
+    
+    // Apply RRT and ODT fit
+    vec3 v = aces_input_matrix * finalColor;
+    vec3 a = v * (v + 0.0245786) - 0.000090537;
+    vec3 b = v * (0.983729 * v + 0.4329510) + 0.238081;
+    finalColor = aces_output_matrix * (a / b);
+    
+    // Clamp to valid range
+    finalColor = clamp(finalColor, 0.0, 1.0);
+    
+    // ============================================
+    // Additional post-processing
+    // ============================================
+    
+    // Subtle vignette for cinematic look
+    vec2 uv = vec2(pixelCoord) / u_Resolution;
+    float vignette = 1.0 - dot(uv - 0.5, uv - 0.5) * 0.5;
+    vignette = smoothstep(0.2, 1.0, vignette);
+    finalColor *= mix(0.85, 1.0, vignette);
+    
+    // Film grain for organic feel (subtle)
+    float grain = hash(vec2(pixelCoord) + u_Time) * 0.02;
+    finalColor += vec3(grain - 0.01);
+    
+    // Gamma correction (sRGB)
+    finalColor = pow(max(finalColor, vec3(0.0)), vec3(0.4545));
     
     imageStore(outputImage, pixelCoord, vec4(finalColor, 1.0));
 }

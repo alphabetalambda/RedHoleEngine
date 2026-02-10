@@ -37,6 +37,22 @@ public class RaytracerSettings
     public float ErgosphereOpacity { get; set; } = 0.3f;
     public bool ShowPhotonSphere { get; set; } = false;
     public float PhotonSphereOpacity { get; set; } = 0.2f;
+    
+    // Post-processing settings
+    public bool EnableBloom { get; set; } = true;
+    public float BloomThreshold { get; set; } = 1.2f;
+    public float BloomIntensity { get; set; } = 0.15f;
+    public float Exposure { get; set; } = 1.0f;
+    public bool EnableVignette { get; set; } = true;
+    public float VignetteIntensity { get; set; } = 0.5f;
+    public bool EnableFilmGrain { get; set; } = true;
+    public float FilmGrainIntensity { get; set; } = 0.02f;
+    
+    // Volumetric effects
+    public bool EnableVolumetrics { get; set; } = true;
+    public float VolumetricIntensity { get; set; } = 1.0f;
+    public bool EnableGodRays { get; set; } = true;
+    public float GodRayIntensity { get; set; } = 1.0f;
 
     public int MaxRaysPerPixelLimit { get; set; } = 64;
     public int MaxBouncesLimit { get; set; } = 8;
@@ -56,6 +72,15 @@ public class RaytracerSettings
         LensingStepSize = Math.Clamp(LensingStepSize, 0.1f, 1.0f);
         LensingBvhCheckInterval = Math.Clamp(LensingBvhCheckInterval, 1, 16);
         LensingMaxDistance = Math.Clamp(LensingMaxDistance, 50f, 1000f);
+        
+        // Post-processing clamps
+        BloomThreshold = Math.Clamp(BloomThreshold, 0.5f, 3.0f);
+        BloomIntensity = Math.Clamp(BloomIntensity, 0.0f, 1.0f);
+        Exposure = Math.Clamp(Exposure, 0.1f, 5.0f);
+        VignetteIntensity = Math.Clamp(VignetteIntensity, 0.0f, 1.0f);
+        FilmGrainIntensity = Math.Clamp(FilmGrainIntensity, 0.0f, 0.1f);
+        VolumetricIntensity = Math.Clamp(VolumetricIntensity, 0.0f, 2.0f);
+        GodRayIntensity = Math.Clamp(GodRayIntensity, 0.0f, 2.0f);
     }
 
     public void ApplyPreset(RaytracerQualityPreset preset)

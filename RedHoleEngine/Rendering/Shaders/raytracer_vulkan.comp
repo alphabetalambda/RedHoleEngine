@@ -119,6 +119,11 @@ layout(set = 0, binding = 6) uniform sampler2D materialTextures[32]; // Support 
 // Environment map for IBL (binding 7) - equirectangular HDR
 layout(set = 0, binding = 7) uniform sampler2D envMap;
 
+// Constants (must be defined before functions that use them)
+const float PI = 3.14159265359;
+const float INV_PI = 0.31830988618;
+const float EPSILON = 0.0001;
+
 // Sample a texture from the array (returns vec4(1) if index is invalid)
 vec4 sampleMaterialTexture(int textureIndex, vec2 uv) {
     if (textureIndex < 0 || textureIndex >= 32) {
@@ -174,11 +179,6 @@ vec3 sampleEnvironmentRough(vec3 dir, float roughness) {
     // Blend with center sample
     return mix(sampleEnvironment(dir), result, roughness);
 }
-
-// Constants
-const float PI = 3.14159265359;
-const float INV_PI = 0.31830988618;
-const float EPSILON = 0.0001;
 
 // ============================================
 // PBR Material Structure

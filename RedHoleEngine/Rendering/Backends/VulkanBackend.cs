@@ -205,9 +205,10 @@ public unsafe class VulkanBackend : IGraphicsBackend
         CreateDescriptorPool();
         CreateDescriptorSets();
         CreateUniformBuffer();
-        CreateMaterialTextureSampler();
         CreateCommandPools();
         CreateCommandBuffers();
+        // These need command pools/buffers for image transitions
+        CreateMaterialTextureSampler();
         InitializeEnvironmentMap();
         CreateSyncObjects();
         InitializeDebugRenderer();

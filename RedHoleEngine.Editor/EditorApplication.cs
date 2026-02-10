@@ -15,6 +15,7 @@ using RedHoleEngine.Physics;
 using RedHoleEngine.Physics.Collision;
 using RedHoleEngine.Rendering;
 using RedHoleEngine.Rendering.Backends;
+using RedHoleEngine.Rendering.PBR;
 using RedHoleEngine.Resources;
 using RedHoleEngine.Serialization;
 using RedHoleEngine.Terminal;
@@ -56,9 +57,11 @@ public class EditorApplication : IDisposable
     private GameProjectPanel? _gameProjectPanel;
     private TerminalPanel? _terminalPanel;
     private AssetBrowserPanel? _assetBrowserPanel;
+    private MaterialEditorPanel? _materialEditorPanel;
 
     private readonly RaytracerSettings _raytracerSettings = new();
     private readonly RenderSettings _renderSettings = new();
+    private readonly MaterialLibrary _materialLibrary = new();
     private EditorSettings _editorSettings = new();
     private readonly ResourceManager _gameResources = new();
     private readonly SceneSerializer _sceneSerializer = new();
@@ -139,6 +142,7 @@ public class EditorApplication : IDisposable
         _assetBrowserPanel = new AssetBrowserPanel(
             () => _projectManager.HasProject ? _projectManager.GetAssetPath() : "",
             path => LoadScene(path));
+        _materialEditorPanel = new MaterialEditorPanel(_projectManager, _materialLibrary);
 
         _panels.Add(_hierarchyPanel);
         _panels.Add(_inspectorPanel);
@@ -148,6 +152,7 @@ public class EditorApplication : IDisposable
         _panels.Add(_gameProjectPanel);
         _panels.Add(_terminalPanel);
         _panels.Add(_assetBrowserPanel);
+        _panels.Add(_materialEditorPanel);
     }
 
     /// <summary>

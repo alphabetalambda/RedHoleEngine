@@ -70,6 +70,27 @@ layout(std430, set = 0, binding = 3) buffer Triangles {
     GpuTriangle triangles[];
 };
 
+// GPU Material buffer - matches GpuMaterial struct in C# (64 bytes per material)
+// Layout: baseColorFactor(16), metallic(4), roughness(4), normalScale(4), occlusionStrength(4),
+//         emissiveFactor(12), emissiveIntensity(4), ior(4), specularFactor(4), clearcoat(4), clearcoatRoughness(4)
+struct GpuMaterial {
+    vec4 baseColorFactor;      // 16 bytes (offset 0)
+    float metallic;            // 4 bytes (offset 16)
+    float roughness;           // 4 bytes (offset 20)
+    float normalScale;         // 4 bytes (offset 24)
+    float occlusionStrength;   // 4 bytes (offset 28)
+    vec3 emissiveFactor;       // 12 bytes (offset 32)
+    float emissiveIntensity;   // 4 bytes (offset 44)
+    float ior;                 // 4 bytes (offset 48)
+    float specularFactor;      // 4 bytes (offset 52)
+    float clearcoat;           // 4 bytes (offset 56)
+    float clearcoatRoughness;  // 4 bytes (offset 60)
+};
+
+layout(std430, set = 0, binding = 5) buffer Materials {
+    GpuMaterial materials[];
+};
+
 // Constants
 const float PI = 3.14159265359;
 const float INV_PI = 0.31830988618;
@@ -110,17 +131,42 @@ PbrMaterial defaultMaterial() {
     return mat;
 }
 
-// Create material from triangle data (temporary until material buffer is added)
-PbrMaterial materialFromTriangle(GpuTriangle tri) {
+// Get material for a triangle, using the material buffer if available
+PbrMaterial getMaterial(GpuTriangle tri) {
     PbrMaterial mat = defaultMaterial();
-    mat.baseColorFactor = tri.albedo;
-    mat.emissiveFactor = tri.emissive.rgb;
-    mat.emissiveIntensity = max(tri.emissive.a, 1.0);
-    // Decode metallic/roughness from albedo alpha if needed
-    // For now, use defaults based on color brightness
-    float brightness = dot(tri.albedo.rgb, vec3(0.299, 0.587, 0.114));
-    mat.roughness = 0.3 + 0.4 * (1.0 - brightness);
+    
+    // Check if triangle has a valid material index
+    int matIdx = tri.materialIndex;
+    if (matIdx >= 0 && matIdx < materials.length()) {
+        // Use the GPU material buffer
+        GpuMaterial gpuMat = materials[matIdx];
+        mat.baseColorFactor = gpuMat.baseColorFactor;
+        mat.metallic = gpuMat.metallic;
+        mat.roughness = gpuMat.roughness;
+        mat.normalScale = gpuMat.normalScale;
+        mat.occlusionStrength = gpuMat.occlusionStrength;
+        mat.emissiveFactor = gpuMat.emissiveFactor;
+        mat.emissiveIntensity = gpuMat.emissiveIntensity;
+        mat.ior = gpuMat.ior;
+        mat.specularFactor = gpuMat.specularFactor;
+        mat.clearcoat = gpuMat.clearcoat;
+        mat.clearcoatRoughness = gpuMat.clearcoatRoughness;
+    } else {
+        // Fallback: derive material from triangle's embedded color data
+        mat.baseColorFactor = tri.albedo;
+        mat.emissiveFactor = tri.emissive.rgb;
+        mat.emissiveIntensity = max(tri.emissive.a, 1.0);
+        // Estimate roughness from color brightness
+        float brightness = dot(tri.albedo.rgb, vec3(0.299, 0.587, 0.114));
+        mat.roughness = 0.3 + 0.4 * (1.0 - brightness);
+    }
+    
     return mat;
+}
+
+// Legacy alias for compatibility
+PbrMaterial materialFromTriangle(GpuTriangle tri) {
+    return getMaterial(tri);
 }
 
 // ============================================

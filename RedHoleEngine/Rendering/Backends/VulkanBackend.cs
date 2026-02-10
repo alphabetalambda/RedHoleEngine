@@ -14,6 +14,7 @@ using RedHoleEngine.Rendering.Particles;
 using RedHoleEngine.Rendering;
 using RedHoleEngine.Rendering.Raytracing;
 using RedHoleEngine.Rendering.Rasterization;
+using RedHoleEngine.Rendering.PBR;
 using Silk.NET.Core;
 using Silk.NET.Core.Native;
 using Silk.NET.Vulkan;
@@ -92,6 +93,12 @@ public unsafe class VulkanBackend : IGraphicsBackend
     private VkBuffer _triangleBuffer;
     private DeviceMemory _triangleBufferMemory;
     private ulong _triangleBufferSize;
+
+    // PBR Material buffer
+    private VkBuffer _materialBuffer;
+    private DeviceMemory _materialBufferMemory;
+    private ulong _materialBufferSize;
+    private int _materialCount;
 
     private Image _accumImage;
     private DeviceMemory _accumImageMemory;
@@ -1127,6 +1134,13 @@ public unsafe class VulkanBackend : IGraphicsBackend
                 DescriptorType = DescriptorType.StorageBuffer,
                 DescriptorCount = 1,
                 StageFlags = ShaderStageFlags.ComputeBit
+            },
+            new() // PBR Materials
+            {
+                Binding = 5,
+                DescriptorType = DescriptorType.StorageBuffer,
+                DescriptorCount = 1,
+                StageFlags = ShaderStageFlags.ComputeBit
             }
         };
 
@@ -1364,7 +1378,7 @@ public unsafe class VulkanBackend : IGraphicsBackend
         {
             new() { Type = DescriptorType.StorageImage, DescriptorCount = 2 },
             new() { Type = DescriptorType.UniformBuffer, DescriptorCount = 1 },
-            new() { Type = DescriptorType.StorageBuffer, DescriptorCount = 2 }
+            new() { Type = DescriptorType.StorageBuffer, DescriptorCount = 3 } // BVH, Triangles, Materials
         };
 
         fixed (DescriptorPoolSize* poolSizesPtr = poolSizes)
@@ -1475,6 +1489,7 @@ public unsafe class VulkanBackend : IGraphicsBackend
         };
 
         EnsureRaytracerBuffers(1, 1);
+        EnsureMaterialBuffer(1); // Ensure at least 1 material slot
 
         var bvhDescInfo = new DescriptorBufferInfo
         {
@@ -1488,6 +1503,13 @@ public unsafe class VulkanBackend : IGraphicsBackend
             Buffer = _triangleBuffer,
             Offset = 0,
             Range = _triangleBufferSize
+        };
+
+        var matDescInfo = new DescriptorBufferInfo
+        {
+            Buffer = _materialBuffer,
+            Offset = 0,
+            Range = _materialBufferSize
         };
 
         var writes = new WriteDescriptorSet[]
@@ -1541,6 +1563,16 @@ public unsafe class VulkanBackend : IGraphicsBackend
                 DescriptorType = DescriptorType.StorageBuffer,
                 DescriptorCount = 1,
                 PBufferInfo = &triDescInfo
+            },
+            new()
+            {
+                SType = StructureType.WriteDescriptorSet,
+                DstSet = _computeDescriptorSet,
+                DstBinding = 5,
+                DstArrayElement = 0,
+                DescriptorType = DescriptorType.StorageBuffer,
+                DescriptorCount = 1,
+                PBufferInfo = &matDescInfo
             }
         };
 
@@ -1648,6 +1680,70 @@ public unsafe class VulkanBackend : IGraphicsBackend
         {
             _vk.UpdateDescriptorSets(_device, (uint)writes.Length, writesPtr, 0, null);
         }
+    }
+
+    private void EnsureMaterialBuffer(int minMaterialCount)
+    {
+        ulong minSize = (ulong)(minMaterialCount * Unsafe.SizeOf<GpuMaterial>());
+        if (minSize == 0) minSize = (ulong)Unsafe.SizeOf<GpuMaterial>();
+
+        bool changed = EnsureStorageBuffer(ref _materialBuffer, ref _materialBufferMemory, ref _materialBufferSize, minSize);
+        
+        if (changed)
+        {
+            UpdateMaterialBufferDescriptor();
+        }
+    }
+
+    private void UpdateMaterialBufferDescriptor()
+    {
+        if (_materialBuffer.Handle == 0) return;
+
+        var matDescInfo = new DescriptorBufferInfo
+        {
+            Buffer = _materialBuffer,
+            Offset = 0,
+            Range = _materialBufferSize
+        };
+
+        var write = new WriteDescriptorSet
+        {
+            SType = StructureType.WriteDescriptorSet,
+            DstSet = _computeDescriptorSet,
+            DstBinding = 5,
+            DstArrayElement = 0,
+            DescriptorType = DescriptorType.StorageBuffer,
+            DescriptorCount = 1,
+            PBufferInfo = &matDescInfo
+        };
+
+        _vk!.UpdateDescriptorSets(_device, 1, &write, 0, null);
+    }
+
+    /// <summary>
+    /// Upload PBR materials to the GPU
+    /// </summary>
+    public void UploadMaterials(GpuMaterial[] materials)
+    {
+        if (materials.Length == 0)
+        {
+            // Upload a single default material
+            materials = new[] { GpuMaterial.Default };
+        }
+
+        _materialCount = materials.Length;
+        EnsureMaterialBuffer(materials.Length);
+        UploadBufferData(materials, _materialBuffer);
+        Console.WriteLine($"Uploaded {materials.Length} PBR materials to GPU");
+    }
+
+    /// <summary>
+    /// Upload materials from a MaterialLibrary
+    /// </summary>
+    public void UploadMaterials(MaterialLibrary library)
+    {
+        var gpuMaterials = library.GetGpuMaterials();
+        UploadMaterials(gpuMaterials);
     }
 
     private void CreateBuffer(ulong size, BufferUsageFlags usage, MemoryPropertyFlags properties, out VkBuffer buffer, out DeviceMemory memory)

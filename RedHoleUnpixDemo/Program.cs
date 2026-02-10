@@ -12,7 +12,6 @@ public static class Program
 {
     public static void Main(string[] args)
     {
-        Enginedeco.EngineTitlePrint();
 
         var app = new Application
         {

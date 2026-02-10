@@ -53,8 +53,5 @@
         <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       </None>
     </ItemGroup>
-    <ItemGroup>
-      <Folder Include="Audio\Dynamic sounds\" />
-    </ItemGroup>
 
 </Project>

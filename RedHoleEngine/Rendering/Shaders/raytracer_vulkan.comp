@@ -51,30 +51,37 @@ struct BvhNode {
 
 // Triangle data with UV coordinates for texture mapping
 // Layout matches RaytracerTriangle C# struct (144 bytes)
+// IMPORTANT: std430 requires vec4 to be 16-byte aligned
 struct GpuTriangle {
-    // Vertex positions (48 bytes)
-    vec3 v0;
-    int materialIndex;
-    vec3 v1;
-    int pad1;
-    vec3 v2;
-    int pad2;
+    // Vertex positions (48 bytes, offset 0)
+    vec3 v0;              // offset 0
+    int materialIndex;    // offset 12
+    vec3 v1;              // offset 16
+    int pad1;             // offset 28
+    vec3 v2;              // offset 32
+    int pad2;             // offset 44
     
-    // Normal (16 bytes)
-    vec3 normal;
-    int pad3;
+    // Normal (16 bytes, offset 48)
+    vec3 normal;          // offset 48
+    int pad3;             // offset 60
     
-    // UV coordinates for each vertex (24 bytes)
-    vec2 uv0;
-    vec2 uv1;
-    vec2 uv2;
+    // UV coordinates for each vertex (24 bytes, offset 64)
+    vec2 uv0;             // offset 64
+    vec2 uv1;             // offset 72
+    vec2 uv2;             // offset 80
     
-    // Tangent for normal mapping (16 bytes)
-    vec4 tangent;  // xyz = tangent direction, w = handedness
+    // Padding to align tangent (vec4) to 16-byte boundary (offset 88)
+    float padUV0;         // offset 88
+    float padUV1;         // offset 92
     
-    // Colors for backward compatibility (32 bytes)
-    vec4 albedo;
-    vec4 emissive;
+    // Tangent for normal mapping (16 bytes, offset 96)
+    vec4 tangent;         // xyz = tangent direction, w = handedness
+    
+    // Colors for backward compatibility (32 bytes, offset 112)
+    vec4 albedo;          // offset 112
+    vec4 emissive;        // offset 128
+    
+    // Total: 144 bytes
 };
 
 layout(std430, set = 0, binding = 2) buffer BvhNodes {

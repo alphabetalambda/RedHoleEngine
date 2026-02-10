@@ -7,6 +7,7 @@ namespace RedHoleEngine.Editor.UI.Panels;
 public class GameProjectPanel : EditorPanel
 {
     private readonly ProjectManager _projectManager;
+    private readonly BuildSystem _buildSystem;
     private readonly Action _onProjectLoaded;
     
     private string _pathBuffer = "";
@@ -14,12 +15,19 @@ public class GameProjectPanel : EditorPanel
     private string _statusMessage = "";
     private bool _showNewProjectPopup;
     private bool _showProjectSettings;
+    private BuildConfiguration _buildConfiguration = BuildConfiguration.Debug;
 
-    public GameProjectPanel(ProjectManager projectManager, Action onProjectLoaded)
+    public GameProjectPanel(ProjectManager projectManager, BuildSystem buildSystem, Action onProjectLoaded)
     {
         _projectManager = projectManager;
+        _buildSystem = buildSystem;
         _onProjectLoaded = onProjectLoaded;
     }
+    
+    /// <summary>
+    /// Access to the build system for menu integration
+    /// </summary>
+    public BuildSystem BuildSystem => _buildSystem;
 
     public override string Title => "Project";
 
@@ -137,7 +145,7 @@ public class GameProjectPanel : EditorPanel
         }
 
         // Build settings
-        if (ImGui.CollapsingHeader("Build"))
+        if (ImGui.CollapsingHeader("Build", ImGuiTreeNodeFlags.DefaultOpen))
         {
             ImGui.Indent();
             
@@ -146,23 +154,95 @@ public class GameProjectPanel : EditorPanel
             {
                 ImGui.Text($"C# Project: {Path.GetFileName(csPath)}");
                 
-                if (ImGui.Button("Build Project"))
+                // Configuration dropdown
+                var configs = new[] { "Debug", "Release" };
+                var currentConfig = (int)_buildConfiguration;
+                ImGui.SetNextItemWidth(100);
+                if (ImGui.Combo("##Config", ref currentConfig, configs, configs.Length))
                 {
-                    BuildProject();
+                    _buildConfiguration = (BuildConfiguration)currentConfig;
                 }
+                
                 ImGui.SameLine();
-                if (ImGui.Button("Reload"))
+                
+                // Build buttons
+                if (_buildSystem.IsBuildInProgress)
+                {
+                    ImGui.BeginDisabled();
+                    ImGui.Button("Building...");
+                    ImGui.EndDisabled();
+                    
+                    ImGui.SameLine();
+                    if (ImGui.Button("Cancel"))
+                    {
+                        _buildSystem.CancelBuild();
+                    }
+                }
+                else
+                {
+                    if (ImGui.Button("Build"))
+                    {
+                        _ = BuildProjectAsync();
+                    }
+                    
+                    ImGui.SameLine();
+                    if (ImGui.Button("Rebuild"))
+                    {
+                        _ = RebuildProjectAsync();
+                    }
+                    
+                    ImGui.SameLine();
+                    if (ImGui.Button("Clean"))
+                    {
+                        _ = CleanProjectAsync();
+                    }
+                }
+                
+                // Last build status
+                var lastResult = _buildSystem.LastBuildResult;
+                if (lastResult != null)
+                {
+                    ImGui.Spacing();
+                    if (lastResult.Success)
+                    {
+                        ImGui.TextColored(new Vector4(0.4f, 0.9f, 0.4f, 1f), 
+                            $"Build succeeded ({lastResult.Duration.TotalSeconds:F1}s)");
+                    }
+                    else
+                    {
+                        ImGui.TextColored(new Vector4(1f, 0.4f, 0.4f, 1f), 
+                            $"Build failed ({lastResult.ErrorCount} errors)");
+                    }
+                    
+                    if (lastResult.WarningCount > 0)
+                    {
+                        ImGui.SameLine();
+                        ImGui.TextColored(new Vector4(1f, 0.9f, 0.4f, 1f), 
+                            $"{lastResult.WarningCount} warning(s)");
+                    }
+                }
+                
+                ImGui.Spacing();
+                ImGui.Separator();
+                
+                if (ImGui.Button("Reload Game Module"))
                 {
                     _onProjectLoaded();
+                }
+                if (ImGui.IsItemHovered())
+                {
+                    ImGui.SetTooltip("Reload the game DLL after building");
                 }
             }
             else
             {
                 ImGui.TextDisabled("No C# project configured");
+                ImGui.TextWrapped("Set the C# project path in Project Settings.");
             }
 
             if (!string.IsNullOrEmpty(project.Build.StartupScene))
             {
+                ImGui.Spacing();
                 ImGui.Text($"Startup Scene: {project.Build.StartupScene}");
             }
             
@@ -624,18 +704,52 @@ public class GameProjectPanel : EditorPanel
         }
     }
 
-    private void BuildProject()
+    private async Task BuildProjectAsync()
     {
-        var csPath = _projectManager.GetCsProjectPath();
-        if (string.IsNullOrEmpty(csPath))
+        _statusMessage = "Building...";
+        var result = await _buildSystem.BuildAsync(_buildConfiguration);
+        
+        if (result.Success)
         {
-            _statusMessage = "No C# project configured.";
-            return;
+            _statusMessage = $"Build succeeded in {result.Duration.TotalSeconds:F1}s";
+            // Reload game module after successful build
+            _onProjectLoaded();
         }
+        else
+        {
+            _statusMessage = $"Build failed with {result.ErrorCount} error(s)";
+        }
+    }
 
-        _statusMessage = "Building... (check console)";
-        // TODO: Run build in background
-        Console.WriteLine($"Building project: {csPath}");
+    private async Task RebuildProjectAsync()
+    {
+        _statusMessage = "Rebuilding...";
+        var result = await _buildSystem.RebuildAsync(_buildConfiguration);
+        
+        if (result.Success)
+        {
+            _statusMessage = $"Rebuild succeeded in {result.Duration.TotalSeconds:F1}s";
+            _onProjectLoaded();
+        }
+        else
+        {
+            _statusMessage = $"Rebuild failed with {result.ErrorCount} error(s)";
+        }
+    }
+
+    private async Task CleanProjectAsync()
+    {
+        _statusMessage = "Cleaning...";
+        var result = await _buildSystem.CleanAsync();
+        
+        if (result.Success)
+        {
+            _statusMessage = "Clean succeeded";
+        }
+        else
+        {
+            _statusMessage = "Clean failed";
+        }
     }
 
     private static void OpenInExplorer(string path)

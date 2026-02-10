@@ -62,6 +62,7 @@ public class EditorApplication : IDisposable
     private readonly ResourceManager _gameResources = new();
     private readonly SceneSerializer _sceneSerializer = new();
     private readonly ProjectManager _projectManager = new();
+    private readonly BuildSystem _buildSystem;
     private IGameModule? _gameModule;
     private string _currentScenePath = string.Empty;
     private VirtualFileSystem _terminalFileSystem = new();
@@ -118,6 +119,7 @@ public class EditorApplication : IDisposable
     {
         _terminalSession = new TerminalSession(_terminalFileSystem);
         _terminalSaveManager = new GameSaveManager("Editor");
+        _buildSystem = new BuildSystem(_projectManager);
 
         // Create panels
         _hierarchyPanel = new SceneHierarchyPanel();
@@ -125,7 +127,7 @@ public class EditorApplication : IDisposable
         _consolePanel = new ConsolePanel();
         _raytracerPanel = new RaytracerSettingsPanel(_raytracerSettings);
         _renderPanel = new RenderSettingsPanel(_renderSettings);
-        _gameProjectPanel = new GameProjectPanel(_projectManager, LoadGameProjectFromSettings);
+        _gameProjectPanel = new GameProjectPanel(_projectManager, _buildSystem, LoadGameProjectFromSettings);
         _terminalPanel = new TerminalPanel(_terminalSession, () => _terminalSaveManager);
         _assetBrowserPanel = new AssetBrowserPanel(
             () => _projectManager.HasProject ? _projectManager.GetAssetPath() : "",
@@ -358,6 +360,36 @@ public class EditorApplication : IDisposable
                     {
                         panel.IsVisible = visible;
                     }
+                }
+                ImGui.EndMenu();
+            }
+
+            if (ImGui.BeginMenu("Build"))
+            {
+                var hasProject = _projectManager.HasProject;
+                var isBuilding = _buildSystem.IsBuildInProgress;
+                
+                if (ImGui.MenuItem("Build Project", "Ctrl+B", false, hasProject && !isBuilding))
+                {
+                    _ = _buildSystem.BuildAsync();
+                }
+                if (ImGui.MenuItem("Rebuild Project", "Ctrl+Shift+B", false, hasProject && !isBuilding))
+                {
+                    _ = _buildSystem.RebuildAsync();
+                }
+                if (ImGui.MenuItem("Clean", null, false, hasProject && !isBuilding))
+                {
+                    _ = _buildSystem.CleanAsync();
+                }
+                ImGui.Separator();
+                if (ImGui.MenuItem("Cancel Build", null, false, isBuilding))
+                {
+                    _buildSystem.CancelBuild();
+                }
+                ImGui.Separator();
+                if (ImGui.MenuItem("Restore Packages", null, false, hasProject && !isBuilding))
+                {
+                    _ = _buildSystem.RestoreAsync();
                 }
                 ImGui.EndMenu();
             }
@@ -1020,6 +1052,15 @@ public class EditorApplication : IDisposable
                 break;
             case Key.O when ctrl:
                 OpenSceneDialog();
+                break;
+            // Build shortcuts
+            case Key.B when ctrl && shift:
+                if (_projectManager.HasProject && !_buildSystem.IsBuildInProgress)
+                    _ = _buildSystem.RebuildAsync();
+                break;
+            case Key.B when ctrl:
+                if (_projectManager.HasProject && !_buildSystem.IsBuildInProgress)
+                    _ = _buildSystem.BuildAsync();
                 break;
             // Gizmo mode shortcuts
             case Key.W:

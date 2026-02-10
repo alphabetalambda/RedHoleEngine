@@ -58,6 +58,7 @@ public class EditorApplication : IDisposable
     private TerminalPanel? _terminalPanel;
     private AssetBrowserPanel? _assetBrowserPanel;
     private MaterialEditorPanel? _materialEditorPanel;
+    private EnvironmentPanel? _environmentPanel;
 
     private readonly RaytracerSettings _raytracerSettings = new();
     private readonly RenderSettings _renderSettings = new();
@@ -143,6 +144,7 @@ public class EditorApplication : IDisposable
             () => _projectManager.HasProject ? _projectManager.GetAssetPath() : "",
             path => LoadScene(path));
         _materialEditorPanel = new MaterialEditorPanel(_projectManager, _materialLibrary);
+        _environmentPanel = new EnvironmentPanel(OnEnvironmentMapChanged);
 
         _panels.Add(_hierarchyPanel);
         _panels.Add(_inspectorPanel);
@@ -153,6 +155,7 @@ public class EditorApplication : IDisposable
         _panels.Add(_terminalPanel);
         _panels.Add(_assetBrowserPanel);
         _panels.Add(_materialEditorPanel);
+        _panels.Add(_environmentPanel);
     }
 
     /// <summary>
@@ -1283,6 +1286,18 @@ public class EditorApplication : IDisposable
         
         // Dispose material preview
         _materialEditorPanel.DisposePreview();
+    }
+    
+    /// <summary>
+    /// Called when environment map changes in the EnvironmentPanel
+    /// </summary>
+    private void OnEnvironmentMapChanged(EnvironmentMap? envMap)
+    {
+        // Update Vulkan backend
+        _viewportVulkanBackend?.SetEnvironmentMap(envMap);
+        
+        // Also update material preview if it has an environment map
+        // (The preview renderer can optionally use the same environment)
     }
 
     #region Scene Save/Load

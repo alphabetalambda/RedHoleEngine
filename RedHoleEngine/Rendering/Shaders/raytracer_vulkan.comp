@@ -134,10 +134,27 @@ vec4 sampleMaterialTexture(int textureIndex, vec2 uv) {
 
 // Sample environment map using direction (equirectangular mapping)
 vec3 sampleEnvironment(vec3 dir) {
-    dir = normalize(dir);
+    // Handle zero/degenerate directions
+    float len = length(dir);
+    if (len < EPSILON) {
+        return vec3(0.0);
+    }
+    dir = dir / len;
+    
     float u = atan(dir.z, dir.x) / (2.0 * PI) + 0.5;
     float v = asin(clamp(dir.y, -1.0, 1.0)) / PI + 0.5;
-    return texture(envMap, vec2(u, v)).rgb;
+    
+    // Clamp UVs to valid range
+    u = clamp(u, 0.0, 1.0);
+    v = clamp(v, 0.0, 1.0);
+    
+    vec3 color = texture(envMap, vec2(u, v)).rgb;
+    
+    // Protect against NaN from texture sampling
+    if (any(isnan(color)) || any(isinf(color))) {
+        return vec3(0.0);
+    }
+    return color;
 }
 
 // Sample environment with roughness-based blur (approximation)
@@ -2010,10 +2027,16 @@ void main() {
             dir = normalize(mix(reflectDir, randomDir, 0.1)); // Slightly rough reflection
         }
 
-        color += sampleColor;
+        // NaN protection for sample
+        if (!any(isnan(sampleColor)) && !any(isinf(sampleColor))) {
+            color += sampleColor;
+        }
     }
 
     color /= float(totalSamples);
+    
+    // Clamp color before accumulation to prevent extreme values
+    color = clamp(color, vec3(0.0), vec3(100.0));
 
     vec4 accum = resetAccum ? vec4(0.0) : imageLoad(accumImage, pixelCoord);
     if (accumulateEnabled) {
@@ -2114,7 +2137,12 @@ void main() {
     vec3 v = aces_input_matrix * finalColor;
     vec3 a = v * (v + 0.0245786) - 0.000090537;
     vec3 b = v * (0.983729 * v + 0.4329510) + 0.238081;
-    finalColor = aces_output_matrix * (a / b);
+    finalColor = aces_output_matrix * (a / max(b, vec3(EPSILON)));
+    
+    // NaN/Inf protection - replace invalid values with black
+    if (any(isnan(finalColor)) || any(isinf(finalColor))) {
+        finalColor = vec3(0.0);
+    }
     
     // Clamp to valid range
     finalColor = clamp(finalColor, 0.0, 1.0);

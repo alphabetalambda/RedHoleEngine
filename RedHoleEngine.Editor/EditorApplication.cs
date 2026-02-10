@@ -12,6 +12,7 @@ using RedHoleEngine.Editor.UI.Panels;
 using RedHoleEngine.Engine;
 using RedHoleEngine.Game;
 using RedHoleEngine.Physics;
+using RedHoleEngine.Physics.Collision;
 using RedHoleEngine.Rendering;
 using RedHoleEngine.Rendering.Backends;
 using RedHoleEngine.Resources;
@@ -348,6 +349,11 @@ public class EditorApplication : IDisposable
                 {
                     DuplicateSelected();
                 }
+                ImGui.Separator();
+                if (ImGui.MenuItem("Focus Selection", "F", false, _selection.HasSelection))
+                {
+                    FocusOnSelection();
+                }
                 ImGui.EndMenu();
             }
 
@@ -664,7 +670,116 @@ public class EditorApplication : IDisposable
                 _viewportCamera.Position -= _viewportCamera.Right * (io.MouseDelta.X * 0.02f);
                 _viewportCamera.Position += _viewportCamera.Up * (io.MouseDelta.Y * 0.02f);
             }
+            
+            // F key to focus on selected entity
+            if (ImGui.IsKeyPressed(ImGuiKey.F) && !ImGui.IsAnyItemActive())
+            {
+                FocusOnSelection();
+            }
         }
+    }
+
+    /// <summary>
+    /// Focus the viewport camera on the currently selected entity
+    /// </summary>
+    private void FocusOnSelection()
+    {
+        if (_world == null || !_selection.HasSelection) return;
+
+        var entity = _selection.PrimarySelection;
+        if (!_world.IsAlive(entity)) return;
+
+        if (!_world.HasComponent<TransformComponent>(entity)) return;
+
+        ref var transform = ref _world.GetComponent<TransformComponent>(entity);
+        var targetPosition = transform.Position;
+        
+        // Calculate entity bounds to determine view distance
+        float boundingRadius = GetEntityBoundingRadius(entity, transform.LocalScale);
+        
+        // Calculate distance based on entity size and FOV
+        float fovRad = _viewportCamera.FieldOfView * MathF.PI / 180f;
+        float distance = boundingRadius / MathF.Sin(fovRad * 0.5f);
+        distance = MathF.Max(distance, 2f); // Minimum distance
+        distance *= 1.5f; // Add some margin
+        
+        // Calculate new camera position - back away from target along current view direction
+        // But we want to look AT the target, so we need to calculate the direction to target first
+        var directionToTarget = Vector3.Normalize(targetPosition - _viewportCamera.Position);
+        
+        // If camera is at target (or very close), use forward direction
+        if (float.IsNaN(directionToTarget.X) || 
+            Vector3.DistanceSquared(targetPosition, _viewportCamera.Position) < 0.01f)
+        {
+            directionToTarget = _viewportCamera.Forward;
+        }
+        
+        // New camera position
+        _viewportCamera.Position = targetPosition - directionToTarget * distance;
+        
+        // Update camera to look at target
+        LookAt(targetPosition);
+        
+        // Reset accumulation for renderer
+        _raytracerSettings.ResetAccumulation = true;
+        
+        Console.WriteLine($"Focused on entity at {targetPosition}");
+    }
+
+    /// <summary>
+    /// Point the camera to look at a target position
+    /// </summary>
+    private void LookAt(Vector3 target)
+    {
+        var direction = Vector3.Normalize(target - _viewportCamera.Position);
+        
+        // Calculate yaw and pitch from direction
+        float yaw = MathF.Atan2(direction.Z, direction.X) * 180f / MathF.PI;
+        float pitch = MathF.Asin(direction.Y) * 180f / MathF.PI;
+        
+        _viewportCamera.Yaw = yaw;
+        _viewportCamera.Pitch = pitch;
+    }
+
+    /// <summary>
+    /// Calculate the bounding radius of an entity based on its components
+    /// </summary>
+    private float GetEntityBoundingRadius(Entity entity, Vector3 scale)
+    {
+        float radius = 1f; // Default radius
+        
+        // Check collider for size
+        if (_world!.HasComponent<ColliderComponent>(entity))
+        {
+            ref var collider = ref _world.GetComponent<ColliderComponent>(entity);
+            
+            radius = collider.ShapeType switch
+            {
+                ColliderType.Sphere => collider.SphereRadius * MathF.Max(scale.X, MathF.Max(scale.Y, scale.Z)),
+                ColliderType.Box => collider.BoxHalfExtents.Length() * scale.Length() / MathF.Sqrt(3f),
+                ColliderType.Capsule => MathF.Max(collider.CapsuleRadius, collider.CapsuleHeight * 0.5f) * 
+                                        MathF.Max(scale.X, MathF.Max(scale.Y, scale.Z)),
+                _ => 1f
+            };
+        }
+        
+        // Check for gravity source (black holes can be large)
+        if (_world.HasComponent<GravitySourceComponent>(entity))
+        {
+            ref var gravity = ref _world.GetComponent<GravitySourceComponent>(entity);
+            // Schwarzschild radius approximation for visualization
+            float schwarzschildRadius = gravity.Mass * 0.5f;
+            radius = MathF.Max(radius, schwarzschildRadius * 3f);
+        }
+        
+        // Check for accretion disk
+        if (_world.HasComponent<AccretionDiskComponent>(entity))
+        {
+            ref var disk = ref _world.GetComponent<AccretionDiskComponent>(entity);
+            radius = MathF.Max(radius, disk.OuterRadius);
+        }
+        
+        return MathF.Max(radius, 0.5f); // Minimum radius
     }
 
     private void UpdateTransformGizmo(Vector2 viewportMin, Vector2 viewportSize, bool hovered)

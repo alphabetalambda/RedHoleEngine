@@ -57,6 +57,9 @@ public class Application : IDisposable
     private readonly RaytracerSettings _raytracerSettings = new();
     private readonly RenderSettings _renderSettings = new();
     
+    // Splash screen
+    private SplashScreen? _splashScreen;
+    
     // Legacy compatibility (will be migrated to ECS)
     private Camera? _legacyCamera;
     private InputHandler? _inputHandler;
@@ -66,6 +69,28 @@ public class Application : IDisposable
     public int WindowHeight { get; set; } = 720;
     public string WindowTitle { get; set; } = "RedHole Engine";
     public bool VSync { get; set; } = true;
+    
+    /// <summary>
+    /// Whether to show the engine splash screen on startup.
+    /// Only shown when IsEditorMode is false (i.e., in compiled games).
+    /// </summary>
+    public bool ShowSplashScreen { get; set; } = true;
+    
+    /// <summary>
+    /// Whether this is running in editor mode (no splash screen, development features enabled).
+    /// Set to false for compiled/release games.
+    /// </summary>
+    public bool IsEditorMode { get; set; } = false;
+    
+    /// <summary>
+    /// Path to the splash screen logo image
+    /// </summary>
+    public string SplashLogoPath { get; set; } = "Assets/Branding/redhole_logo.png";
+    
+    /// <summary>
+    /// Duration to display the splash screen (seconds)
+    /// </summary>
+    public float SplashDuration { get; set; } = 2.5f;
     
     /// <summary>
     /// Audio quality preset
@@ -313,6 +338,20 @@ public class Application : IDisposable
             Console.WriteLine("Audio engine failed to initialize - audio disabled");
         }
 
+        // Initialize splash screen if not in editor mode
+        if (ShowSplashScreen && !IsEditorMode)
+        {
+            _splashScreen = new SplashScreen(scene.World, WindowWidth, WindowHeight)
+            {
+                LogoPath = SplashLogoPath,
+                DisplayDuration = SplashDuration,
+                FadeInDuration = 0.4f,
+                FadeOutDuration = 0.6f
+            };
+            _splashScreen.Show();
+            Console.WriteLine("Splash screen initialized");
+        }
+        
         // Let user code initialize
         OnInitialize?.Invoke();
 
@@ -328,6 +367,31 @@ public class Application : IDisposable
     private void OnWindowUpdate(double deltaTime)
     {
         Profiler.Instance.BeginFrame();
+        
+        // Update splash screen if active
+        if (_splashScreen?.IsActive == true)
+        {
+            _splashScreen.Update((float)deltaTime);
+            
+            // Allow skipping splash with Space or Enter
+            if (_inputContext != null)
+            {
+                foreach (var keyboard in _inputContext.Keyboards)
+                {
+                    if (keyboard.IsKeyPressed(Silk.NET.Input.Key.Space) || 
+                        keyboard.IsKeyPressed(Silk.NET.Input.Key.Enter) ||
+                        keyboard.IsKeyPressed(Silk.NET.Input.Key.Escape))
+                    {
+                        _splashScreen.Skip();
+                        break;
+                    }
+                }
+            }
+            
+            // Still update the ECS world for UI rendering during splash
+            _gameLoop.Update((float)deltaTime);
+            return; // Skip other updates during splash
+        }
         
         // Clear debug primitives from previous frame
         _debugDraw?.Clear();

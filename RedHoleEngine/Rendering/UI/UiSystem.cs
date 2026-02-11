@@ -273,7 +273,19 @@ public sealed class UiSystem : GameSystem
         UiTextureFrame frame;
         try
         {
-            frame = UiMediaLoader.LoadImage(path, 1);
+            // Check if this is the branding logo and use fallback if file not found
+            if (path.Contains("redhole_logo", StringComparison.OrdinalIgnoreCase) ||
+                path.Contains("Branding", StringComparison.OrdinalIgnoreCase))
+            {
+                frame = UiMediaLoader.LoadImageWithFallback(
+                    path, 
+                    RedHoleEngine.Assets.Branding.BrandingAssets.PlaceholderLogoBase64, 
+                    1);
+            }
+            else
+            {
+                frame = UiMediaLoader.LoadImage(path, 1);
+            }
         }
         catch
         {

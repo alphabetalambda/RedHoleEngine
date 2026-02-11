@@ -19,6 +19,38 @@ public static class UiMediaLoader
         image.CopyPixelDataTo(rgba);
         return new UiTextureFrame(image.Width, image.Height, rgba, version);
     }
+    
+    /// <summary>
+    /// Load an image from base64 encoded PNG/JPG data
+    /// </summary>
+    public static UiTextureFrame LoadImageFromBase64(string base64Data, int version)
+    {
+        var bytes = Convert.FromBase64String(base64Data);
+        using var stream = new MemoryStream(bytes);
+        using var image = Image.Load<Rgba32>(stream);
+        var rgba = new byte[image.Width * image.Height * 4];
+        image.CopyPixelDataTo(rgba);
+        return new UiTextureFrame(image.Width, image.Height, rgba, version);
+    }
+    
+    /// <summary>
+    /// Try to load an image from file, falling back to base64 data if file not found
+    /// </summary>
+    public static UiTextureFrame LoadImageWithFallback(string path, string fallbackBase64, int version)
+    {
+        if (File.Exists(path))
+        {
+            return LoadImage(path, version);
+        }
+        
+        if (!string.IsNullOrEmpty(fallbackBase64))
+        {
+            return LoadImageFromBase64(fallbackBase64, version);
+        }
+        
+        // Return a 1x1 magenta pixel as ultimate fallback
+        return new UiTextureFrame(1, 1, new byte[] { 255, 0, 255, 255 }, version);
+    }
 
     public static List<UiTextureFrame> LoadGifFrames(string path, int baseVersion)
     {

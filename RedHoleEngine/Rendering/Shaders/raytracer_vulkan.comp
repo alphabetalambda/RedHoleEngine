@@ -1200,11 +1200,12 @@ vec3 diskColor(vec3 hitPos, float rs) {
     float orbitalPhase = u_Time / max(period, 0.1);
     float animatedAngle = baseAngle + orbitalPhase * 6.283185;
     
-    // Turbulence pattern that rotates with the disk
-    float turbulence = sin(animatedAngle * 8.0) * 0.12 + 0.88;
+    // Subtle turbulence pattern - reduced intensity to avoid visible radial stripes
+    // Use higher frequency and lower amplitude for smoother appearance
+    float turbulence = sin(animatedAngle * 12.0) * 0.04 + sin(animatedAngle * 5.0) * 0.03 + 0.93;
     
-    // Add spiral arm structure
-    float spiral = sin(animatedAngle * 2.0 - distFromCenter * 0.5) * 0.08 + 0.92;
+    // Subtle spiral arm structure
+    float spiral = sin(animatedAngle * 2.0 - distFromCenter * 0.3) * 0.05 + 0.95;
     
     return color * brightness * turbulence * spiral * 2.5;
 }
@@ -1713,8 +1714,27 @@ bool traceOnce(vec3 rayOrigin, vec3 rayDir, out vec3 outColor, out vec3 hitPos, 
         vec3 relPos = pos - u_BlackHolePos;
         float dist = length(relPos);
         
-        // Adaptive step size - larger when far from black hole
-        float step = baseStepSize * clamp(dist / (rs * 2.0), 0.1, 2.0);
+        // Adaptive step size - balance between accuracy and avoiding numerical artifacts
+        // Use smooth continuous function instead of discrete zones to prevent banding
+        float horizonProximity = dist / eventHorizon;
+        
+        // Smooth step size scaling using a continuous function
+        // Minimum multiplier of 0.15 near horizon, scaling up to 1.5 far away
+        // Using smoothstep to avoid harsh transitions that cause banding
+        float nearFactor = smoothstep(1.0, 4.0, horizonProximity);  // 0 near horizon, 1 when >4x away
+        float stepMultiplier = mix(0.15, 1.0, nearFactor);
+        
+        // Additional refinement in the photon sphere region (1.5 * rs)
+        float photonProximity = dist / photonR;
+        if (photonProximity < 1.5) {
+            // Smoothly reduce step size near photon sphere
+            float photonFactor = smoothstep(1.0, 1.5, photonProximity);
+            stepMultiplier = min(stepMultiplier, mix(0.2, 0.4, photonFactor));
+        }
+        
+        // Scale step with distance for efficiency far from black hole
+        float distanceScale = clamp(dist / (rs * 5.0), 0.5, 1.5);
+        float step = baseStepSize * stepMultiplier * distanceScale;
         
         // Check if fallen into event horizon (use outer horizon for Kerr)
         if (dist < eventHorizon) {
@@ -1760,13 +1780,28 @@ bool traceOnce(vec3 rayOrigin, vec3 rayDir, out vec3 outColor, out vec3 hitPos, 
             }
         }
         
-        // Only check BVH periodically to save performance (every N steps or when far from BH)
-        bool checkBvh = (i % bvhInterval == 0) || (dist > rs * 8.0);
+        // Adaptive BVH check frequency based on lensing strength
+        // Avoid checking every step as it causes numerical artifacts
+        // Instead, use a minimum interval of 2 steps to allow proper ray integration
+        int adaptiveInterval;
+        if (dist < photonR * 1.5) {
+            // Strong lensing region - check every 2 steps minimum
+            adaptiveInterval = 2;
+        } else if (dist < rs * 4.0) {
+            // Moderate lensing - check every 3 steps
+            adaptiveInterval = 3;
+        } else {
+            // Far from black hole - use default interval
+            adaptiveInterval = bvhInterval;
+        }
+        
+        bool checkBvh = (i % adaptiveInterval == 0);
         
         if (checkBvh) {
             float hitT;
             vec3 segHitNormal, segHitColor;
-            float checkDist = step * float(bvhInterval) * 1.2;
+            // Check distance covers multiple steps to ensure we don't miss objects
+            float checkDist = step * float(adaptiveInterval + 1) * 1.2;
             if (intersectBvhSegment(pos, vel, checkDist, nodeCount, triCount, hitT, segHitNormal, segHitColor)) {
                 hitPos = pos + vel * hitT;
                 hitNormal = segHitNormal;
@@ -1798,16 +1833,26 @@ bool traceOnce(vec3 rayOrigin, vec3 rayDir, out vec3 outColor, out vec3 hitPos, 
             // Use Kerr geodesic with frame dragging
             accel = kerrAcceleration(pos, vel, rs, a, spinAxis);
         } else {
-            // Use simpler Schwarzschild approximation
-            vec3 towardMass = -normalize(relPos);
-            float bendStrength = rs * 1.5 / (dist * dist);
-            bendStrength = min(bendStrength, 0.5);
-            accel = towardMass * bendStrength;
+            // Use proper Schwarzschild geodesic equation for consistent light bending
+            accel = schwarzschildAcceleration(pos, vel, rs);
         }
         
-        vel += accel * step;
-        vel = normalize(vel);
-        pos = pos + vel * step;
+        // Clamp acceleration magnitude to prevent numerical instability
+        // Very large accelerations near the horizon can cause erratic behavior
+        float accelMag = length(accel);
+        float maxAccel = 2.0 / step; // Limit to reasonable change per step
+        if (accelMag > maxAccel) {
+            accel = accel * (maxAccel / accelMag);
+        }
+        
+        // Verlet-style integration for better stability
+        vec3 newVel = vel + accel * step;
+        newVel = normalize(newVel);
+        
+        // Use midpoint velocity for position update (more accurate)
+        vec3 midVel = normalize(vel + newVel);
+        pos = pos + midVel * step;
+        vel = newVel;
         totalDist += step;
         
         // Check for accretion disk intersection
@@ -1824,17 +1869,22 @@ bool traceOnce(vec3 rayOrigin, vec3 rayDir, out vec3 outColor, out vec3 hitPos, 
         float diskOuterR = u_DiskOuterRadius;
         float diskThick = u_DiskThickness > 0.0 ? u_DiskThickness : 0.0;
         
-        // Check for disk intersection - either crossing plane or inside volume
+        // Disk intersection check:
+        // 1. Primary: Check if crossed the disk plane (most reliable)
+        // 2. Secondary: Check if within disk volume (for thick disks only)
         bool crossedPlane = (d1 * d2 < 0.0);
         bool insideDiskVolume = diskThick > 0.0 && isInsideDiskVolume(pos, diskNormal, diskInnerR, diskOuterR, diskThick);
+        
+        // Note: Removed grazing check as it was causing false positives and radial artifacts
+        // The crossedPlane check with proper interpolation handles edge cases better
         
         if (crossedPlane || insideDiskVolume) {
             vec3 diskHitPos;
             float distFromCenter;
             
             if (crossedPlane) {
-                // Ray crossed the disk plane
-                float t = abs(d1) / (abs(d1) + abs(d2));
+                // Ray crossed the disk plane - interpolate exact crossing point
+                float t = abs(d1) / (abs(d1) + abs(d2) + 0.0001);
                 diskHitPos = mix(oldPos, pos, t);
                 
                 vec3 toDiskHit = diskHitPos - u_BlackHolePos;
@@ -1848,8 +1898,16 @@ bool traceOnce(vec3 rayOrigin, vec3 rayDir, out vec3 outColor, out vec3 hitPos, 
                 distFromCenter = length(inPlane);
             }
             
-            if (distFromCenter >= diskInnerR && distFromCenter <= diskOuterR) {
-                outColor = diskColor(diskHitPos, rs);
+            // Use exact bounds - the edge smoothing is better handled by supersampling
+            float innerBound = diskInnerR;
+            float outerBound = diskOuterR;
+            
+            if (distFromCenter >= innerBound && distFromCenter <= outerBound) {
+                // Clamp to actual disk bounds for color calculation
+                float clampedDist = clamp(distFromCenter, diskInnerR, diskOuterR);
+                vec3 inPlaneDir = normalize(diskHitPos - u_BlackHolePos - dot(diskHitPos - u_BlackHolePos, diskNormal) * diskNormal);
+                vec3 clampedHitPos = u_BlackHolePos + inPlaneDir * clampedDist;
+                outColor = diskColor(clampedHitPos, rs);
                 
                 // For volumetric disk, attenuate based on path through disk
                 if (insideDiskVolume && !crossedPlane) {

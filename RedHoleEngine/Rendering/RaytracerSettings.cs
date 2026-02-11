@@ -100,7 +100,9 @@ public class RaytracerSettings
     }
     
     /// <summary>
-    /// Apply a lensing quality preset
+    /// Apply a lensing quality preset.
+    /// Note: The shader now uses adaptive step sizing near the event horizon and photon sphere,
+    /// so these are base values that get refined automatically in critical regions.
     /// </summary>
     public void ApplyLensingQuality(LensingQuality quality)
     {
@@ -108,24 +110,24 @@ public class RaytracerSettings
         switch (quality)
         {
             case LensingQuality.Low:
-                LensingMaxSteps = 32;
-                LensingStepSize = 0.6f;
-                LensingBvhCheckInterval = 8;
+                LensingMaxSteps = 48;        // Increased from 32 for better coverage
+                LensingStepSize = 0.5f;      // Reduced from 0.6 - shader will use finer steps near horizon
+                LensingBvhCheckInterval = 6; // Shader adapts this near the photon sphere
                 break;
             case LensingQuality.Medium:
-                LensingMaxSteps = 64;
-                LensingStepSize = 0.4f;
-                LensingBvhCheckInterval = 6;
+                LensingMaxSteps = 96;        // Increased from 64 for smoother edges
+                LensingStepSize = 0.35f;     // Slightly reduced base step
+                LensingBvhCheckInterval = 4; // Reduced from 6 for better object silhouettes
                 break;
             case LensingQuality.High:
-                LensingMaxSteps = 128;
-                LensingStepSize = 0.25f;
-                LensingBvhCheckInterval = 4;
+                LensingMaxSteps = 160;       // Increased from 128
+                LensingStepSize = 0.2f;      // Finer base step
+                LensingBvhCheckInterval = 3; // More frequent BVH checks
                 break;
             case LensingQuality.Ultra:
-                LensingMaxSteps = 200;
-                LensingStepSize = 0.15f;
-                LensingBvhCheckInterval = 2;
+                LensingMaxSteps = 256;       // Increased from 200
+                LensingStepSize = 0.12f;     // Very fine base step
+                LensingBvhCheckInterval = 2; // Check BVH very frequently
                 break;
         }
     }

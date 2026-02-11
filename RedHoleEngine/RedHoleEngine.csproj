@@ -26,6 +26,11 @@
       <PackageReference Include="Silk.NET.Windowing.Glfw" Version="2.23.0" />
       <PackageReference Include="Silk.NET.Windowing.Sdl" Version="2.23.0" />
       <PackageReference Include="SixLabors.ImageSharp" Version="3.1.4" />
+      <!-- ML.NET for in-game machine learning -->
+      <PackageReference Include="Microsoft.ML" Version="4.0.2" />
+      <PackageReference Include="Microsoft.ML.FastTree" Version="4.0.2" />
+      <PackageReference Include="Microsoft.ML.LightGbm" Version="4.0.2" />
+      <PackageReference Include="Microsoft.ML.Recommender" Version="0.22.0" />
     </ItemGroup>
 
     <!-- Copy shader files to output directory -->

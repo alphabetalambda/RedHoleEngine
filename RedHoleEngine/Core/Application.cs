@@ -690,8 +690,126 @@ public class Application : IDisposable
 
     #endregion
 
+    #region ML Helpers
+
+    private ML.Services.MLService? _mlService;
+    private ML.Agents.MLAgentSystem? _mlAgentSystem;
+    private ML.Analytics.DifficultyAdapterSystem? _difficultySystem;
+    private ML.Analytics.PlayerAnalyticsSystem? _analyticsSystem;
+    private ML.Analytics.AnomalyDetectionSystem? _anomalySystem;
+
+    /// <summary>
+    /// The ML service for machine learning operations
+    /// </summary>
+    public RedHoleEngine.ML.Services.MLService MachineLearning
+    {
+        get
+        {
+            _mlService ??= new RedHoleEngine.ML.Services.MLService();
+            return _mlService;
+        }
+    }
+
+    /// <summary>
+    /// Initialize the ML subsystems (call after OnInitialize)
+    /// </summary>
+    public void InitializeML()
+    {
+        if (World == null)
+            throw new InvalidOperationException("No active scene");
+
+        _mlService ??= new RedHoleEngine.ML.Services.MLService();
+
+        // Initialize ML Agent System
+        _mlAgentSystem = new RedHoleEngine.ML.Agents.MLAgentSystem();
+        _mlAgentSystem.SetMLService(_mlService);
+        World.AddSystem(_mlAgentSystem);
+
+        // Initialize Difficulty Adapter System
+        _difficultySystem = new RedHoleEngine.ML.Analytics.DifficultyAdapterSystem();
+        _difficultySystem.SetMLService(_mlService);
+        World.AddSystem(_difficultySystem);
+
+        // Initialize Player Analytics System
+        _analyticsSystem = new RedHoleEngine.ML.Analytics.PlayerAnalyticsSystem();
+        _analyticsSystem.SetMLService(_mlService);
+        World.AddSystem(_analyticsSystem);
+
+        // Initialize Anomaly Detection System
+        _anomalySystem = new RedHoleEngine.ML.Analytics.AnomalyDetectionSystem();
+        _anomalySystem.SetMLService(_mlService);
+        World.AddSystem(_anomalySystem);
+
+        Console.WriteLine("ML subsystems initialized");
+    }
+
+    /// <summary>
+    /// Create an ML-controlled agent entity
+    /// </summary>
+    public Entity CreateMLAgent(Vector3 position, string modelId, RedHoleEngine.ML.Components.MLAgentType agentType = RedHoleEngine.ML.Components.MLAgentType.Classifier)
+    {
+        if (World == null)
+            throw new InvalidOperationException("No active scene");
+
+        var entity = World.CreateEntity();
+        World.AddComponent(entity, new TransformComponent(position));
+        World.AddComponent(entity, RedHoleEngine.ML.Components.MLAgentComponent.Create(modelId, agentType));
+
+        return entity;
+    }
+
+    /// <summary>
+    /// Create a player entity with behavior tracking for analytics
+    /// </summary>
+    public Entity CreateTrackedPlayer(Vector3 position, string? sessionId = null)
+    {
+        if (World == null)
+            throw new InvalidOperationException("No active scene");
+
+        var entity = World.CreateEntity();
+        World.AddComponent(entity, new TransformComponent(position));
+        World.AddComponent(entity, RedHoleEngine.ML.Components.PlayerBehaviorComponent.Create(sessionId));
+        World.AddComponent(entity, RedHoleEngine.ML.Components.DifficultyComponent.Create());
+
+        return entity;
+    }
+
+    /// <summary>
+    /// Add anomaly monitoring to an entity
+    /// </summary>
+    public void AddAnomalyMonitor(Entity entity, string modelId, float threshold = 0.5f)
+    {
+        if (World == null)
+            throw new InvalidOperationException("No active scene");
+
+        World.AddComponent(entity, RedHoleEngine.ML.Components.AnomalyMonitorComponent.Create(modelId, threshold));
+    }
+
+    /// <summary>
+    /// Get the ML agent system for advanced configuration
+    /// </summary>
+    public RedHoleEngine.ML.Agents.MLAgentSystem? MLAgentSystem => _mlAgentSystem;
+
+    /// <summary>
+    /// Get the difficulty adapter system
+    /// </summary>
+    public RedHoleEngine.ML.Analytics.DifficultyAdapterSystem? DifficultySystem => _difficultySystem;
+
+    /// <summary>
+    /// Get the player analytics system
+    /// </summary>
+    public RedHoleEngine.ML.Analytics.PlayerAnalyticsSystem? AnalyticsSystem => _analyticsSystem;
+
+    /// <summary>
+    /// Get the anomaly detection system
+    /// </summary>
+    public RedHoleEngine.ML.Analytics.AnomalyDetectionSystem? AnomalySystem => _anomalySystem;
+
+    #endregion
+
     public void Dispose()
     {
+        _mlService?.Dispose();
         _resourceManager.Dispose();
         _gameLoop.Shutdown();
     }

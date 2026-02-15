@@ -36,8 +36,12 @@ public unsafe class VulkanBackend : IGraphicsBackend
     public RenderSettings RenderSettings { get; } = new();
 
     private readonly IWindow _window;
-    private readonly int _width;
-    private readonly int _height;
+    private readonly int _width;   // Display resolution
+    private readonly int _height;  // Display resolution
+    
+    // Render resolution (may be lower than display when upscaling)
+    private int _renderWidth;
+    private int _renderHeight;
 
     private Vk? _vk;
     private Instance _instance;
@@ -148,6 +152,8 @@ public unsafe class VulkanBackend : IGraphicsBackend
     private Vector3 _lastCameraForward;
     private float _lastCameraFov;
     private int _lastSettingsHash;
+    private UpscaleMethod _lastUpscaleMethod;
+    private UpscaleQuality _lastUpscaleQuality;
 
     // Rasterization
     private RenderPass _rasterRenderPass;
@@ -691,23 +697,223 @@ public unsafe class VulkanBackend : IGraphicsBackend
 
     private void CreateOutputImage()
     {
-        CreateStorageImage(_width, _height, out _outputImage, out _outputImageMemory, out _outputImageView);
-        CreateStorageImage(_width, _height, out _accumImage, out _accumImageMemory, out _accumImageView);
+        // Calculate render resolution based on upscaling settings
+        UpdateRenderResolution();
+        
+        // Render resolution images (raytracer output, accumulation, depth, motion vectors)
+        CreateStorageImage(_renderWidth, _renderHeight, out _outputImage, out _outputImageMemory, out _outputImageView);
+        CreateStorageImage(_renderWidth, _renderHeight, out _accumImage, out _accumImageMemory, out _accumImageView);
         _accumInitialized = false;
         _outputImageLayout = ImageLayout.Undefined;
         
-        // Create raytracing depth image (R32F for linear depth)
-        CreateStorageImage(_width, _height, Format.R32Sfloat, out _raytracingDepthImage, out _raytracingDepthMemory, out _raytracingDepthView);
+        // Create raytracing depth image (R32F for linear depth) at render resolution
+        CreateStorageImage(_renderWidth, _renderHeight, Format.R32Sfloat, out _raytracingDepthImage, out _raytracingDepthMemory, out _raytracingDepthView);
         
-        // Create motion vector image (RG16F for screen-space motion)
-        CreateStorageImage(_width, _height, Format.R16G16Sfloat, out _motionVectorImage, out _motionVectorMemory, out _motionVectorView);
+        // Create motion vector image (RG16F for screen-space motion) at render resolution
+        CreateStorageImage(_renderWidth, _renderHeight, Format.R16G16Sfloat, out _motionVectorImage, out _motionVectorMemory, out _motionVectorView);
         
-        // Create upscaled image (RGBA32F at display resolution - same as render for now, can differ with upscaling)
+        // Create upscaled image at DISPLAY resolution (this is the final output)
         CreateStorageImage(_width, _height, Format.R32G32B32A32Sfloat, out _upscaledImage, out _upscaledMemory, out _upscaledView);
         
-        // Initialize motion vector generator
+        // Initialize motion vector generator at render resolution
         _motionVectorGenerator = new MotionVectorGenerator();
-        _motionVectorGenerator.Initialize(_width, _height);
+        _motionVectorGenerator.Initialize(_renderWidth, _renderHeight);
+        
+        Console.WriteLine($"[Rendering] Render resolution: {_renderWidth}x{_renderHeight}, Display: {_width}x{_height}");
+    }
+    
+    private void UpdateRenderResolution()
+    {
+        float scale = RaytracerSettings.GetUpscaleRenderScale();
+        _renderWidth = Math.Max(1, (int)(_width * scale));
+        _renderHeight = Math.Max(1, (int)(_height * scale));
+        
+        // Ensure dimensions are multiples of 16 for compute shader workgroups
+        _renderWidth = (_renderWidth + 15) & ~15;
+        _renderHeight = (_renderHeight + 15) & ~15;
+        
+        // Don't exceed display resolution
+        _renderWidth = Math.Min(_renderWidth, _width);
+        _renderHeight = Math.Min(_renderHeight, _height);
+    }
+    
+    private void CheckUpscaleSettingsChanged()
+    {
+        // Check if upscale settings changed
+        if (_lastUpscaleMethod == RaytracerSettings.UpscaleMethod && 
+            _lastUpscaleQuality == RaytracerSettings.UpscaleQuality)
+        {
+            return;
+        }
+        
+        // Settings changed - calculate new render resolution
+        int oldRenderWidth = _renderWidth;
+        int oldRenderHeight = _renderHeight;
+        UpdateRenderResolution();
+        
+        // If resolution actually changed, recreate render resources
+        if (oldRenderWidth != _renderWidth || oldRenderHeight != _renderHeight)
+        {
+            Console.WriteLine($"[Upscaling] Resolution changed: {oldRenderWidth}x{oldRenderHeight} -> {_renderWidth}x{_renderHeight}");
+            
+            // Wait for GPU to finish
+            _vk!.DeviceWaitIdle(_device);
+            
+            // Destroy old render-resolution images
+            DestroyRenderResolutionImages();
+            
+            // Recreate at new resolution
+            CreateRenderResolutionImages();
+            
+            // Update descriptors with new images
+            UpdateRenderResolutionDescriptors();
+            
+            // Reset accumulation
+            _accumInitialized = false;
+            _frameIndex = 0;
+            RaytracerSettings.ResetAccumulation = true;
+            
+            // Update motion vector generator
+            _motionVectorGenerator?.Resize(_renderWidth, _renderHeight);
+        }
+        
+        _lastUpscaleMethod = RaytracerSettings.UpscaleMethod;
+        _lastUpscaleQuality = RaytracerSettings.UpscaleQuality;
+    }
+    
+    private void DestroyRenderResolutionImages()
+    {
+        _vk!.DestroyImageView(_device, _outputImageView, null);
+        _vk.DestroyImage(_device, _outputImage, null);
+        _vk.FreeMemory(_device, _outputImageMemory, null);
+        
+        _vk.DestroyImageView(_device, _accumImageView, null);
+        _vk.DestroyImage(_device, _accumImage, null);
+        _vk.FreeMemory(_device, _accumImageMemory, null);
+        
+        _vk.DestroyImageView(_device, _raytracingDepthView, null);
+        _vk.DestroyImage(_device, _raytracingDepthImage, null);
+        _vk.FreeMemory(_device, _raytracingDepthMemory, null);
+        
+        _vk.DestroyImageView(_device, _motionVectorView, null);
+        _vk.DestroyImage(_device, _motionVectorImage, null);
+        _vk.FreeMemory(_device, _motionVectorMemory, null);
+    }
+    
+    private void CreateRenderResolutionImages()
+    {
+        // Render resolution images
+        CreateStorageImage(_renderWidth, _renderHeight, out _outputImage, out _outputImageMemory, out _outputImageView);
+        CreateStorageImage(_renderWidth, _renderHeight, out _accumImage, out _accumImageMemory, out _accumImageView);
+        CreateStorageImage(_renderWidth, _renderHeight, Format.R32Sfloat, out _raytracingDepthImage, out _raytracingDepthMemory, out _raytracingDepthView);
+        CreateStorageImage(_renderWidth, _renderHeight, Format.R16G16Sfloat, out _motionVectorImage, out _motionVectorMemory, out _motionVectorView);
+        
+        _outputImageLayout = ImageLayout.Undefined;
+        _raytracingDepthLayout = ImageLayout.Undefined;
+        _motionVectorImageLayout = ImageLayout.Undefined;
+    }
+    
+    private void UpdateRenderResolutionDescriptors()
+    {
+        // Update raytracer descriptor set with new images
+        var outputImageInfo = new DescriptorImageInfo
+        {
+            ImageView = _outputImageView,
+            ImageLayout = ImageLayout.General
+        };
+        
+        var accumImageInfo = new DescriptorImageInfo
+        {
+            ImageView = _accumImageView,
+            ImageLayout = ImageLayout.General
+        };
+        
+        var depthImageInfo = new DescriptorImageInfo
+        {
+            ImageView = _raytracingDepthView,
+            ImageLayout = ImageLayout.General
+        };
+        
+        var writes = new WriteDescriptorSet[]
+        {
+            new()
+            {
+                SType = StructureType.WriteDescriptorSet,
+                DstSet = _computeDescriptorSet,
+                DstBinding = 0,
+                DstArrayElement = 0,
+                DescriptorType = DescriptorType.StorageImage,
+                DescriptorCount = 1,
+                PImageInfo = &outputImageInfo
+            },
+            new()
+            {
+                SType = StructureType.WriteDescriptorSet,
+                DstSet = _computeDescriptorSet,
+                DstBinding = 4,
+                DstArrayElement = 0,
+                DescriptorType = DescriptorType.StorageImage,
+                DescriptorCount = 1,
+                PImageInfo = &accumImageInfo
+            },
+            new()
+            {
+                SType = StructureType.WriteDescriptorSet,
+                DstSet = _computeDescriptorSet,
+                DstBinding = 8,
+                DstArrayElement = 0,
+                DescriptorType = DescriptorType.StorageImage,
+                DescriptorCount = 1,
+                PImageInfo = &depthImageInfo
+            }
+        };
+        
+        fixed (WriteDescriptorSet* writesPtr = writes)
+        {
+            _vk!.UpdateDescriptorSets(_device, (uint)writes.Length, writesPtr, 0, null);
+        }
+        
+        // Update motion vector descriptor set
+        var mvOutputImageInfo = new DescriptorImageInfo
+        {
+            ImageView = _motionVectorView,
+            ImageLayout = ImageLayout.General
+        };
+        
+        var mvDepthImageInfo = new DescriptorImageInfo
+        {
+            ImageView = _raytracingDepthView,
+            ImageLayout = ImageLayout.General
+        };
+        
+        var mvWrites = new WriteDescriptorSet[]
+        {
+            new()
+            {
+                SType = StructureType.WriteDescriptorSet,
+                DstSet = _motionVectorDescriptorSet,
+                DstBinding = 0,
+                DstArrayElement = 0,
+                DescriptorType = DescriptorType.StorageImage,
+                DescriptorCount = 1,
+                PImageInfo = &mvOutputImageInfo
+            },
+            new()
+            {
+                SType = StructureType.WriteDescriptorSet,
+                DstSet = _motionVectorDescriptorSet,
+                DstBinding = 1,
+                DstArrayElement = 0,
+                DescriptorType = DescriptorType.StorageImage,
+                DescriptorCount = 1,
+                PImageInfo = &mvDepthImageInfo
+            }
+        };
+        
+        fixed (WriteDescriptorSet* writesPtr = mvWrites)
+        {
+            _vk!.UpdateDescriptorSets(_device, (uint)mvWrites.Length, writesPtr, 0, null);
+        }
     }
 
     private void CreateStorageImage(int width, int height, out Image image, out DeviceMemory memory, out ImageView view)
@@ -3075,14 +3281,17 @@ public unsafe class VulkanBackend : IGraphicsBackend
         }
 
         bool useRaytracer = RenderSettings.Mode == RenderMode.Raytraced;
+        
+        // Check if upscale settings changed and need to recreate render resources
+        CheckUpscaleSettingsChanged();
 
         UpdateAccumulationState(camera);
 
-        // Update uniforms
+        // Update uniforms - use render resolution for raytracer
         RaytracerSettings.Clamp();
         var uniforms = new RaytracerUniforms
         {
-            Resolution = new Vector2(_width, _height),
+            Resolution = new Vector2(_renderWidth, _renderHeight),
             Time = time,
             CameraPos = camera.Position,
             CameraForward = camera.Forward,
@@ -3329,8 +3538,9 @@ public unsafe class VulkanBackend : IGraphicsBackend
             _vk.CmdBindDescriptorSets(_computeCommandBuffer, PipelineBindPoint.Compute, _computePipelineLayout, 0, 1, set, 0, null);
         }
 
-        uint groupsX = (uint)Math.Ceiling(_width / 16.0);
-        uint groupsY = (uint)Math.Ceiling(_height / 16.0);
+        // Dispatch at render resolution (may be lower than display when upscaling)
+        uint groupsX = (uint)Math.Ceiling(_renderWidth / 16.0);
+        uint groupsY = (uint)Math.Ceiling(_renderHeight / 16.0);
         _vk.CmdDispatch(_computeCommandBuffer, groupsX, groupsY, 1);
         
         // Barrier between raytracer and motion vector passes
@@ -3404,7 +3614,7 @@ public unsafe class VulkanBackend : IGraphicsBackend
                     LayerCount = 1
                 },
                 ImageOffset = new Offset3D(0, 0, 0),
-                ImageExtent = new Extent3D((uint)_width, (uint)_height, 1)
+                ImageExtent = new Extent3D((uint)_renderWidth, (uint)_renderHeight, 1)
             };
 
             _vk.CmdCopyImageToBuffer(_computeCommandBuffer, _outputImage, ImageLayout.TransferSrcOptimal, readbackBuffer.Value, 1, &region);
@@ -3532,7 +3742,18 @@ public unsafe class VulkanBackend : IGraphicsBackend
             // Transition swapchain image to transfer dst
             TransitionImageLayout(_graphicsCommandBuffer, _swapchainImages[imageIndex], ImageLayout.Undefined, ImageLayout.TransferDstOptimal);
 
-            // Blit from compute output to swapchain image
+            // Determine source image and resolution for blit
+            // When upscaling is enabled, we would blit from _upscaledImage at display resolution
+            // For now, blit from _outputImage at render resolution (upscaler will be wired later)
+            bool useUpscaling = RaytracerSettings.UpscaleMethod != UpscaleMethod.None && 
+                               _renderWidth != _width;
+            
+            // Source image is output (render resolution) - hardware scaling handles the resize
+            int srcWidth = _renderWidth;
+            int srcHeight = _renderHeight;
+            var srcImage = _outputImage;
+            
+            // Blit from compute output to swapchain image with hardware scaling
             var blitRegion = new ImageBlit
             {
                 SrcSubresource = new ImageSubresourceLayers
@@ -3551,12 +3772,12 @@ public unsafe class VulkanBackend : IGraphicsBackend
                 }
             };
             blitRegion.SrcOffsets[0] = new Offset3D(0, 0, 0);
-            blitRegion.SrcOffsets[1] = new Offset3D(_width, _height, 1);
+            blitRegion.SrcOffsets[1] = new Offset3D(srcWidth, srcHeight, 1);
             blitRegion.DstOffsets[0] = new Offset3D(0, 0, 0);
             blitRegion.DstOffsets[1] = new Offset3D((int)_swapchainExtent.Width, (int)_swapchainExtent.Height, 1);
 
             _vk.CmdBlitImage(_graphicsCommandBuffer,
-                _outputImage, ImageLayout.TransferSrcOptimal,
+                srcImage, ImageLayout.TransferSrcOptimal,
                 _swapchainImages[imageIndex], ImageLayout.TransferDstOptimal,
                 1, &blitRegion, Filter.Linear);
 

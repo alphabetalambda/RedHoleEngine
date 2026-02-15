@@ -3399,6 +3399,15 @@ public unsafe class VulkanBackend : IGraphicsBackend
         // Update profiler counters
         Profiler.Instance.SetCounter("BVHNodes", _bvhNodeCount, "Raytracer");
         Profiler.Instance.SetCounter("Triangles", _triangleCount, "Raytracer");
+        
+        // Upscaling stats
+        if (RaytracerSettings.UpscaleMethod != UpscaleMethod.None)
+        {
+            float renderScale = (float)_renderWidth * _renderHeight / (_width * _height);
+            Profiler.Instance.SetCounter("RenderScale", (int)(renderScale * 100), "Upscaling");
+            Profiler.Instance.SetCounter("RenderWidth", _renderWidth, "Upscaling");
+            Profiler.Instance.SetCounter("RenderHeight", _renderHeight, "Upscaling");
+        }
     }
 
     public void RenderToReadback(Camera camera, BlackHole? blackHole, float time, byte[] rgbaBuffer)

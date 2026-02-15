@@ -1,6 +1,7 @@
 using System;
 using ImGuiNET;
 using RedHoleEngine.Rendering;
+using RedHoleEngine.Rendering.Upscaling;
 
 namespace RedHoleEngine.Editor.UI.Panels;
 
@@ -237,6 +238,117 @@ public class RaytracerSettingsPanel : EditorPanel
                     _settings.ResetAccumulation = true;
                 }
                 ImGui.Unindent();
+            }
+        }
+        
+        // Upscaling Section (DLSS/FSR/XeSS)
+        if (ImGui.CollapsingHeader("Upscaling (DLSS/FSR/XeSS)"))
+        {
+            var upscaleMethodNames = new[] { "None", "DLSS", "FSR 2", "XeSS" };
+            int methodIndex = _settings.UpscaleMethod switch
+            {
+                UpscaleMethod.None => 0,
+                UpscaleMethod.DLSS => 1,
+                UpscaleMethod.FSR2 => 2,
+                UpscaleMethod.XeSS => 3,
+                _ => 0
+            };
+            if (ImGui.Combo("Method", ref methodIndex, upscaleMethodNames, upscaleMethodNames.Length))
+            {
+                _settings.UpscaleMethod = methodIndex switch
+                {
+                    0 => UpscaleMethod.None,
+                    1 => UpscaleMethod.DLSS,
+                    2 => UpscaleMethod.FSR2,
+                    3 => UpscaleMethod.XeSS,
+                    _ => UpscaleMethod.None
+                };
+                _settings.ResetAccumulation = true;
+            }
+            
+            if (_settings.UpscaleMethod != UpscaleMethod.None)
+            {
+                var qualityNames = new[] { "Native", "Ultra Quality", "Quality", "Balanced", "Performance", "Ultra Performance" };
+                int qualityIndex = _settings.UpscaleQuality switch
+                {
+                    UpscaleQuality.Native => 0,
+                    UpscaleQuality.UltraQuality => 1,
+                    UpscaleQuality.Quality => 2,
+                    UpscaleQuality.Balanced => 3,
+                    UpscaleQuality.Performance => 4,
+                    UpscaleQuality.UltraPerformance => 5,
+                    _ => 2
+                };
+                if (ImGui.Combo("Quality##Upscale", ref qualityIndex, qualityNames, qualityNames.Length))
+                {
+                    _settings.UpscaleQuality = qualityIndex switch
+                    {
+                        0 => UpscaleQuality.Native,
+                        1 => UpscaleQuality.UltraQuality,
+                        2 => UpscaleQuality.Quality,
+                        3 => UpscaleQuality.Balanced,
+                        4 => UpscaleQuality.Performance,
+                        5 => UpscaleQuality.UltraPerformance,
+                        _ => UpscaleQuality.Quality
+                    };
+                    _settings.ResetAccumulation = true;
+                }
+                
+                // Show render scale info
+                float scale = _settings.GetUpscaleRenderScale();
+                ImGui.TextDisabled($"Render scale: {scale:P0}");
+                
+                var sharpening = _settings.EnableUpscalerSharpening;
+                if (ImGui.Checkbox("Sharpening", ref sharpening))
+                {
+                    _settings.EnableUpscalerSharpening = sharpening;
+                }
+                
+                if (_settings.EnableUpscalerSharpening)
+                {
+                    ImGui.Indent();
+                    float sharpness = _settings.UpscalerSharpness;
+                    if (ImGui.SliderFloat("Amount", ref sharpness, 0.0f, 1.0f))
+                    {
+                        _settings.UpscalerSharpness = sharpness;
+                    }
+                    ImGui.Unindent();
+                }
+                
+                // DLSS-specific options
+                if (_settings.UpscaleMethod == UpscaleMethod.DLSS)
+                {
+                    ImGui.Separator();
+                    ImGui.Text("DLSS Features");
+                    
+                    var frameGen = _settings.EnableFrameGeneration;
+                    if (ImGui.Checkbox("Frame Generation", ref frameGen))
+                    {
+                        _settings.EnableFrameGeneration = frameGen;
+                    }
+                    ImGui.SameLine();
+                    ImGui.TextDisabled("(?)");
+                    if (ImGui.IsItemHovered())
+                    {
+                        ImGui.SetTooltip("DLSS 3.0+ Frame Generation\nRequires RTX 40-series GPU");
+                    }
+                    
+                    var rayRecon = _settings.EnableRayReconstruction;
+                    if (ImGui.Checkbox("Ray Reconstruction", ref rayRecon))
+                    {
+                        _settings.EnableRayReconstruction = rayRecon;
+                    }
+                    ImGui.SameLine();
+                    ImGui.TextDisabled("(?)");
+                    if (ImGui.IsItemHovered())
+                    {
+                        ImGui.SetTooltip("DLSS Ray Reconstruction\nImproves ray traced reflections/GI quality");
+                    }
+                }
+            }
+            else
+            {
+                ImGui.TextDisabled("Select an upscaling method to enable temporal upscaling");
             }
         }
         

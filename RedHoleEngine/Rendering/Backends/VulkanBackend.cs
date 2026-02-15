@@ -15,6 +15,7 @@ using RedHoleEngine.Rendering;
 using RedHoleEngine.Rendering.Raytracing;
 using RedHoleEngine.Rendering.Rasterization;
 using RedHoleEngine.Rendering.PBR;
+using RedHoleEngine.Rendering.Upscaling;
 using Silk.NET.Core;
 using Silk.NET.Core.Native;
 using Silk.NET.Vulkan;
@@ -67,6 +68,7 @@ public unsafe class VulkanBackend : IGraphicsBackend
     private DeviceMemory _outputImageMemory;
     private ImageView _outputImageView;
     private ImageLayout _outputImageLayout = ImageLayout.Undefined;
+    private ImageLayout _raytracingDepthLayout = ImageLayout.Undefined;
 
     // Command buffers
     private CommandPool _computeCommandPool;
@@ -152,11 +154,32 @@ public unsafe class VulkanBackend : IGraphicsBackend
     private int _rasterVertexCount;
     private int _rasterIndexCount;
     
-    // Depth buffer
+    // Depth buffer (rasterization)
     private Image _depthImage;
     private DeviceMemory _depthImageMemory;
     private ImageView _depthImageView;
     private const Format DepthFormat = Format.D32Sfloat;
+    
+    // Raytracing depth output (for motion vectors / upscaling)
+    private Image _raytracingDepthImage;
+    private DeviceMemory _raytracingDepthMemory;
+    private ImageView _raytracingDepthView;
+    
+    // Motion vector image (RG16F - screen-space motion in pixels)
+    private Image _motionVectorImage;
+    private DeviceMemory _motionVectorMemory;
+    private ImageView _motionVectorView;
+    
+    // Upscaled output image (for DLSS/FSR/XeSS at display resolution)
+    private Image _upscaledImage;
+    private DeviceMemory _upscaledMemory;
+    private ImageView _upscaledView;
+    
+    // Motion vector generator for temporal upscaling
+    private MotionVectorGenerator? _motionVectorGenerator;
+    
+    // Upscaler manager (DLSS/FSR/XeSS)
+    private UpscalerManager? _upscalerManager;
 
     private uint _computeQueueFamily;
     private uint _graphicsQueueFamily;
@@ -213,6 +236,7 @@ public unsafe class VulkanBackend : IGraphicsBackend
         CreateSyncObjects();
         InitializeDebugRenderer();
         InitializeUiRenderer();
+        InitializeUpscaler();
 
         Console.WriteLine("Vulkan initialized successfully!");
         Console.WriteLine($"Using device: {GetDeviceName()}");
@@ -659,15 +683,33 @@ public unsafe class VulkanBackend : IGraphicsBackend
         CreateStorageImage(_width, _height, out _accumImage, out _accumImageMemory, out _accumImageView);
         _accumInitialized = false;
         _outputImageLayout = ImageLayout.Undefined;
+        
+        // Create raytracing depth image (R32F for linear depth)
+        CreateStorageImage(_width, _height, Format.R32Sfloat, out _raytracingDepthImage, out _raytracingDepthMemory, out _raytracingDepthView);
+        
+        // Create motion vector image (RG16F for screen-space motion)
+        CreateStorageImage(_width, _height, Format.R16G16Sfloat, out _motionVectorImage, out _motionVectorMemory, out _motionVectorView);
+        
+        // Create upscaled image (RGBA32F at display resolution - same as render for now, can differ with upscaling)
+        CreateStorageImage(_width, _height, Format.R32G32B32A32Sfloat, out _upscaledImage, out _upscaledMemory, out _upscaledView);
+        
+        // Initialize motion vector generator
+        _motionVectorGenerator = new MotionVectorGenerator();
+        _motionVectorGenerator.Initialize(_width, _height);
     }
 
     private void CreateStorageImage(int width, int height, out Image image, out DeviceMemory memory, out ImageView view)
+    {
+        CreateStorageImage(width, height, Format.R32G32B32A32Sfloat, out image, out memory, out view);
+    }
+    
+    private void CreateStorageImage(int width, int height, Format format, out Image image, out DeviceMemory memory, out ImageView view)
     {
         var imageInfo = new ImageCreateInfo
         {
             SType = StructureType.ImageCreateInfo,
             ImageType = ImageType.Type2D,
-            Format = Format.R32G32B32A32Sfloat,
+            Format = format,
             Extent = new Extent3D((uint)width, (uint)height, 1),
             MipLevels = 1,
             ArrayLayers = 1,
@@ -704,7 +746,7 @@ public unsafe class VulkanBackend : IGraphicsBackend
         }
 
         _vk.BindImageMemory(_device, image, memory, 0);
-        view = CreateImageView(image, Format.R32G32B32A32Sfloat);
+        view = CreateImageView(image, format);
     }
 
     private void CreateRasterRenderPass()
@@ -1177,6 +1219,13 @@ public unsafe class VulkanBackend : IGraphicsBackend
                 DescriptorType = DescriptorType.CombinedImageSampler,
                 DescriptorCount = 1,
                 StageFlags = ShaderStageFlags.ComputeBit
+            },
+            new() // Raytracing depth output (for motion vectors / upscaling)
+            {
+                Binding = 8,
+                DescriptorType = DescriptorType.StorageImage,
+                DescriptorCount = 1,
+                StageFlags = ShaderStageFlags.ComputeBit
             }
         };
 
@@ -1412,7 +1461,7 @@ public unsafe class VulkanBackend : IGraphicsBackend
     {
         var poolSizes = new DescriptorPoolSize[]
         {
-            new() { Type = DescriptorType.StorageImage, DescriptorCount = 2 },
+            new() { Type = DescriptorType.StorageImage, DescriptorCount = 3 }, // Output, Accum, RaytracingDepth
             new() { Type = DescriptorType.UniformBuffer, DescriptorCount = 1 },
             new() { Type = DescriptorType.StorageBuffer, DescriptorCount = 3 }, // BVH, Triangles, Materials
             new() { Type = DescriptorType.CombinedImageSampler, DescriptorCount = MaxMaterialTextures + 1 } // Material textures + env map
@@ -1517,6 +1566,12 @@ public unsafe class VulkanBackend : IGraphicsBackend
             ImageView = _accumImageView,
             ImageLayout = ImageLayout.General
         };
+        
+        var raytracingDepthInfo = new DescriptorImageInfo
+        {
+            ImageView = _raytracingDepthView,
+            ImageLayout = ImageLayout.General
+        };
 
         var bufferDescInfo = new DescriptorBufferInfo
         {
@@ -1610,6 +1665,16 @@ public unsafe class VulkanBackend : IGraphicsBackend
                 DescriptorType = DescriptorType.StorageBuffer,
                 DescriptorCount = 1,
                 PBufferInfo = &matDescInfo
+            },
+            new()
+            {
+                SType = StructureType.WriteDescriptorSet,
+                DstSet = _computeDescriptorSet,
+                DstBinding = 8,
+                DstArrayElement = 0,
+                DescriptorType = DescriptorType.StorageImage,
+                DescriptorCount = 1,
+                PImageInfo = &raytracingDepthInfo
             }
         };
 
@@ -2613,6 +2678,47 @@ public unsafe class VulkanBackend : IGraphicsBackend
             _uiRenderer = null;
         }
     }
+    
+    private void InitializeUpscaler()
+    {
+        try
+        {
+            _upscalerManager = new UpscalerManager();
+            
+            var context = new UpscalerContext
+            {
+                Vk = _vk!,
+                Instance = _instance,
+                PhysicalDevice = _physicalDevice,
+                Device = _device,
+                GraphicsQueue = _graphicsQueue,
+                GraphicsQueueFamily = _graphicsQueueFamily,
+                CommandPool = _graphicsCommandPool
+            };
+            
+            var settings = new UpscalerSettings
+            {
+                Method = RaytracerSettings.UpscaleMethod,
+                Quality = RaytracerSettings.UpscaleQuality,
+                DisplayWidth = _width,
+                DisplayHeight = _height,
+                EnableSharpening = RaytracerSettings.EnableUpscalerSharpening,
+                Sharpness = RaytracerSettings.UpscalerSharpness,
+                EnableFrameGeneration = RaytracerSettings.EnableFrameGeneration,
+                EnableRayReconstruction = RaytracerSettings.EnableRayReconstruction,
+                IsHDR = true
+            };
+            
+            _upscalerManager.Initialize(context, settings);
+            Console.WriteLine($"[Upscaling] Available methods: {string.Join(", ", _upscalerManager.AvailableMethods)}");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Warning: Upscaler initialization failed: {ex.Message}");
+            Console.WriteLine("Upscaling will be disabled.");
+            _upscalerManager = null;
+        }
+    }
 
     public void SetRaytracerMeshData(RaytracerMeshData data)
     {
@@ -2737,6 +2843,25 @@ public unsafe class VulkanBackend : IGraphicsBackend
         // Acquire swapchain image
         uint imageIndex = 0;
         _khrSwapchain!.AcquireNextImage(_device, _swapchain, ulong.MaxValue, _imageAvailableSemaphore, default, &imageIndex);
+        
+        // Update motion vector generator for temporal upscaling (DLSS/FSR/XeSS)
+        if (_motionVectorGenerator != null && useRaytracer)
+        {
+            // Build view and projection matrices
+            var viewMatrix = camera.GetViewMatrix();
+            var projectionMatrix = Matrix4x4.CreatePerspectiveFieldOfView(
+                camera.FieldOfView * MathF.PI / 180f,
+                (float)_width / _height,
+                0.1f,  // Near plane
+                10000f // Far plane
+            );
+            
+            // Get jitter for this frame (Halton sequence for temporal stability)
+            var jitter = MotionVectorGenerator.GetHaltonJitter(_frameIndex);
+            
+            // Update motion vector generator with current camera state
+            _motionVectorGenerator.UpdateCamera(camera.Position, viewMatrix, projectionMatrix, jitter);
+        }
 
         // Record and submit compute commands (raytracer only)
         if (useRaytracer)
@@ -2901,6 +3026,13 @@ public unsafe class VulkanBackend : IGraphicsBackend
         {
             TransitionImageLayout(_computeCommandBuffer, _accumImage, ImageLayout.Undefined, ImageLayout.General);
             _accumInitialized = true;
+        }
+        
+        // Transition raytracing depth image to general layout for compute shader output
+        if (_raytracingDepthLayout != ImageLayout.General)
+        {
+            TransitionImageLayout(_computeCommandBuffer, _raytracingDepthImage, _raytracingDepthLayout, ImageLayout.General);
+            _raytracingDepthLayout = ImageLayout.General;
         }
 
         _vk.CmdBindPipeline(_computeCommandBuffer, PipelineBindPoint.Compute, _computePipeline);
@@ -3300,6 +3432,7 @@ public unsafe class VulkanBackend : IGraphicsBackend
         _particleRenderer?.Dispose();
         _debugRenderer?.Dispose();
         _uiRenderer?.Dispose();
+        _upscalerManager?.Dispose();
         
         if (_device.Handle != 0)
         {
@@ -3385,6 +3518,30 @@ public unsafe class VulkanBackend : IGraphicsBackend
             _vk.DestroyImageView(_device, _accumImageView, null);
             _vk.DestroyImage(_device, _accumImage, null);
             _vk.FreeMemory(_device, _accumImageMemory, null);
+            
+            // Cleanup raytracing depth image
+            if (_raytracingDepthView.Handle != 0)
+            {
+                _vk.DestroyImageView(_device, _raytracingDepthView, null);
+                _vk.DestroyImage(_device, _raytracingDepthImage, null);
+                _vk.FreeMemory(_device, _raytracingDepthMemory, null);
+            }
+            
+            // Cleanup motion vector image
+            if (_motionVectorView.Handle != 0)
+            {
+                _vk.DestroyImageView(_device, _motionVectorView, null);
+                _vk.DestroyImage(_device, _motionVectorImage, null);
+                _vk.FreeMemory(_device, _motionVectorMemory, null);
+            }
+            
+            // Cleanup upscaled image
+            if (_upscaledView.Handle != 0)
+            {
+                _vk.DestroyImageView(_device, _upscaledView, null);
+                _vk.DestroyImage(_device, _upscaledImage, null);
+                _vk.FreeMemory(_device, _upscaledMemory, null);
+            }
         }
 
         if (_device.Handle != 0)

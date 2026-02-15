@@ -1,0 +1,133 @@
+#version 450
+
+// Motion Vector Generation Compute Shader
+// Generates per-pixel motion vectors for temporal upscaling (DLSS, FSR2, XeSS)
+// 
+// Motion vectors represent the screen-space movement from the previous frame
+// to the current frame, stored as pixel offsets in R16G16_SFLOAT format.
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+// Output motion vectors (R16G16 format, values in pixels)
+layout(set = 0, binding = 0, rg16f) uniform image2D motionVectorImage;
+
+// Input depth buffer (from raytracer)
+layout(set = 0, binding = 1, r32f) uniform image2D depthImage;
+
+// Camera and frame data
+layout(set = 0, binding = 2) uniform MotionVectorUniforms {
+    // Current frame camera
+    mat4 currentViewProj;
+    mat4 currentInvViewProj;
+    vec3 currentCameraPos;
+    float _pad1;
+    
+    // Previous frame camera
+    mat4 prevViewProj;
+    mat4 prevInvViewProj;
+    vec3 prevCameraPos;
+    float _pad2;
+    
+    // Resolution
+    vec2 resolution;
+    vec2 invResolution;
+    
+    // Jitter offsets (in pixels)
+    vec2 currentJitter;
+    vec2 prevJitter;
+    
+    // Near/far planes
+    float nearPlane;
+    float farPlane;
+    float _pad3;
+    float _pad4;
+};
+
+// Reconstruct world position from depth and UV
+vec3 reconstructWorldPos(vec2 uv, float depth) {
+    // Convert UV to clip space (-1 to 1)
+    vec2 clipXY = uv * 2.0 - 1.0;
+    clipXY.y = -clipXY.y; // Flip Y for Vulkan
+    
+    // Create clip space position
+    vec4 clipPos = vec4(clipXY, depth, 1.0);
+    
+    // Transform to world space
+    vec4 worldPos = currentInvViewProj * clipPos;
+    return worldPos.xyz / worldPos.w;
+}
+
+// Project world position to screen space using previous frame's camera
+vec2 projectToPrevFrame(vec3 worldPos) {
+    vec4 prevClipPos = prevViewProj * vec4(worldPos, 1.0);
+    vec3 prevNDC = prevClipPos.xyz / prevClipPos.w;
+    
+    // Convert from NDC to UV (0 to 1)
+    vec2 prevUV = prevNDC.xy * 0.5 + 0.5;
+    prevUV.y = 1.0 - prevUV.y; // Flip Y back
+    
+    return prevUV;
+}
+
+void main() {
+    ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 imageSize = ivec2(resolution);
+    
+    // Bounds check
+    if (pixelCoord.x >= imageSize.x || pixelCoord.y >= imageSize.y) {
+        return;
+    }
+    
+    // Get current pixel UV (center of pixel)
+    vec2 currentUV = (vec2(pixelCoord) + 0.5) * invResolution;
+    
+    // Remove jitter from current UV for reprojection
+    vec2 unjitteredUV = currentUV - currentJitter * invResolution;
+    
+    // Read depth (linear depth in world units, or normalized 0-1)
+    float depth = imageLoad(depthImage, pixelCoord).r;
+    
+    // Handle sky/background (depth = 0 or max)
+    if (depth <= 0.0 || depth >= farPlane * 0.99) {
+        // For sky, use camera rotation only (no parallax)
+        // Project a point at far plane
+        vec3 viewDir = normalize(reconstructWorldPos(unjitteredUV, 0.5) - currentCameraPos);
+        vec3 skyPoint = currentCameraPos + viewDir * farPlane;
+        vec2 prevUV = projectToPrevFrame(skyPoint);
+        
+        // Calculate motion in pixels
+        vec2 motion = (currentUV - prevUV) * resolution;
+        
+        // Add jitter difference
+        motion += (currentJitter - prevJitter);
+        
+        imageStore(motionVectorImage, pixelCoord, vec4(motion, 0.0, 0.0));
+        return;
+    }
+    
+    // Reconstruct world position
+    // Note: depth interpretation depends on how raytracer stores it
+    // Assuming linear depth in world units
+    float normalizedDepth = depth / farPlane;
+    vec3 worldPos = reconstructWorldPos(unjitteredUV, normalizedDepth);
+    
+    // Project to previous frame
+    vec2 prevUV = projectToPrevFrame(worldPos);
+    
+    // Add previous frame jitter offset
+    prevUV += prevJitter * invResolution;
+    
+    // Calculate motion vector in pixels
+    // Motion = where the pixel was - where it is now
+    // DLSS/FSR expect motion to point from current to previous
+    vec2 motion = (currentUV - prevUV) * resolution;
+    
+    // Validate motion vector (reject outliers)
+    float motionLength = length(motion);
+    if (motionLength > resolution.x * 0.5) {
+        // Motion too large, likely disocclusion - zero out
+        motion = vec2(0.0);
+    }
+    
+    imageStore(motionVectorImage, pixelCoord, vec4(motion, 0.0, 0.0));
+}

@@ -1,3 +1,5 @@
+using RedHoleEngine.Rendering.Upscaling;
+
 namespace RedHoleEngine.Rendering;
 
 /// <summary>
@@ -53,6 +55,14 @@ public class RaytracerSettings
     public float VolumetricIntensity { get; set; } = 1.0f;
     public bool EnableGodRays { get; set; } = true;
     public float GodRayIntensity { get; set; } = 1.0f;
+    
+    // Temporal upscaling settings (DLSS/FSR/XeSS)
+    public UpscaleMethod UpscaleMethod { get; set; } = UpscaleMethod.None;
+    public UpscaleQuality UpscaleQuality { get; set; } = UpscaleQuality.Quality;
+    public bool EnableUpscalerSharpening { get; set; } = true;
+    public float UpscalerSharpness { get; set; } = 0.5f;
+    public bool EnableFrameGeneration { get; set; } = false;  // DLSS 3.0+
+    public bool EnableRayReconstruction { get; set; } = false; // DLSS RR
 
     public int MaxRaysPerPixelLimit { get; set; } = 64;
     public int MaxBouncesLimit { get; set; } = 8;
@@ -81,6 +91,29 @@ public class RaytracerSettings
         FilmGrainIntensity = Math.Clamp(FilmGrainIntensity, 0.0f, 0.1f);
         VolumetricIntensity = Math.Clamp(VolumetricIntensity, 0.0f, 2.0f);
         GodRayIntensity = Math.Clamp(GodRayIntensity, 0.0f, 2.0f);
+        
+        // Upscaler clamps
+        UpscalerSharpness = Math.Clamp(UpscalerSharpness, 0.0f, 1.0f);
+    }
+    
+    /// <summary>
+    /// Get the render scale factor based on upscale quality preset
+    /// </summary>
+    public float GetUpscaleRenderScale()
+    {
+        if (UpscaleMethod == UpscaleMethod.None)
+            return 1.0f;
+            
+        return UpscaleQuality switch
+        {
+            UpscaleQuality.Native => 1.0f,
+            UpscaleQuality.UltraQuality => 0.77f,
+            UpscaleQuality.Quality => 0.67f,
+            UpscaleQuality.Balanced => 0.58f,
+            UpscaleQuality.Performance => 0.50f,
+            UpscaleQuality.UltraPerformance => 0.33f,
+            _ => 1.0f
+        };
     }
 
     public void ApplyPreset(RaytracerQualityPreset preset)

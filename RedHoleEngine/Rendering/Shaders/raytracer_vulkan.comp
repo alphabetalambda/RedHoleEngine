@@ -3,6 +3,9 @@
 layout(local_size_x = 16, local_size_y = 16) in;
 layout(set = 0, binding = 0, rgba32f) uniform image2D outputImage;
 layout(set = 0, binding = 4, rgba32f) uniform image2D accumImage;
+// Depth output for motion vector generation and upscaling (DLSS/FSR/XeSS)
+// Note: Binding 8 to avoid conflict with PBR Materials (binding 5)
+layout(set = 0, binding = 8, r32f) uniform image2D depthImage;
 
 layout(set = 0, binding = 1) uniform UniformBlock {
     vec2 u_Resolution;
@@ -2037,6 +2040,8 @@ void main() {
     bool resetAccum = !accumulateEnabled || frameIndex == 0;
 
     vec3 color = vec3(0.0);
+    float primaryDepth = 0.0; // Distance to first hit for depth buffer output
+    bool depthCaptured = false;
     
     // Calculate ray direction based on camera and FOV
     float fovRad = u_Fov * PI / 180.0;
@@ -2073,6 +2078,13 @@ void main() {
             bool hitDisk = traceOnce(origin, dir, hitColor, hitPos, hitNormal);
 
             sampleColor += throughput * hitColor;
+            
+            // Capture primary ray depth for motion vectors/upscaling
+            // Use first sample's first bounce for depth (most representative)
+            if (bounce == 0 && sampleIndex == 0 && !depthCaptured) {
+                primaryDepth = length(hitPos - u_CameraPos);
+                depthCaptured = true;
+            }
 
             if (!hitDisk) {
                 break;
@@ -2230,4 +2242,9 @@ void main() {
     finalColor = pow(max(finalColor, vec3(0.0)), vec3(0.4545));
     
     imageStore(outputImage, pixelCoord, vec4(finalColor, 1.0));
+    
+    // Store depth for motion vector generation and temporal upscaling (DLSS/FSR/XeSS)
+    // Depth is linear distance from camera to first hit point
+    // Use 0.0 for sky/infinite distance (no solid hit)
+    imageStore(depthImage, pixelCoord, vec4(primaryDepth, 0.0, 0.0, 0.0));
 }

@@ -56,12 +56,22 @@ public unsafe class VulkanBackend : IGraphicsBackend
     private KhrSurface? _khrSurface;
     private KhrSwapchain? _khrSwapchain;
 
-    // Compute pipeline
+    // Compute pipeline (raytracer)
     private DescriptorSetLayout _computeDescriptorSetLayout;
     private PipelineLayout _computePipelineLayout;
     private Pipeline _computePipeline;
     private DescriptorPool _descriptorPool;
     private DescriptorSet _computeDescriptorSet;
+    
+    // Motion vector compute pipeline
+    private DescriptorSetLayout _motionVectorDescriptorSetLayout;
+    private PipelineLayout _motionVectorPipelineLayout;
+    private Pipeline _motionVectorPipeline;
+    private DescriptorSet _motionVectorDescriptorSet;
+    private VkBuffer _motionVectorUniformBuffer;
+    private DeviceMemory _motionVectorUniformMemory;
+    private void* _motionVectorUniformMapped;
+    private ImageLayout _motionVectorImageLayout = ImageLayout.Undefined;
 
     // Output image for compute shader
     private Image _outputImage;
@@ -225,9 +235,11 @@ public unsafe class VulkanBackend : IGraphicsBackend
         CreateRasterPipeline();
         CreateDescriptorSetLayout();
         CreateComputePipeline();
+        CreateMotionVectorPipeline();
         CreateDescriptorPool();
         CreateDescriptorSets();
         CreateUniformBuffer();
+        CreateMotionVectorUniformBuffer();
         CreateCommandPools();
         CreateCommandBuffers();
         // These need command pools/buffers for image transitions
@@ -1456,13 +1468,161 @@ public unsafe class VulkanBackend : IGraphicsBackend
             return shaderModule;
         }
     }
+    
+    private void CreateMotionVectorPipeline()
+    {
+        // Create descriptor set layout for motion vector shader
+        var bindings = new DescriptorSetLayoutBinding[]
+        {
+            new() // Motion vector output image
+            {
+                Binding = 0,
+                DescriptorType = DescriptorType.StorageImage,
+                DescriptorCount = 1,
+                StageFlags = ShaderStageFlags.ComputeBit
+            },
+            new() // Depth input image
+            {
+                Binding = 1,
+                DescriptorType = DescriptorType.StorageImage,
+                DescriptorCount = 1,
+                StageFlags = ShaderStageFlags.ComputeBit
+            },
+            new() // Uniform buffer
+            {
+                Binding = 2,
+                DescriptorType = DescriptorType.UniformBuffer,
+                DescriptorCount = 1,
+                StageFlags = ShaderStageFlags.ComputeBit
+            }
+        };
+        
+        fixed (DescriptorSetLayoutBinding* bindingsPtr = bindings)
+        {
+            var layoutInfo = new DescriptorSetLayoutCreateInfo
+            {
+                SType = StructureType.DescriptorSetLayoutCreateInfo,
+                BindingCount = (uint)bindings.Length,
+                PBindings = bindingsPtr
+            };
+            
+            fixed (DescriptorSetLayout* layout = &_motionVectorDescriptorSetLayout)
+            {
+                if (_vk!.CreateDescriptorSetLayout(_device, &layoutInfo, null, layout) != Result.Success)
+                {
+                    throw new Exception("Failed to create motion vector descriptor set layout");
+                }
+            }
+        }
+        
+        // Compile motion vector shader
+        byte[] shaderCode = CompileMotionVectorShader();
+        var shaderModule = CreateShaderModule(shaderCode);
+        
+        var shaderStageInfo = new PipelineShaderStageCreateInfo
+        {
+            SType = StructureType.PipelineShaderStageCreateInfo,
+            Stage = ShaderStageFlags.ComputeBit,
+            Module = shaderModule,
+            PName = (byte*)Marshal.StringToHGlobalAnsi("main")
+        };
+        
+        fixed (DescriptorSetLayout* layout = &_motionVectorDescriptorSetLayout)
+        {
+            var pipelineLayoutInfo = new PipelineLayoutCreateInfo
+            {
+                SType = StructureType.PipelineLayoutCreateInfo,
+                SetLayoutCount = 1,
+                PSetLayouts = layout
+            };
+            
+            fixed (PipelineLayout* pipelineLayout = &_motionVectorPipelineLayout)
+            {
+                if (_vk!.CreatePipelineLayout(_device, &pipelineLayoutInfo, null, pipelineLayout) != Result.Success)
+                {
+                    throw new Exception("Failed to create motion vector pipeline layout");
+                }
+            }
+        }
+        
+        var computePipelineInfo = new ComputePipelineCreateInfo
+        {
+            SType = StructureType.ComputePipelineCreateInfo,
+            Stage = shaderStageInfo,
+            Layout = _motionVectorPipelineLayout
+        };
+        
+        fixed (Pipeline* pipeline = &_motionVectorPipeline)
+        {
+            if (_vk!.CreateComputePipelines(_device, default, 1, &computePipelineInfo, null, pipeline) != Result.Success)
+            {
+                throw new Exception("Failed to create motion vector compute pipeline");
+            }
+        }
+        
+        _vk.DestroyShaderModule(_device, shaderModule, null);
+        Console.WriteLine("Motion vector compute pipeline created");
+    }
+    
+    private byte[] CompileMotionVectorShader()
+    {
+        string basePath = AppContext.BaseDirectory;
+        string sourcePath = Path.Combine(basePath, "Rendering", "Shaders", "motion_vectors.comp");
+        
+        if (!File.Exists(sourcePath))
+        {
+            throw new FileNotFoundException($"Motion vector shader not found: {sourcePath}");
+        }
+        
+        var shaderc = Shaderc.GetApi();
+        var compiler = shaderc.CompilerInitialize();
+        var options = shaderc.CompileOptionsInitialize();
+        
+        var source = File.ReadAllText(sourcePath);
+        var sourceBytes = Encoding.UTF8.GetBytes(source);
+        var fileNamePtr = SilkMarshal.StringToPtr("motion_vectors.comp", NativeStringEncoding.UTF8);
+        var entryPointPtr = SilkMarshal.StringToPtr("main", NativeStringEncoding.UTF8);
+        
+        CompilationResult* result = null;
+        fixed (byte* sourcePtr = sourceBytes)
+        {
+            result = shaderc.CompileIntoSpv(compiler, sourcePtr, (nuint)sourceBytes.Length, ShaderKind.ComputeShader, (byte*)fileNamePtr, (byte*)entryPointPtr, options);
+        }
+        
+        var status = shaderc.ResultGetCompilationStatus(result);
+        if (status == CompilationStatus.Success)
+        {
+            var length = shaderc.ResultGetLength(result);
+            var bytesPtr = shaderc.ResultGetBytes(result);
+            var spirv = new byte[(int)length];
+            Marshal.Copy((IntPtr)bytesPtr, spirv, 0, (int)length);
+            Console.WriteLine($"Compiled motion vector shader from {sourcePath} ({spirv.Length} bytes)");
+            
+            shaderc.ResultRelease(result);
+            shaderc.CompileOptionsRelease(options);
+            shaderc.CompilerRelease(compiler);
+            SilkMarshal.Free(fileNamePtr);
+            SilkMarshal.Free(entryPointPtr);
+            
+            return spirv;
+        }
+        
+        var errorMsg = shaderc.ResultGetErrorMessageS(result);
+        shaderc.ResultRelease(result);
+        shaderc.CompileOptionsRelease(options);
+        shaderc.CompilerRelease(compiler);
+        SilkMarshal.Free(fileNamePtr);
+        SilkMarshal.Free(entryPointPtr);
+        
+        throw new Exception($"Failed to compile motion vector shader: {errorMsg}");
+    }
 
     private void CreateDescriptorPool()
     {
         var poolSizes = new DescriptorPoolSize[]
         {
-            new() { Type = DescriptorType.StorageImage, DescriptorCount = 3 }, // Output, Accum, RaytracingDepth
-            new() { Type = DescriptorType.UniformBuffer, DescriptorCount = 1 },
+            new() { Type = DescriptorType.StorageImage, DescriptorCount = 5 }, // Output, Accum, RaytracingDepth, MotionVector(2)
+            new() { Type = DescriptorType.UniformBuffer, DescriptorCount = 2 }, // Raytracer + MotionVector
             new() { Type = DescriptorType.StorageBuffer, DescriptorCount = 3 }, // BVH, Triangles, Materials
             new() { Type = DescriptorType.CombinedImageSampler, DescriptorCount = MaxMaterialTextures + 1 } // Material textures + env map
         };
@@ -1474,7 +1634,7 @@ public unsafe class VulkanBackend : IGraphicsBackend
                 SType = StructureType.DescriptorPoolCreateInfo,
                 PoolSizeCount = (uint)poolSizes.Length,
                 PPoolSizes = poolSizesPtr,
-                MaxSets = 1
+                MaxSets = 2 // Raytracer + MotionVector
             };
 
             fixed (DescriptorPool* pool = &_descriptorPool)
@@ -1682,6 +1842,133 @@ public unsafe class VulkanBackend : IGraphicsBackend
         {
             _vk.UpdateDescriptorSets(_device, (uint)writes.Length, writesPtr, 0, null);
         }
+    }
+    
+    private void CreateMotionVectorUniformBuffer()
+    {
+        ulong bufferSize = (ulong)Unsafe.SizeOf<MotionVectorGenerator.MotionVectorUniforms>();
+        
+        var bufferInfo = new BufferCreateInfo
+        {
+            SType = StructureType.BufferCreateInfo,
+            Size = bufferSize,
+            Usage = BufferUsageFlags.UniformBufferBit,
+            SharingMode = SharingMode.Exclusive
+        };
+        
+        fixed (VkBuffer* buffer = &_motionVectorUniformBuffer)
+        {
+            if (_vk!.CreateBuffer(_device, &bufferInfo, null, buffer) != Result.Success)
+            {
+                throw new Exception("Failed to create motion vector uniform buffer");
+            }
+        }
+        
+        _vk!.GetBufferMemoryRequirements(_device, _motionVectorUniformBuffer, out var memRequirements);
+        
+        var allocInfo = new MemoryAllocateInfo
+        {
+            SType = StructureType.MemoryAllocateInfo,
+            AllocationSize = memRequirements.Size,
+            MemoryTypeIndex = FindMemoryType(memRequirements.MemoryTypeBits,
+                MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit)
+        };
+        
+        fixed (DeviceMemory* memory = &_motionVectorUniformMemory)
+        {
+            if (_vk.AllocateMemory(_device, &allocInfo, null, memory) != Result.Success)
+            {
+                throw new Exception("Failed to allocate motion vector uniform buffer memory");
+            }
+        }
+        
+        _vk.BindBufferMemory(_device, _motionVectorUniformBuffer, _motionVectorUniformMemory, 0);
+        
+        fixed (void** mapped = &_motionVectorUniformMapped)
+        {
+            _vk.MapMemory(_device, _motionVectorUniformMemory, 0, bufferSize, 0, mapped);
+        }
+        
+        // Allocate motion vector descriptor set
+        fixed (DescriptorSetLayout* layout = &_motionVectorDescriptorSetLayout)
+        {
+            var descAllocInfo = new DescriptorSetAllocateInfo
+            {
+                SType = StructureType.DescriptorSetAllocateInfo,
+                DescriptorPool = _descriptorPool,
+                DescriptorSetCount = 1,
+                PSetLayouts = layout
+            };
+            
+            fixed (DescriptorSet* set = &_motionVectorDescriptorSet)
+            {
+                if (_vk!.AllocateDescriptorSets(_device, &descAllocInfo, set) != Result.Success)
+                {
+                    throw new Exception("Failed to allocate motion vector descriptor set");
+                }
+            }
+        }
+        
+        // Update motion vector descriptor set
+        var motionVectorImageInfo = new DescriptorImageInfo
+        {
+            ImageView = _motionVectorView,
+            ImageLayout = ImageLayout.General
+        };
+        
+        var depthImageInfo = new DescriptorImageInfo
+        {
+            ImageView = _raytracingDepthView,
+            ImageLayout = ImageLayout.General
+        };
+        
+        var uniformBufferInfo = new DescriptorBufferInfo
+        {
+            Buffer = _motionVectorUniformBuffer,
+            Offset = 0,
+            Range = bufferSize
+        };
+        
+        var mvWrites = new WriteDescriptorSet[]
+        {
+            new()
+            {
+                SType = StructureType.WriteDescriptorSet,
+                DstSet = _motionVectorDescriptorSet,
+                DstBinding = 0,
+                DstArrayElement = 0,
+                DescriptorType = DescriptorType.StorageImage,
+                DescriptorCount = 1,
+                PImageInfo = &motionVectorImageInfo
+            },
+            new()
+            {
+                SType = StructureType.WriteDescriptorSet,
+                DstSet = _motionVectorDescriptorSet,
+                DstBinding = 1,
+                DstArrayElement = 0,
+                DescriptorType = DescriptorType.StorageImage,
+                DescriptorCount = 1,
+                PImageInfo = &depthImageInfo
+            },
+            new()
+            {
+                SType = StructureType.WriteDescriptorSet,
+                DstSet = _motionVectorDescriptorSet,
+                DstBinding = 2,
+                DstArrayElement = 0,
+                DescriptorType = DescriptorType.UniformBuffer,
+                DescriptorCount = 1,
+                PBufferInfo = &uniformBufferInfo
+            }
+        };
+        
+        fixed (WriteDescriptorSet* writesPtr = mvWrites)
+        {
+            _vk.UpdateDescriptorSets(_device, (uint)mvWrites.Length, writesPtr, 0, null);
+        }
+        
+        Console.WriteLine("Motion vector uniform buffer and descriptors created");
     }
 
     private void EnsureRaytracerBuffers(ulong minNodeSize, ulong minTriSize)
@@ -3045,6 +3332,58 @@ public unsafe class VulkanBackend : IGraphicsBackend
         uint groupsX = (uint)Math.Ceiling(_width / 16.0);
         uint groupsY = (uint)Math.Ceiling(_height / 16.0);
         _vk.CmdDispatch(_computeCommandBuffer, groupsX, groupsY, 1);
+        
+        // Barrier between raytracer and motion vector passes
+        // Ensure depth writes are complete before motion vector shader reads
+        var imageBarrier = new ImageMemoryBarrier
+        {
+            SType = StructureType.ImageMemoryBarrier,
+            OldLayout = ImageLayout.General,
+            NewLayout = ImageLayout.General,
+            SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
+            DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
+            Image = _raytracingDepthImage,
+            SubresourceRange = new ImageSubresourceRange
+            {
+                AspectMask = ImageAspectFlags.ColorBit,
+                BaseMipLevel = 0,
+                LevelCount = 1,
+                BaseArrayLayer = 0,
+                LayerCount = 1
+            },
+            SrcAccessMask = AccessFlags.ShaderWriteBit,
+            DstAccessMask = AccessFlags.ShaderReadBit
+        };
+        _vk.CmdPipelineBarrier(_computeCommandBuffer, 
+            PipelineStageFlags.ComputeShaderBit, 
+            PipelineStageFlags.ComputeShaderBit, 
+            0, 0, null, 0, null, 1, &imageBarrier);
+        
+        // Motion vector pass - generate motion vectors from depth
+        if (_motionVectorPipeline.Handle != 0 && _motionVectorGenerator != null && 
+            RaytracerSettings.UpscaleMethod != UpscaleMethod.None)
+        {
+            // Transition motion vector image to general layout
+            if (_motionVectorImageLayout != ImageLayout.General)
+            {
+                TransitionImageLayout(_computeCommandBuffer, _motionVectorImage, _motionVectorImageLayout, ImageLayout.General);
+                _motionVectorImageLayout = ImageLayout.General;
+            }
+            
+            // Update motion vector uniforms
+            var mvUniforms = _motionVectorGenerator.GetUniforms(0.1f, 10000f);
+            Unsafe.Copy(_motionVectorUniformMapped, ref mvUniforms);
+            
+            // Bind motion vector pipeline and dispatch
+            _vk.CmdBindPipeline(_computeCommandBuffer, PipelineBindPoint.Compute, _motionVectorPipeline);
+            
+            fixed (DescriptorSet* set = &_motionVectorDescriptorSet)
+            {
+                _vk.CmdBindDescriptorSets(_computeCommandBuffer, PipelineBindPoint.Compute, _motionVectorPipelineLayout, 0, 1, set, 0, null);
+            }
+            
+            _vk.CmdDispatch(_computeCommandBuffer, groupsX, groupsY, 1);
+        }
 
         // Transition output image for transfer
         TransitionImageLayout(_computeCommandBuffer, _outputImage, ImageLayout.General, ImageLayout.TransferSrcOptimal);
@@ -3512,6 +3851,21 @@ public unsafe class VulkanBackend : IGraphicsBackend
             _vk.DestroyPipeline(_device, _computePipeline, null);
             _vk.DestroyPipelineLayout(_device, _computePipelineLayout, null);
             _vk.DestroyDescriptorSetLayout(_device, _computeDescriptorSetLayout, null);
+            
+            // Cleanup motion vector pipeline
+            if (_motionVectorPipeline.Handle != 0)
+            {
+                _vk.DestroyPipeline(_device, _motionVectorPipeline, null);
+                _vk.DestroyPipelineLayout(_device, _motionVectorPipelineLayout, null);
+                _vk.DestroyDescriptorSetLayout(_device, _motionVectorDescriptorSetLayout, null);
+            }
+            
+            // Cleanup motion vector uniform buffer
+            if (_motionVectorUniformBuffer.Handle != 0)
+            {
+                _vk.DestroyBuffer(_device, _motionVectorUniformBuffer, null);
+                _vk.FreeMemory(_device, _motionVectorUniformMemory, null);
+            }
             _vk.DestroyImageView(_device, _outputImageView, null);
             _vk.DestroyImage(_device, _outputImage, null);
             _vk.FreeMemory(_device, _outputImageMemory, null);

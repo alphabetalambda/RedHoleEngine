@@ -21,7 +21,7 @@ public sealed class SplashScreen
     private Entity _fadeEntity;
     
     private float _elapsedTime;
-    private SplashState _state = SplashState.FadeIn;
+    private SplashState _state = SplashState.NotStarted;
     
     /// <summary>
     /// Path to the splash logo image (PNG format recommended)

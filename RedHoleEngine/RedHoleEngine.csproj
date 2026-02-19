@@ -25,7 +25,7 @@
       <PackageReference Include="Silk.NET.Windowing" Version="2.23.0" />
       <PackageReference Include="Silk.NET.Windowing.Glfw" Version="2.23.0" />
       <PackageReference Include="Silk.NET.Windowing.Sdl" Version="2.23.0" />
-      <PackageReference Include="SixLabors.ImageSharp" Version="3.1.4" />
+      <PackageReference Include="SixLabors.ImageSharp" Version="3.1.12" />
       <!-- ML.NET for in-game machine learning -->
       <PackageReference Include="Microsoft.ML" Version="4.0.2" />
       <PackageReference Include="Microsoft.ML.FastTree" Version="4.0.2" />

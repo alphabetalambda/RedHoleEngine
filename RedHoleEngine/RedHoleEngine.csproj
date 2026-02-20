@@ -32,7 +32,7 @@
       <PackageReference Include="Microsoft.ML.LightGbm" Version="4.0.2" />
       <PackageReference Include="Microsoft.ML.Recommender" Version="0.22.0" />
       <!-- Steam integration for Steam Input API -->
-      <PackageReference Include="Steamworks.NET" Version="20.1.0" />
+      <PackageReference Include="Steamworks.NET" Version="2024.8.0" />
     </ItemGroup>
 
     <!-- Steam native libraries - place these in the project root and they'll be copied to output -->

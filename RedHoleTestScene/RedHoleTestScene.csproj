@@ -19,6 +19,10 @@
     <Content Include="..\RedHoleEngine\Audio\Clips\**\*.*">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
+    <!-- Steam App ID for testing (480 = Spacewar) -->
+    <None Include="steam_appid.txt">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
 
   <!-- macOS: Copy Vulkan loader and compile native launcher -->

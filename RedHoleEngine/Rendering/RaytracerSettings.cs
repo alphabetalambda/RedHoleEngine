@@ -1,3 +1,4 @@
+using RedHoleEngine.Platform;
 using RedHoleEngine.Rendering.Upscaling;
 
 namespace RedHoleEngine.Rendering;
@@ -15,6 +16,17 @@ public enum LensingQuality
 }
 
 /// <summary>
+/// Denoising method for raytraced output
+/// </summary>
+public enum DenoiseMethod
+{
+    None,           // No denoising
+    Bilateral,      // Simple edge-aware bilateral filter (existing)
+    ATrous,         // A-trous wavelet filter - fast multi-scale denoising
+    SVGF            // Spatiotemporal Variance-Guided Filtering - best quality
+}
+
+/// <summary>
 /// Runtime raytracer quality settings.
 /// </summary>
 public class RaytracerSettings
@@ -25,6 +37,17 @@ public class RaytracerSettings
     public bool Accumulate { get; set; } = true;
     public bool Denoise { get; set; }
     public bool ResetAccumulation { get; set; }
+    
+    // Advanced denoising settings
+    public DenoiseMethod DenoiseMethod { get; set; } = DenoiseMethod.Bilateral;
+    public int ATrousIterations { get; set; } = 5;           // Number of A-trous filter passes (1-6)
+    public float ATrousColorSigma { get; set; } = 0.5f;      // Color weight sensitivity
+    public float ATrousNormalSigma { get; set; } = 0.1f;     // Normal weight sensitivity
+    public float ATrousDepthSigma { get; set; } = 0.1f;      // Depth weight sensitivity
+    public float SVGFTemporalAlpha { get; set; } = 0.1f;     // Temporal blend factor (lower = more temporal reuse)
+    public int SVGFSpatialIterations { get; set; } = 5;      // Spatial filter iterations
+    public float SVGFPhiColor { get; set; } = 10.0f;         // Color weight for spatial filter
+    public float SVGFPhiNormal { get; set; } = 128.0f;       // Normal weight for spatial filter
     public RaytracerQualityPreset Preset { get; set; } = RaytracerQualityPreset.Balanced;
     
     // Gravitational lensing quality settings
@@ -82,6 +105,16 @@ public class RaytracerSettings
         LensingStepSize = Math.Clamp(LensingStepSize, 0.1f, 1.0f);
         LensingBvhCheckInterval = Math.Clamp(LensingBvhCheckInterval, 1, 16);
         LensingMaxDistance = Math.Clamp(LensingMaxDistance, 50f, 1000f);
+        
+        // Denoising clamps
+        ATrousIterations = Math.Clamp(ATrousIterations, 1, 6);
+        ATrousColorSigma = Math.Clamp(ATrousColorSigma, 0.01f, 2.0f);
+        ATrousNormalSigma = Math.Clamp(ATrousNormalSigma, 0.01f, 1.0f);
+        ATrousDepthSigma = Math.Clamp(ATrousDepthSigma, 0.01f, 1.0f);
+        SVGFTemporalAlpha = Math.Clamp(SVGFTemporalAlpha, 0.01f, 1.0f);
+        SVGFSpatialIterations = Math.Clamp(SVGFSpatialIterations, 1, 6);
+        SVGFPhiColor = Math.Clamp(SVGFPhiColor, 1.0f, 100.0f);
+        SVGFPhiNormal = Math.Clamp(SVGFPhiNormal, 1.0f, 256.0f);
         
         // Post-processing clamps
         BloomThreshold = Math.Clamp(BloomThreshold, 0.5f, 3.0f);
@@ -163,5 +196,35 @@ public class RaytracerSettings
                 LensingBvhCheckInterval = 2; // Check BVH very frequently
                 break;
         }
+    }
+    
+    /// <summary>
+    /// Apply a performance profile to these settings.
+    /// This is the recommended way to configure settings for different hardware.
+    /// </summary>
+    public void ApplyPerformanceProfile(PerformanceProfileType profileType)
+    {
+        var profile = PerformanceProfiles.Get(profileType);
+        profile.ApplyTo(this);
+        Console.WriteLine($"[RaytracerSettings] Applied performance profile: {profile.Name}");
+    }
+    
+    /// <summary>
+    /// Apply a performance profile directly
+    /// </summary>
+    public void ApplyPerformanceProfile(PerformanceProfile profile)
+    {
+        profile.ApplyTo(this);
+        Console.WriteLine($"[RaytracerSettings] Applied performance profile: {profile.Name}");
+    }
+    
+    /// <summary>
+    /// Auto-detect hardware and apply the appropriate profile
+    /// </summary>
+    public void ApplyAutoProfile()
+    {
+        var profile = PerformanceProfiles.GetAutoProfile();
+        profile.ApplyTo(this);
+        Console.WriteLine($"[RaytracerSettings] Auto-detected profile: {profile.Name} ({PlatformDetector.GetPlatformDescription()})");
     }
 }

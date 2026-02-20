@@ -1,4 +1,5 @@
 using RedHoleEngine.Core.ECS;
+using RedHoleEngine.Platform;
 using RedHoleEngine.Rendering;
 
 namespace RedHoleEngine.Components;
@@ -34,6 +35,10 @@ public struct RenderSettingsComponent : IComponent
     public float ErgosphereOpacity;
     public bool ShowPhotonSphere;
     public float PhotonSphereOpacity;
+    
+    // Performance profile (Auto = use platform detection)
+    public PerformanceProfileType PerformanceProfile;
+    public bool UsePerformanceProfile;
 
     public RenderSettingsComponent(RenderMode mode = RenderMode.Raytraced)
     {
@@ -62,5 +67,48 @@ public struct RenderSettingsComponent : IComponent
         ErgosphereOpacity = 0.3f;
         ShowPhotonSphere = false;
         PhotonSphereOpacity = 0.2f;
+        
+        // Performance profile defaults
+        PerformanceProfile = PerformanceProfileType.Auto;
+        UsePerformanceProfile = false; // Default to manual settings for backward compatibility
+    }
+    
+    /// <summary>
+    /// Create a render settings component using a performance profile.
+    /// This is the recommended way to configure settings for different hardware.
+    /// </summary>
+    public static RenderSettingsComponent FromProfile(PerformanceProfileType profileType, RenderMode mode = RenderMode.Raytraced)
+    {
+        var profile = PerformanceProfiles.Get(profileType);
+        return new RenderSettingsComponent(mode)
+        {
+            UsePerformanceProfile = true,
+            PerformanceProfile = profileType,
+            
+            // Apply profile values
+            RaysPerPixel = profile.RaysPerPixel,
+            MaxBounces = profile.MaxBounces,
+            SamplesPerFrame = profile.SamplesPerFrame,
+            Accumulate = profile.Accumulate,
+            Denoise = profile.Denoise,
+            
+            LensingQuality = profile.LensingQuality,
+            LensingMaxSteps = profile.LensingMaxSteps,
+            LensingStepSize = profile.LensingStepSize,
+            LensingBvhCheckInterval = profile.LensingBvhCheckInterval,
+            LensingMaxDistance = profile.LensingMaxDistance,
+            
+            ShowErgosphere = profile.ShowErgosphere,
+            ShowPhotonSphere = profile.ShowPhotonSphere
+        };
+    }
+    
+    /// <summary>
+    /// Create a render settings component with auto-detected performance profile.
+    /// Steam Deck and other platforms will be automatically detected.
+    /// </summary>
+    public static RenderSettingsComponent AutoDetect(RenderMode mode = RenderMode.Raytraced)
+    {
+        return FromProfile(PerformanceProfileType.Auto, mode);
     }
 }

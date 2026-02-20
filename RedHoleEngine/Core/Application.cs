@@ -6,6 +6,7 @@ using RedHoleEngine.Core.Scene;
 using RedHoleEngine.Engine;
 using RedHoleEngine.Physics;
 using RedHoleEngine.Physics.Collision;
+using RedHoleEngine.Platform;
 using RedHoleEngine.Profiling;
 using RedHoleEngine.Rendering;
 using RedHoleEngine.Rendering.Backends;
@@ -98,6 +99,18 @@ public class Application : IDisposable
     public AcousticQualitySettings AudioQuality { get; set; } = AcousticQualitySettings.Medium;
     
     /// <summary>
+    /// Performance profile to use. Set to Auto to detect hardware automatically.
+    /// When Auto is selected, Steam Deck and other platforms are detected and appropriate settings applied.
+    /// </summary>
+    public PerformanceProfileType PerformanceProfile { get; set; } = PerformanceProfileType.Auto;
+    
+    /// <summary>
+    /// Whether to automatically apply the performance profile on startup.
+    /// Set to false if you want to manually configure settings.
+    /// </summary>
+    public bool AutoApplyPerformanceProfile { get; set; } = true;
+    
+    /// <summary>
     /// Whether to show profiler stats in console (every N frames)
     /// </summary>
     public int ProfilerLogInterval { get; set; } = 0; // 0 = disabled
@@ -184,6 +197,14 @@ public class Application : IDisposable
         _backendType = backendType;
         
         Enginedeco.EngineTitlePrint();
+        
+        // Detect platform early for logging and pre-initialization decisions
+        Console.WriteLine($"Platform: {PlatformDetector.GetPlatformDescription()}");
+        if (PlatformDetector.IsSteamDeck)
+        {
+            Console.WriteLine("Steam Deck detected - will apply optimized settings");
+        }
+        
         Console.WriteLine($"Using graphics backend: {backendType}");
         Console.WriteLine("Creating window...");
         
@@ -250,6 +271,19 @@ public class Application : IDisposable
         };
         
         _backend.Initialize();
+        
+        // Apply performance profile based on detected hardware
+        if (AutoApplyPerformanceProfile)
+        {
+            if (PerformanceProfile == PerformanceProfileType.Auto)
+            {
+                _backend.RaytracerSettings.ApplyAutoProfile();
+            }
+            else
+            {
+                _backend.RaytracerSettings.ApplyPerformanceProfile(PerformanceProfile);
+            }
+        }
 
         // Initialize debug drawing
         _debugDraw = new DebugDrawManager();

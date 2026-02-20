@@ -432,3 +432,14 @@ FodyWeavers.xsd
 *.msix
 *.msm
 *.msp
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Steam Native Libraries (proprietary - must be obtained from Steamworks SDK)
+# ═══════════════════════════════════════════════════════════════════════════════
+# These files are required for Steam Input support but cannot be redistributed
+# in public repositories. See README.md for instructions on obtaining them.
+steam_api.dll
+steam_api64.dll
+libsteam_api.dylib
+libsteam_api.so
+steam_appid.txt

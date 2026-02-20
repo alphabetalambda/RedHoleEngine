@@ -39,16 +39,17 @@ public class SteamInputProvider : InputProviderBase
     
     public override bool Initialize()
     {
-        // Check if Steam is running
-        if (!SteamAPI.IsSteamRunning())
-        {
-            Console.WriteLine("[SteamInputProvider] Steam is not running");
-            IsAvailable = false;
-            return false;
-        }
-        
         try
         {
+            // Check if Steam is running - this can throw DllNotFoundException
+            // if the native Steam library isn't present
+            if (!SteamAPI.IsSteamRunning())
+            {
+                Console.WriteLine("[SteamInputProvider] Steam is not running");
+                IsAvailable = false;
+                return false;
+            }
+            
             // Initialize Steamworks if not already done
             if (!SteamAPI.Init())
             {
@@ -101,6 +102,13 @@ public class SteamInputProvider : InputProviderBase
             IsAvailable = true;
             Console.WriteLine($"[SteamInputProvider] Initialized with {count} controller(s)");
             return true;
+        }
+        catch (DllNotFoundException)
+        {
+            // Steam native library not found - this is expected when not running under Steam
+            Console.WriteLine("[SteamInputProvider] Steam native library not found - running without Steam");
+            IsAvailable = false;
+            return false;
         }
         catch (Exception ex)
         {

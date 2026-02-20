@@ -106,6 +106,42 @@ world.AddComponent(blackHole, new AccretionDiskComponent
 
 ---
 
+## Steam Input Setup (Optional)
+
+RedHoleEngine includes optional Steam Input support for controllers, gyro aiming, and Steam Deck. To enable it, you need to obtain the native Steam libraries from Valve's Steamworks SDK.
+
+### Requirements
+
+1. **Steamworks Partner Account** — Sign up at [partner.steamgames.com](https://partner.steamgames.com)
+2. **Steamworks SDK** — Download from [partner.steamgames.com/downloads](https://partner.steamgames.com/downloads/steamworks_sdk.zip)
+
+### Installation
+
+Extract the native libraries from `sdk/redistributable_bin/` and place them in **one of these locations**:
+
+**Option 1: Project root** (recommended for development)
+Place the file in `RedHoleEngine/` (next to `RedHoleEngine.csproj`). It will be automatically copied to the output directory on build.
+
+**Option 2: Output directory** (for deployment)
+Place directly in your game's output directory (e.g., `RedHoleGame/bin/Debug/net10.0/`).
+
+| Platform | File | Source Path |
+|----------|------|-------------|
+| Windows x64 | `steam_api64.dll` | `redistributable_bin/win64/` |
+| Windows x86 | `steam_api.dll` | `redistributable_bin/` |
+| macOS | `libsteam_api.dylib` | `redistributable_bin/osx/` |
+| Linux x64 | `libsteam_api.so` | `redistributable_bin/linux64/` |
+
+**Important:** Steam must be running for Steam Input to work. The engine will log where it's searching for the library if it fails to load.
+
+**Note:** These files are proprietary Valve software and cannot be included in this repository. The engine gracefully falls back to Silk.NET for gamepad support when Steam libraries are unavailable.
+
+### Steam Deck
+
+On Steam Deck, the native libraries are automatically available when running through Steam. No manual setup required.
+
+---
+
 ## Use Cases
 
 - Space and sci-fi games with realistic gravitational effects

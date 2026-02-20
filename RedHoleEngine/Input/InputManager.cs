@@ -1,4 +1,5 @@
 using System.Numerics;
+using System.Runtime.CompilerServices;
 using RedHoleEngine.Core;
 using RedHoleEngine.Input.Actions;
 using RedHoleEngine.Input.Devices;
@@ -21,7 +22,8 @@ public class InputManager : IDisposable
     // Default providers
     private KeyboardMouseProvider? _keyboardMouseProvider;
     private SilkInputProvider? _silkInputProvider;
-    private SteamInputProvider? _steamInputProvider;
+    private IInputProvider? _steamInputProvider; // Loaded via SteamInputLoader to avoid assembly load exceptions
+    private bool _steamInputAvailable;
     
     // Action system
     private InputActionAsset? _actionAsset;
@@ -66,8 +68,11 @@ public class InputManager : IDisposable
         get
         {
             // Prefer Steam Input gamepad if available
-            var steamGamepad = _steamInputProvider?.GetGamepads().FirstOrDefault();
-            if (steamGamepad != null) return steamGamepad;
+            if (_steamInputAvailable && _steamInputProvider != null)
+            {
+                var steamGamepad = SteamInputLoader.GetGamepads(_steamInputProvider).FirstOrDefault();
+                if (steamGamepad != null) return steamGamepad;
+            }
             
             // Fall back to Silk.NET
             return _silkInputProvider?.GetGamepads().FirstOrDefault();
@@ -81,9 +86,9 @@ public class InputManager : IDisposable
     {
         get
         {
-            if (_steamInputProvider?.IsAvailable == true)
+            if (_steamInputAvailable && _steamInputProvider != null)
             {
-                foreach (var gp in _steamInputProvider.GetGamepads())
+                foreach (var gp in SteamInputLoader.GetGamepads(_steamInputProvider))
                     yield return gp;
             }
             
@@ -92,7 +97,7 @@ public class InputManager : IDisposable
                 // Only return Silk gamepads not already handled by Steam
                 foreach (var gp in _silkInputProvider.GetGamepads())
                 {
-                    if (_steamInputProvider?.IsAvailable != true)
+                    if (!_steamInputAvailable)
                         yield return gp;
                 }
             }
@@ -102,12 +107,14 @@ public class InputManager : IDisposable
     /// <summary>
     /// The primary gyro device (if available).
     /// </summary>
-    public GyroDevice? PrimaryGyro => _steamInputProvider?.GetGyros().FirstOrDefault();
+    public GyroDevice? PrimaryGyro => _steamInputAvailable && _steamInputProvider != null 
+        ? SteamInputLoader.GetGyros(_steamInputProvider).FirstOrDefault() 
+        : null;
     
     /// <summary>
     /// Whether Steam Input is available (running under Steam).
     /// </summary>
-    public bool IsSteamInputAvailable => _steamInputProvider?.IsAvailable ?? false;
+    public bool IsSteamInputAvailable => _steamInputAvailable;
     
     /// <summary>
     /// The loaded action asset.
@@ -150,14 +157,17 @@ public class InputManager : IDisposable
         }
         
         // Try Steam Input first (highest priority for gamepads)
-        _steamInputProvider = new SteamInputProvider();
-        if (_steamInputProvider.Initialize())
+        // This is isolated to prevent assembly load exceptions on systems without Steam
+        _steamInputProvider = SteamInputLoader.TryCreateProvider();
+        if (_steamInputProvider != null)
         {
+            _steamInputAvailable = true;
             RegisterProvider(_steamInputProvider);
             Console.WriteLine("[InputManager] Steam Input provider initialized");
         }
         else
         {
+            _steamInputAvailable = false;
             Console.WriteLine("[InputManager] Steam Input not available, using Silk.NET for gamepads");
         }
         
@@ -166,7 +176,7 @@ public class InputManager : IDisposable
         if (_silkInputProvider.Initialize(inputContext))
         {
             // Disable Silk gamepad provider if Steam Input is available
-            if (_steamInputProvider.IsAvailable)
+            if (_steamInputAvailable)
             {
                 _silkInputProvider.IsEnabled = false;
                 Console.WriteLine("[InputManager] Silk.NET gamepad provider disabled (Steam Input active)");
@@ -615,15 +625,8 @@ public class InputManager : IDisposable
     /// </summary>
     public void ActivateSteamActionSet(string actionSetName)
     {
-        if (_steamInputProvider?.IsAvailable != true) return;
-        
-        foreach (var gamepad in _steamInputProvider.GetGamepads())
-        {
-            if (gamepad is SteamGamepad steamGamepad)
-            {
-                _steamInputProvider.ActivateActionSet(steamGamepad, actionSetName);
-            }
-        }
+        if (!_steamInputAvailable || _steamInputProvider == null) return;
+        SteamInputLoader.ActivateActionSet(_steamInputProvider, actionSetName);
     }
     
     /// <summary>
@@ -631,13 +634,8 @@ public class InputManager : IDisposable
     /// </summary>
     public void ShowSteamBindingPanel()
     {
-        if (_steamInputProvider?.IsAvailable != true) return;
-        
-        var gamepad = _steamInputProvider.GetGamepads().FirstOrDefault() as SteamGamepad;
-        if (gamepad != null)
-        {
-            _steamInputProvider.ShowBindingPanel(gamepad);
-        }
+        if (!_steamInputAvailable || _steamInputProvider == null) return;
+        SteamInputLoader.ShowBindingPanel(_steamInputProvider);
     }
     
     // ═══════════════════════════════════════════════════════════════════════════

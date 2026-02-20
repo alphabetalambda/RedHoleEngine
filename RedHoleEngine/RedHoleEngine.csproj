@@ -35,6 +35,22 @@
       <PackageReference Include="Steamworks.NET" Version="20.1.0" />
     </ItemGroup>
 
+    <!-- Steam native libraries - place these in the project root and they'll be copied to output -->
+    <ItemGroup>
+      <None Include="steam_api64.dll" Condition="Exists('steam_api64.dll')">
+        <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      </None>
+      <None Include="steam_api.dll" Condition="Exists('steam_api.dll')">
+        <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      </None>
+      <None Include="libsteam_api.so" Condition="Exists('libsteam_api.so')">
+        <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      </None>
+      <None Include="libsteam_api.dylib" Condition="Exists('libsteam_api.dylib')">
+        <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      </None>
+    </ItemGroup>
+
     <!-- Copy shader files to output directory -->
     <ItemGroup>
       <None Update="Rendering\Shaders\*.comp">

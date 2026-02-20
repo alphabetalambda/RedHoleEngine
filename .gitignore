@@ -442,4 +442,4 @@ steam_api.dll
 steam_api64.dll
 libsteam_api.dylib
 libsteam_api.so
-steam_appid.txt
+# Note: steam_appid.txt is NOT ignored - it's needed for development/testing

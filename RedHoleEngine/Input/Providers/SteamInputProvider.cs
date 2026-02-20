@@ -50,10 +50,28 @@ public class SteamInputProvider : InputProviderBase
                 return false;
             }
             
+            // Check for steam_appid.txt
+            var appIdPath = Path.Combine(AppContext.BaseDirectory, "steam_appid.txt");
+            if (!File.Exists(appIdPath))
+            {
+                Console.WriteLine($"[SteamInputProvider] Warning: steam_appid.txt not found at {appIdPath}");
+                Console.WriteLine("[SteamInputProvider] Create this file with your Steam App ID (or 480 for testing with Spacewar)");
+            }
+            else
+            {
+                var appId = File.ReadAllText(appIdPath).Trim();
+                Console.WriteLine($"[SteamInputProvider] Using App ID: {appId}");
+            }
+            
             // Initialize Steamworks if not already done
             if (!SteamAPI.Init())
             {
                 Console.WriteLine("[SteamInputProvider] Failed to initialize Steam API");
+                Console.WriteLine("[SteamInputProvider] Possible causes:");
+                Console.WriteLine("  - Steam client is not running");
+                Console.WriteLine("  - steam_appid.txt missing or invalid");
+                Console.WriteLine("  - App ID not owned by current Steam account");
+                Console.WriteLine("  - Running as different user than Steam");
                 IsAvailable = false;
                 return false;
             }

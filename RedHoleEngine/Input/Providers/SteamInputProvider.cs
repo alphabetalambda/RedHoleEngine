@@ -63,10 +63,13 @@ public class SteamInputProvider : InputProviderBase
                 Console.WriteLine($"[SteamInputProvider] Using App ID: {appId}");
             }
             
-            // Initialize Steamworks if not already done
-            if (!SteamAPI.Init())
+            // Initialize Steamworks with detailed error reporting
+            string steamErrorMsg;
+            var initResult = SteamAPI.InitEx(out steamErrorMsg);
+            if (initResult != ESteamAPIInitResult.k_ESteamAPIInitResult_OK)
             {
-                Console.WriteLine("[SteamInputProvider] Failed to initialize Steam API");
+                Console.WriteLine($"[SteamInputProvider] Failed to initialize Steam API: {initResult}");
+                Console.WriteLine($"[SteamInputProvider] Error: {steamErrorMsg}");
                 Console.WriteLine("[SteamInputProvider] Possible causes:");
                 Console.WriteLine("  - Steam client is not running");
                 Console.WriteLine("  - steam_appid.txt missing or invalid");

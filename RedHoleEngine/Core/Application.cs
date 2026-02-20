@@ -4,6 +4,8 @@ using RedHoleEngine.Components;
 using RedHoleEngine.Core.ECS;
 using RedHoleEngine.Core.Scene;
 using RedHoleEngine.Engine;
+using RedHoleEngine.Input;
+using RedHoleEngine.Input.Defaults;
 using RedHoleEngine.Physics;
 using RedHoleEngine.Physics.Collision;
 using RedHoleEngine.Platform;
@@ -63,7 +65,10 @@ public class Application : IDisposable
     
     // Legacy compatibility (will be migrated to ECS)
     private Camera? _legacyCamera;
-    private InputHandler? _inputHandler;
+    
+    // New input system
+    private InputManager? _inputManager;
+    private InputSystem? _inputSystem;
     
     // Configuration
     public int WindowWidth { get; set; } = 1280;
@@ -156,6 +161,11 @@ public class Application : IDisposable
     /// Physics system for the active scene
     /// </summary>
     public PhysicsSystem? Physics => _physicsSystem;
+    
+    /// <summary>
+    /// The input manager for reading input state
+    /// </summary>
+    public InputManager? Input => _inputManager;
     
     /// <summary>
     /// Current active scene
@@ -302,9 +312,16 @@ public class Application : IDisposable
         _legacyCamera.MovementSpeed = 10.0f;
         _legacyCamera.FieldOfView = 60.0f;
 
-        // Initialize input
-        _inputHandler = new InputHandler(_legacyCamera);
-        _inputHandler.Initialize(_inputContext);
+        // Initialize new input system
+        _inputManager = new InputManager();
+        _inputManager.Initialize(_inputContext);
+        
+        // Load default actions
+        _inputManager.SetActions(DefaultActions.CreateDefault());
+        _inputManager.EnableActionMap("Gameplay");
+        
+        // Set up cursor capture for FPS-style controls
+        _inputManager.SetCursorCaptured(true);
 
         // Create graphics backend
         _backend = _backendType switch
@@ -476,8 +493,49 @@ public class Application : IDisposable
         
         using (Profiler.Instance.Scope("Input", "Update"))
         {
-            _inputHandler?.Update((float)deltaTime);
+            _inputManager?.Update((float)deltaTime);
+            
+            // Legacy camera movement using new input system
+            if (_inputManager != null && _legacyCamera != null)
+            {
+                // WASD movement via action system
+                var moveInput = _inputManager.FindAction("Move")?.ValueVector2 ?? System.Numerics.Vector2.Zero;
+                if (moveInput.Y > 0) _legacyCamera.MoveForward((float)deltaTime, forward: true);
+                if (moveInput.Y < 0) _legacyCamera.MoveForward((float)deltaTime, forward: false);
+                if (moveInput.X < 0) _legacyCamera.MoveRight((float)deltaTime, right: false);
+                if (moveInput.X > 0) _legacyCamera.MoveRight((float)deltaTime, right: true);
+                
+                // Jump/Crouch for vertical movement
+                if (_inputManager.FindAction("Jump")?.IsPressed == true)
+                    _legacyCamera.MoveUp((float)deltaTime, up: true);
+                if (_inputManager.FindAction("Sprint")?.IsPressed == true) // Using Sprint as down
+                    _legacyCamera.MoveUp((float)deltaTime, up: false);
+                
+                // Mouse look
+                var lookInput = _inputManager.GetMouseDelta();
+                if (lookInput.LengthSquared() > 0.001f)
+                {
+                    _legacyCamera.Rotate(lookInput.X, lookInput.Y);
+                }
+                
+                // Gyro look (additive)
+                var gyroInput = _inputManager.GetGyro();
+                if (gyroInput.LengthSquared() > 0.001f)
+                {
+                    // Gyro: Y = yaw, X = pitch
+                    _legacyCamera.Rotate(gyroInput.Y * 0.1f, gyroInput.X * 0.1f);
+                }
+                
+                // Escape to toggle mouse capture
+                if (_inputManager.FindAction("Pause")?.WasPressedThisFrame == true)
+                {
+                    _inputManager.ToggleCursorCapture();
+                }
+            }
         }
+        
+        // End input frame
+        _inputManager?.EndFrame();
         
         using (Profiler.Instance.Scope("GameLoop", "Update"))
         {
@@ -549,7 +607,7 @@ public class Application : IDisposable
         OnShutdown?.Invoke();
         _audioEngine?.Dispose();
         _backend?.Dispose();
-        _inputHandler?.Dispose();
+        _inputManager?.Dispose();
         _gameLoop.Shutdown();
         _resourceManager.Dispose();
     }

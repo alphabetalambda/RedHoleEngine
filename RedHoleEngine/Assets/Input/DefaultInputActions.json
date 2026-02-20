@@ -1,0 +1,199 @@
+{
+  "version": 1,
+  "name": "DefaultInputActions",
+  "actionMaps": [
+    {
+      "id": "gameplay",
+      "name": "Gameplay",
+      "actions": [
+        {
+          "id": "move",
+          "name": "Move",
+          "type": "vector2",
+          "bindings": [
+            { "path": "<Gamepad>/leftStick" }
+          ],
+          "composites": [
+            {
+              "type": "2DVector",
+              "parts": {
+                "up": { "path": "<Keyboard>/w" },
+                "down": { "path": "<Keyboard>/s" },
+                "left": { "path": "<Keyboard>/a" },
+                "right": { "path": "<Keyboard>/d" }
+              }
+            }
+          ]
+        },
+        {
+          "id": "look",
+          "name": "Look",
+          "type": "vector2",
+          "bindings": [
+            { "path": "<Mouse>/delta" },
+            { "path": "<Gamepad>/rightStick" }
+          ]
+        },
+        {
+          "id": "gyrolook",
+          "name": "GyroLook",
+          "type": "vector3",
+          "bindings": [
+            { "path": "<Gyro>/angularVelocity" }
+          ]
+        },
+        {
+          "id": "jump",
+          "name": "Jump",
+          "type": "button",
+          "bindings": [
+            { "path": "<Keyboard>/space" },
+            { "path": "<Gamepad>/buttonSouth" }
+          ]
+        },
+        {
+          "id": "attack",
+          "name": "Attack",
+          "type": "button",
+          "bindings": [
+            { "path": "<Mouse>/leftButton" },
+            { "path": "<Gamepad>/rightTrigger" }
+          ]
+        },
+        {
+          "id": "altattack",
+          "name": "AltAttack",
+          "type": "button",
+          "bindings": [
+            { "path": "<Mouse>/rightButton" },
+            { "path": "<Gamepad>/leftTrigger" }
+          ]
+        },
+        {
+          "id": "interact",
+          "name": "Interact",
+          "type": "button",
+          "bindings": [
+            { "path": "<Keyboard>/e" },
+            { "path": "<Gamepad>/buttonWest" }
+          ]
+        },
+        {
+          "id": "sprint",
+          "name": "Sprint",
+          "type": "button",
+          "bindings": [
+            { "path": "<Keyboard>/leftShift" },
+            { "path": "<Gamepad>/leftStickPress" }
+          ]
+        },
+        {
+          "id": "crouch",
+          "name": "Crouch",
+          "type": "button",
+          "bindings": [
+            { "path": "<Keyboard>/c" },
+            { "path": "<Keyboard>/leftCtrl" },
+            { "path": "<Gamepad>/buttonEast" }
+          ]
+        },
+        {
+          "id": "pause",
+          "name": "Pause",
+          "type": "button",
+          "bindings": [
+            { "path": "<Keyboard>/escape" },
+            { "path": "<Gamepad>/start" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ui",
+      "name": "UI",
+      "actions": [
+        {
+          "id": "navigate",
+          "name": "Navigate",
+          "type": "vector2",
+          "bindings": [
+            { "path": "<Gamepad>/leftStick" },
+            { "path": "<Gamepad>/dpad" }
+          ],
+          "composites": [
+            {
+              "type": "2DVector",
+              "parts": {
+                "up": { "path": "<Keyboard>/upArrow" },
+                "down": { "path": "<Keyboard>/downArrow" },
+                "left": { "path": "<Keyboard>/leftArrow" },
+                "right": { "path": "<Keyboard>/rightArrow" }
+              }
+            }
+          ]
+        },
+        {
+          "id": "submit",
+          "name": "Submit",
+          "type": "button",
+          "bindings": [
+            { "path": "<Keyboard>/enter" },
+            { "path": "<Keyboard>/space" },
+            { "path": "<Gamepad>/buttonSouth" }
+          ]
+        },
+        {
+          "id": "cancel",
+          "name": "Cancel",
+          "type": "button",
+          "bindings": [
+            { "path": "<Keyboard>/escape" },
+            { "path": "<Gamepad>/buttonEast" }
+          ]
+        },
+        {
+          "id": "point",
+          "name": "Point",
+          "type": "vector2",
+          "bindings": [
+            { "path": "<Mouse>/position" }
+          ]
+        },
+        {
+          "id": "click",
+          "name": "Click",
+          "type": "button",
+          "bindings": [
+            { "path": "<Mouse>/leftButton" },
+            { "path": "<Gamepad>/buttonSouth" }
+          ]
+        }
+      ]
+    }
+  ],
+  "controlSchemes": [
+    {
+      "name": "Keyboard&Mouse",
+      "bindingGroup": "Keyboard&Mouse",
+      "devices": [
+        { "devicePath": "<Keyboard>" },
+        { "devicePath": "<Mouse>" }
+      ]
+    },
+    {
+      "name": "Gamepad",
+      "bindingGroup": "Gamepad",
+      "devices": [
+        { "devicePath": "<Gamepad>" }
+      ]
+    },
+    {
+      "name": "Gamepad+Gyro",
+      "bindingGroup": "Gamepad+Gyro",
+      "devices": [
+        { "devicePath": "<Gamepad>" },
+        { "devicePath": "<Gyro>" }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,133 @@
+"In-Game Actions"
+{
+    "actions"
+    {
+        "Gameplay"
+        {
+            "title"         "#Set_Gameplay"
+            "StickPadGyro"
+            {
+                "move"
+                {
+                    "title"         "#Action_Move"
+                    "input_mode"    "joystick_move"
+                }
+                "look"
+                {
+                    "title"         "#Action_Look"
+                    "input_mode"    "absolute_mouse"
+                }
+                "gyro"
+                {
+                    "title"         "#Action_Gyro"
+                    "input_mode"    "absolute_mouse"
+                }
+            }
+            "AnalogTrigger"
+            {
+                "attack"
+                {
+                    "title"         "#Action_Attack"
+                    "input_mode"    "trigger"
+                }
+                "altattack"
+                {
+                    "title"         "#Action_AltAttack"
+                    "input_mode"    "trigger"
+                }
+            }
+            "Button"
+            {
+                "jump"
+                {
+                    "title"         "#Action_Jump"
+                }
+                "interact"
+                {
+                    "title"         "#Action_Interact"
+                }
+                "sprint"
+                {
+                    "title"         "#Action_Sprint"
+                }
+                "crouch"
+                {
+                    "title"         "#Action_Crouch"
+                }
+                "pause"
+                {
+                    "title"         "#Action_Pause"
+                }
+                "reload"
+                {
+                    "title"         "#Action_Reload"
+                }
+                "ability1"
+                {
+                    "title"         "#Action_Ability1"
+                }
+                "ability2"
+                {
+                    "title"         "#Action_Ability2"
+                }
+            }
+        }
+        "Menu"
+        {
+            "title"         "#Set_Menu"
+            "StickPadGyro"
+            {
+                "navigate"
+                {
+                    "title"         "#Action_Navigate"
+                    "input_mode"    "joystick_move"
+                }
+            }
+            "Button"
+            {
+                "menu_confirm"
+                {
+                    "title"         "#Action_MenuConfirm"
+                }
+                "menu_cancel"
+                {
+                    "title"         "#Action_MenuCancel"
+                }
+                "menu_left"
+                {
+                    "title"         "#Action_MenuLeft"
+                }
+                "menu_right"
+                {
+                    "title"         "#Action_MenuRight"
+                }
+            }
+        }
+    }
+    "localization"
+    {
+        "english"
+        {
+            "Set_Gameplay"          "Gameplay"
+            "Set_Menu"              "Menu"
+            "Action_Move"           "Move"
+            "Action_Look"           "Look"
+            "Action_Gyro"           "Gyro Aim"
+            "Action_Jump"           "Jump"
+            "Action_Attack"         "Attack"
+            "Action_AltAttack"      "Alt Attack / Aim"
+            "Action_Interact"       "Interact"
+            "Action_Sprint"         "Sprint"
+            "Action_Crouch"         "Crouch"
+            "Action_Pause"          "Pause"
+            "Action_Reload"         "Reload"
+            "Action_Ability1"       "Ability 1"
+            "Action_Ability2"       "Ability 2"
+            "Action_Navigate"       "Navigate"
+            "Action_MenuConfirm"    "Confirm"
+            "Action_MenuCancel"     "Cancel"
+            "Action_MenuLeft"       "Previous Tab"
+            "Action_MenuRight"      "Next Tab"
+        }
+    }
+}

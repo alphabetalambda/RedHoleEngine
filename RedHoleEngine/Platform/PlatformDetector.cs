@@ -876,6 +876,7 @@ public static partial class PlatformDetector
             // Gaming laptop with discrete GPU
             if (tier >= 60)
                 return PlatformType.GamingLaptopHighEnd;
+
             if (tier >= 40)
                 return PlatformType.GamingLaptopLowEnd;
         }

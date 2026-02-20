@@ -1,0 +1,77 @@
+#version 450
+
+/*
+ * SVGF Denoiser - Variance Estimation Pass
+ * 
+ * Estimates per-pixel variance from accumulated moments.
+ * Also performs a 3x3 spatial variance estimation for pixels with short history.
+ * The variance is used to guide the spatial filter kernel size.
+ */
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, rgba32f) uniform readonly image2D momentsImage;       // Accumulated moments
+layout(set = 0, binding = 1, r16f) uniform readonly image2D historyLengthImage;   // History length
+layout(set = 0, binding = 2, r32f) uniform writeonly image2D varianceImage;        // Output variance
+
+layout(set = 0, binding = 3) uniform VarianceParams {
+    ivec2 resolution;
+    int minHistoryForVariance;    // Minimum history frames before using temporal variance
+    float spatialVarianceBoost;   // Boost factor for spatial variance
+} params;
+
+void main() {
+    ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
+    
+    if (pixelCoord.x >= params.resolution.x || pixelCoord.y >= params.resolution.y) {
+        return;
+    }
+    
+    vec2 moments = imageLoad(momentsImage, pixelCoord).rg;
+    float historyLength = imageLoad(historyLengthImage, pixelCoord).r;
+    
+    // Calculate temporal variance: Var(X) = E[X^2] - E[X]^2
+    float temporalVariance = max(0.0, moments.y - moments.x * moments.x);
+    
+    float variance;
+    
+    if (historyLength >= float(params.minHistoryForVariance)) {
+        // Sufficient history - use temporal variance
+        variance = temporalVariance;
+    } else {
+        // Short history - estimate variance spatially and boost it
+        float sum = 0.0;
+        float sumSq = 0.0;
+        float count = 0.0;
+        
+        // 3x3 neighborhood variance estimation
+        for (int dy = -1; dy <= 1; dy++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                ivec2 sampleCoord = pixelCoord + ivec2(dx, dy);
+                
+                if (sampleCoord.x < 0 || sampleCoord.x >= params.resolution.x ||
+                    sampleCoord.y < 0 || sampleCoord.y >= params.resolution.y) {
+                    continue;
+                }
+                
+                float lum = imageLoad(momentsImage, sampleCoord).r; // First moment is luminance
+                sum += lum;
+                sumSq += lum * lum;
+                count += 1.0;
+            }
+        }
+        
+        if (count > 0.0) {
+            float mean = sum / count;
+            float spatialVariance = max(0.0, sumSq / count - mean * mean);
+            
+            // Blend temporal and spatial variance, boosting for short history
+            float t = historyLength / float(params.minHistoryForVariance);
+            variance = mix(spatialVariance * params.spatialVarianceBoost, temporalVariance, t);
+        } else {
+            variance = temporalVariance;
+        }
+    }
+    
+    imageStore(varianceImage, pixelCoord, vec4(variance));
+}

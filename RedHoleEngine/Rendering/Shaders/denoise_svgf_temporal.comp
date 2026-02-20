@@ -1,0 +1,148 @@
+#version 450
+
+/*
+ * SVGF Denoiser - Temporal Accumulation Pass
+ * 
+ * Spatiotemporal Variance-Guided Filtering (SVGF)
+ * This pass performs temporal reprojection and accumulation of color and moments.
+ * 
+ * Reference: "Spatiotemporal Variance-Guided Filtering: Real-Time Reconstruction
+ *            for Path-Traced Global Illumination" - Schied et al., HPG 2017
+ */
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+// Current frame inputs
+layout(set = 0, binding = 0, rgba32f) uniform readonly image2D currentColor;      // Noisy input color
+layout(set = 0, binding = 1, rgba32f) uniform readonly image2D currentNormal;     // World-space normals
+layout(set = 0, binding = 2, r32f) uniform readonly image2D currentDepth;         // Linear depth
+layout(set = 0, binding = 3, rg16f) uniform readonly image2D motionVectors;       // Screen-space motion
+
+// Previous frame data
+layout(set = 0, binding = 4, rgba32f) uniform readonly image2D prevColor;         // Previous accumulated color
+layout(set = 0, binding = 5, rgba32f) uniform readonly image2D prevMoments;       // Previous moments (mean, mean^2)
+layout(set = 0, binding = 6, r16f) uniform readonly image2D prevHistoryLength;    // Previous history length
+layout(set = 0, binding = 7, rgba32f) uniform readonly image2D prevNormal;        // Previous normals
+layout(set = 0, binding = 8, r32f) uniform readonly image2D prevDepth;            // Previous depth
+
+// Outputs
+layout(set = 0, binding = 9, rgba32f) uniform writeonly image2D outColor;         // Accumulated color
+layout(set = 0, binding = 10, rgba32f) uniform writeonly image2D outMoments;      // Accumulated moments
+layout(set = 0, binding = 11, r16f) uniform writeonly image2D outHistoryLength;   // Updated history length
+
+layout(set = 0, binding = 12) uniform SVGFParams {
+    ivec2 resolution;
+    float temporalAlpha;       // Base temporal blend factor
+    float normalThreshold;     // Threshold for normal rejection
+    float depthThreshold;      // Threshold for depth rejection
+    int maxHistoryLength;      // Maximum history frames to accumulate
+    float pad0;
+    float pad1;
+} params;
+
+// Calculate luminance for variance estimation
+float luminance(vec3 color) {
+    return dot(color, vec3(0.2126, 0.7152, 0.0722));
+}
+
+// Check if reprojected sample is valid (consistency check)
+bool isReprojectionValid(ivec2 currentCoord, ivec2 prevCoord, vec3 currentNormal, float currentDepth) {
+    // Boundary check
+    if (prevCoord.x < 0 || prevCoord.x >= params.resolution.x ||
+        prevCoord.y < 0 || prevCoord.y >= params.resolution.y) {
+        return false;
+    }
+    
+    // Load previous frame data
+    vec3 prevNormalVal = imageLoad(prevNormal, prevCoord).xyz;
+    float prevDepthVal = imageLoad(prevDepth, prevCoord).r;
+    
+    // Skip invalid samples
+    if (prevDepthVal <= 0.0 || length(prevNormalVal) < 0.5) {
+        return false;
+    }
+    
+    prevNormalVal = normalize(prevNormalVal);
+    
+    // Normal consistency check
+    float normalSimilarity = dot(currentNormal, prevNormalVal);
+    if (normalSimilarity < params.normalThreshold) {
+        return false;
+    }
+    
+    // Depth consistency check (relative depth difference)
+    float depthDiff = abs(currentDepth - prevDepthVal) / max(currentDepth, 0.0001);
+    if (depthDiff > params.depthThreshold) {
+        return false;
+    }
+    
+    return true;
+}
+
+void main() {
+    ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
+    
+    if (pixelCoord.x >= params.resolution.x || pixelCoord.y >= params.resolution.y) {
+        return;
+    }
+    
+    // Load current frame data
+    vec4 currentColorVal = imageLoad(currentColor, pixelCoord);
+    vec3 currentNormalVal = imageLoad(currentNormal, pixelCoord).xyz;
+    float currentDepthVal = imageLoad(currentDepth, pixelCoord).r;
+    vec2 motion = imageLoad(motionVectors, pixelCoord).rg;
+    
+    // Handle invalid pixels (sky, etc.) - no temporal accumulation
+    if (currentDepthVal <= 0.0 || length(currentNormalVal) < 0.5) {
+        imageStore(outColor, pixelCoord, currentColorVal);
+        imageStore(outMoments, pixelCoord, vec4(luminance(currentColorVal.rgb), 0.0, 0.0, 0.0));
+        imageStore(outHistoryLength, pixelCoord, vec4(1.0));
+        return;
+    }
+    
+    currentNormalVal = normalize(currentNormalVal);
+    
+    // Calculate reprojected position
+    vec2 prevUV = (vec2(pixelCoord) + 0.5) / vec2(params.resolution) - motion / vec2(params.resolution);
+    ivec2 prevCoord = ivec2(prevUV * vec2(params.resolution));
+    
+    // Check if reprojection is valid
+    bool validReprojection = isReprojectionValid(pixelCoord, prevCoord, currentNormalVal, currentDepthVal);
+    
+    vec3 accumulatedColor;
+    vec2 accumulatedMoments;
+    float historyLength;
+    
+    if (validReprojection) {
+        // Load previous frame accumulated data
+        vec3 prevColorVal = imageLoad(prevColor, prevCoord).rgb;
+        vec2 prevMomentsVal = imageLoad(prevMoments, prevCoord).rg;
+        float prevHistoryLen = imageLoad(prevHistoryLength, prevCoord).r;
+        
+        // Increment history length (capped)
+        historyLength = min(prevHistoryLen + 1.0, float(params.maxHistoryLength));
+        
+        // Calculate adaptive alpha based on history length
+        // Shorter history = more weight to current frame
+        float alpha = max(params.temporalAlpha, 1.0 / historyLength);
+        
+        // Temporal accumulation of color
+        accumulatedColor = mix(prevColorVal, currentColorVal.rgb, alpha);
+        
+        // Temporal accumulation of moments for variance estimation
+        float currentLum = luminance(currentColorVal.rgb);
+        vec2 currentMoments = vec2(currentLum, currentLum * currentLum);
+        accumulatedMoments = mix(prevMomentsVal, currentMoments, alpha);
+    } else {
+        // No valid history - use current frame only
+        accumulatedColor = currentColorVal.rgb;
+        float currentLum = luminance(currentColorVal.rgb);
+        accumulatedMoments = vec2(currentLum, currentLum * currentLum);
+        historyLength = 1.0;
+    }
+    
+    // Output accumulated data
+    imageStore(outColor, pixelCoord, vec4(accumulatedColor, currentColorVal.a));
+    imageStore(outMoments, pixelCoord, vec4(accumulatedMoments, 0.0, 0.0));
+    imageStore(outHistoryLength, pixelCoord, vec4(historyLength));
+}

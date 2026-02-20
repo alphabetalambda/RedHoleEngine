@@ -64,6 +64,72 @@ public class RaytracerSettingsPanel : EditorPanel
             _settings.Denoise = denoise;
             _settings.Preset = RaytracerQualityPreset.Custom;
         }
+        
+        // Advanced denoising options
+        if (_settings.Denoise)
+        {
+            ImGui.Indent();
+            
+            var denoiseMethodNames = new[] { "None", "Bilateral", "A-Trous", "SVGF" };
+            int methodIdx = (int)_settings.DenoiseMethod;
+            if (ImGui.Combo("Method##Denoise", ref methodIdx, denoiseMethodNames, denoiseMethodNames.Length))
+            {
+                _settings.DenoiseMethod = (DenoiseMethod)methodIdx;
+                _settings.ResetAccumulation = true;
+            }
+            
+            // A-Trous specific settings
+            if (_settings.DenoiseMethod == DenoiseMethod.ATrous)
+            {
+                int iterations = _settings.ATrousIterations;
+                if (ImGui.SliderInt("Iterations##ATrous", ref iterations, 1, 6))
+                {
+                    _settings.ATrousIterations = iterations;
+                }
+                
+                float colorSigma = _settings.ATrousColorSigma;
+                if (ImGui.SliderFloat("Color Sigma", ref colorSigma, 0.01f, 2.0f))
+                {
+                    _settings.ATrousColorSigma = colorSigma;
+                }
+                
+                float normalSigma = _settings.ATrousNormalSigma;
+                if (ImGui.SliderFloat("Normal Sigma", ref normalSigma, 0.01f, 1.0f))
+                {
+                    _settings.ATrousNormalSigma = normalSigma;
+                }
+            }
+            
+            // SVGF specific settings
+            if (_settings.DenoiseMethod == DenoiseMethod.SVGF)
+            {
+                float temporalAlpha = _settings.SVGFTemporalAlpha;
+                if (ImGui.SliderFloat("Temporal Alpha", ref temporalAlpha, 0.01f, 1.0f))
+                {
+                    _settings.SVGFTemporalAlpha = temporalAlpha;
+                }
+                ImGui.SameLine();
+                ImGui.TextDisabled("(?)");
+                if (ImGui.IsItemHovered())
+                {
+                    ImGui.SetTooltip("Lower = more temporal reuse (smoother but more ghosting)\nHigher = less temporal reuse (sharper but noisier)");
+                }
+                
+                int spatialIterations = _settings.SVGFSpatialIterations;
+                if (ImGui.SliderInt("Spatial Iterations", ref spatialIterations, 1, 6))
+                {
+                    _settings.SVGFSpatialIterations = spatialIterations;
+                }
+                
+                float phiColor = _settings.SVGFPhiColor;
+                if (ImGui.SliderFloat("Phi Color", ref phiColor, 1.0f, 100.0f))
+                {
+                    _settings.SVGFPhiColor = phiColor;
+                }
+            }
+            
+            ImGui.Unindent();
+        }
 
         var presets = new[] { "Fast", "Balanced", "Quality", "Custom" };
         int presetIndex = _settings.Preset switch

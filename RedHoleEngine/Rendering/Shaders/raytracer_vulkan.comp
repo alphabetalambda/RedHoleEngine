@@ -6,6 +6,9 @@ layout(set = 0, binding = 4, rgba32f) uniform image2D accumImage;
 // Depth output for motion vector generation and upscaling (DLSS/FSR/XeSS)
 // Note: Binding 8 to avoid conflict with PBR Materials (binding 5)
 layout(set = 0, binding = 8, r32f) uniform image2D depthImage;
+// G-buffer outputs for denoising (SVGF, A-Trous)
+layout(set = 0, binding = 9, rgba16f) uniform image2D normalImage;   // World-space normals (xyz) + roughness (w)
+layout(set = 0, binding = 10, rgba16f) uniform image2D albedoImage;  // Albedo (xyz) + metallic (w)
 
 layout(set = 0, binding = 1) uniform UniformBlock {
     vec2 u_Resolution;
@@ -1444,7 +1447,12 @@ struct HitInfo {
     vec3 normal;
 };
 
-bool intersectBvh(vec3 ro, vec3 rd, int nodeCount, int triCount, out vec3 hitPos, out vec3 hitNormal, out vec3 hitColor) {
+bool intersectBvh(vec3 ro, vec3 rd, int nodeCount, int triCount, out vec3 hitPos, out vec3 hitNormal, out vec3 hitColor, out vec3 hitAlbedo, out float hitRoughness, out float hitMetallic) {
+    // Initialize outputs
+    hitAlbedo = vec3(0.0);
+    hitRoughness = 0.5;
+    hitMetallic = 0.0;
+    
     if (nodeCount == 0 || triCount == 0) return false;
 
     HitInfo closest;
@@ -1498,6 +1506,31 @@ bool intersectBvh(vec3 ro, vec3 rd, int nodeCount, int triCount, out vec3 hitPos
         
         // Interpolate UV coordinates
         vec2 uv = interpolateUV(hitTri, closest.u, closest.v);
+        
+        // Get material properties for G-buffer
+        int matIdx = hitTri.materialIndex;
+        if (matIdx >= 0) {
+            GpuMaterial mat = materials[matIdx];
+            hitAlbedo = mat.baseColorFactor.rgb;
+            hitRoughness = mat.roughness;
+            hitMetallic = mat.metallic;
+            
+            // Sample base color texture if available
+            if (mat.baseColorTextureIndex >= 0) {
+                vec4 texColor = sampleMaterialTexture(mat.baseColorTextureIndex, uv);
+                hitAlbedo *= texColor.rgb;
+            }
+            
+            // Sample metallic-roughness texture if available
+            if (mat.metallicRoughnessTextureIndex >= 0) {
+                vec4 mrTex = sampleMaterialTexture(mat.metallicRoughnessTextureIndex, uv);
+                hitRoughness *= mrTex.g; // Green channel = roughness
+                hitMetallic *= mrTex.b;  // Blue channel = metallic
+            }
+        } else {
+            // Fallback to triangle albedo
+            hitAlbedo = hitTri.albedo.rgb;
+        }
         
         // Use PBR shading with proper UVs
         vec3 viewDir = -rd; // Direction toward camera
@@ -1582,7 +1615,13 @@ float intersectSphere(vec3 ro, vec3 rd, vec3 center, float radius) {
 
 // Check BVH intersection for a short ray segment (used during geodesic tracing)
 bool intersectBvhSegment(vec3 ro, vec3 rd, float maxDist, int nodeCount, int triCount, 
-                          out float hitT, out vec3 hitNormal, out vec3 hitColor) {
+                          out float hitT, out vec3 hitNormal, out vec3 hitColor,
+                          out vec3 hitAlbedo, out float hitRoughness, out float hitMetallic) {
+    // Initialize outputs
+    hitAlbedo = vec3(0.0);
+    hitRoughness = 0.5;
+    hitMetallic = 0.0;
+    
     if (nodeCount == 0 || triCount == 0) return false;
 
     HitInfo closest;
@@ -1637,6 +1676,30 @@ bool intersectBvhSegment(vec3 ro, vec3 rd, float maxDist, int nodeCount, int tri
         // Interpolate UV coordinates
         vec2 uv = interpolateUV(hitTri, closest.u, closest.v);
         
+        // Get material properties for G-buffer
+        int matIdx = hitTri.materialIndex;
+        if (matIdx >= 0) {
+            GpuMaterial mat = materials[matIdx];
+            hitAlbedo = mat.baseColorFactor.rgb;
+            hitRoughness = mat.roughness;
+            hitMetallic = mat.metallic;
+            
+            // Sample base color texture if available
+            if (mat.baseColorTextureIndex >= 0) {
+                vec4 texColor = sampleMaterialTexture(mat.baseColorTextureIndex, uv);
+                hitAlbedo *= texColor.rgb;
+            }
+            
+            // Sample metallic-roughness texture if available
+            if (mat.metallicRoughnessTextureIndex >= 0) {
+                vec4 mrTex = sampleMaterialTexture(mat.metallicRoughnessTextureIndex, uv);
+                hitRoughness *= mrTex.g;
+                hitMetallic *= mrTex.b;
+            }
+        } else {
+            hitAlbedo = hitTri.albedo.rgb;
+        }
+        
         // Use PBR shading with proper UVs
         vec3 viewDir = -rd;
         hitColor = shadePBRWithUV(hitPos, hitNormal, viewDir, hitTri, uv);
@@ -1644,7 +1707,7 @@ bool intersectBvhSegment(vec3 ro, vec3 rd, float maxDist, int nodeCount, int tri
     return hit;
 }
 
-bool traceOnce(vec3 rayOrigin, vec3 rayDir, out vec3 outColor, out vec3 hitPos, out vec3 hitNormal) {
+bool traceOnce(vec3 rayOrigin, vec3 rayDir, out vec3 outColor, out vec3 hitPos, out vec3 hitNormal, out vec3 hitAlbedo, out float hitRoughness, out float hitMetallic) {
     int nodeCount = int(u_RaySettings.z + 0.5);
     int triCount = int(u_RaySettings.w + 0.5);
     
@@ -1657,10 +1720,15 @@ bool traceOnce(vec3 rayOrigin, vec3 rayDir, out vec3 outColor, out vec3 hitPos, 
     float eventHorizon = u_OuterHorizonRadius > 0.0 ? u_OuterHorizonRadius : rs;
     bool useKerr = abs(spin) > 0.001;             // Use Kerr geodesics if spinning
     
+    // Initialize G-buffer outputs
+    hitAlbedo = vec3(0.0);
+    hitRoughness = 0.5;
+    hitMetallic = 0.0;
+    
     // If no black hole (rs <= 0), use simple straight-line BVH intersection
     if (rs <= 0.0) {
         vec3 hitColor;
-        if (intersectBvh(rayOrigin, rayDir, nodeCount, triCount, hitPos, hitNormal, hitColor)) {
+        if (intersectBvh(rayOrigin, rayDir, nodeCount, triCount, hitPos, hitNormal, hitColor, hitAlbedo, hitRoughness, hitMetallic)) {
             outColor = hitColor;
             return true;
         }
@@ -1678,7 +1746,7 @@ bool traceOnce(vec3 rayOrigin, vec3 rayDir, out vec3 outColor, out vec3 hitPos, 
     // If far from black hole and not pointing toward it, skip geodesic tracing
     if (distToBH > rs * 20.0 && dotDir < 0.3) {
         vec3 hitColor;
-        if (intersectBvh(rayOrigin, rayDir, nodeCount, triCount, hitPos, hitNormal, hitColor)) {
+        if (intersectBvh(rayOrigin, rayDir, nodeCount, triCount, hitPos, hitNormal, hitColor, hitAlbedo, hitRoughness, hitMetallic)) {
             outColor = hitColor;
             return true;
         }
@@ -1803,11 +1871,16 @@ bool traceOnce(vec3 rayOrigin, vec3 rayDir, out vec3 outColor, out vec3 hitPos, 
         if (checkBvh) {
             float hitT;
             vec3 segHitNormal, segHitColor;
+            vec3 segAlbedo;
+            float segRoughness, segMetallic;
             // Check distance covers multiple steps to ensure we don't miss objects
             float checkDist = step * float(adaptiveInterval + 1) * 1.2;
-            if (intersectBvhSegment(pos, vel, checkDist, nodeCount, triCount, hitT, segHitNormal, segHitColor)) {
+            if (intersectBvhSegment(pos, vel, checkDist, nodeCount, triCount, hitT, segHitNormal, segHitColor, segAlbedo, segRoughness, segMetallic)) {
                 hitPos = pos + vel * hitT;
                 hitNormal = segHitNormal;
+                hitAlbedo = segAlbedo;
+                hitRoughness = segRoughness;
+                hitMetallic = segMetallic;
                 outColor = segHitColor;
                 
                 // Blend visualization effects
@@ -1945,10 +2018,15 @@ bool traceOnce(vec3 rayOrigin, vec3 rayDir, out vec3 outColor, out vec3 hitPos, 
             // Do one final BVH check with full remaining distance before returning starfield
             float hitT;
             vec3 segHitNormal, segHitColor;
+            vec3 segAlbedo;
+            float segRoughness, segMetallic;
             float remainingDist = maxDistance * 2.0;
-            if (intersectBvhSegment(pos, vel, remainingDist, nodeCount, triCount, hitT, segHitNormal, segHitColor)) {
+            if (intersectBvhSegment(pos, vel, remainingDist, nodeCount, triCount, hitT, segHitNormal, segHitColor, segAlbedo, segRoughness, segMetallic)) {
                 hitPos = pos + vel * hitT;
                 hitNormal = segHitNormal;
+                hitAlbedo = segAlbedo;
+                hitRoughness = segRoughness;
+                hitMetallic = segMetallic;
                 outColor = segHitColor;
                 
                 // Blend visualization effects
@@ -2041,7 +2119,13 @@ void main() {
 
     vec3 color = vec3(0.0);
     float primaryDepth = 0.0; // Distance to first hit for depth buffer output
-    bool depthCaptured = false;
+    bool gbufferCaptured = false;
+    
+    // G-buffer data for denoising (captured from first sample, first bounce)
+    vec3 primaryNormal = vec3(0.0, 1.0, 0.0);
+    vec3 primaryAlbedo = vec3(0.0);
+    float primaryRoughness = 0.5;
+    float primaryMetallic = 0.0;
     
     // Calculate ray direction based on camera and FOV
     float fovRad = u_Fov * PI / 180.0;
@@ -2075,15 +2159,21 @@ void main() {
             vec3 hitColor;
             vec3 hitPos;
             vec3 hitNormal;
-            bool hitDisk = traceOnce(origin, dir, hitColor, hitPos, hitNormal);
+            vec3 hitAlbedo;
+            float hitRoughness, hitMetallic;
+            bool hitDisk = traceOnce(origin, dir, hitColor, hitPos, hitNormal, hitAlbedo, hitRoughness, hitMetallic);
 
             sampleColor += throughput * hitColor;
             
-            // Capture primary ray depth for motion vectors/upscaling
-            // Use first sample's first bounce for depth (most representative)
-            if (bounce == 0 && sampleIndex == 0 && !depthCaptured) {
+            // Capture primary ray data for depth buffer and G-buffer (for denoising)
+            // Use first sample's first bounce for consistent data
+            if (bounce == 0 && sampleIndex == 0 && !gbufferCaptured) {
                 primaryDepth = length(hitPos - u_CameraPos);
-                depthCaptured = true;
+                primaryNormal = hitNormal;
+                primaryAlbedo = hitAlbedo;
+                primaryRoughness = hitRoughness;
+                primaryMetallic = hitMetallic;
+                gbufferCaptured = true;
             }
 
             if (!hitDisk) {
@@ -2247,4 +2337,10 @@ void main() {
     // Depth is linear distance from camera to first hit point
     // Use 0.0 for sky/infinite distance (no solid hit)
     imageStore(depthImage, pixelCoord, vec4(primaryDepth, 0.0, 0.0, 0.0));
+    
+    // Store G-buffer data for advanced denoising (SVGF, A-Trous)
+    // Normal image: xyz = world-space normal, w = roughness
+    imageStore(normalImage, pixelCoord, vec4(primaryNormal, primaryRoughness));
+    // Albedo image: xyz = base color/albedo, w = metallic
+    imageStore(albedoImage, pixelCoord, vec4(primaryAlbedo, primaryMetallic));
 }

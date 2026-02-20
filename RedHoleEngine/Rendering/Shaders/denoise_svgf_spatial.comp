@@ -1,0 +1,139 @@
+#version 450
+
+/*
+ * SVGF Denoiser - Spatial Filter Pass (A-Trous with Variance Guidance)
+ * 
+ * Performs edge-preserving spatial filtering using A-Trous wavelets.
+ * The filter kernel size is guided by per-pixel variance - higher variance
+ * pixels get more aggressive filtering.
+ * 
+ * This shader is run multiple times with increasing step sizes (1, 2, 4, 8, 16).
+ */
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, rgba32f) uniform image2D colorImage;           // Input/Output color (ping-pong)
+layout(set = 0, binding = 1, rgba32f) uniform readonly image2D normalImage; // World-space normals
+layout(set = 0, binding = 2, r32f) uniform readonly image2D depthImage;     // Linear depth
+layout(set = 0, binding = 3, r32f) uniform readonly image2D varianceImage;  // Per-pixel variance
+
+layout(set = 0, binding = 4, rgba32f) uniform writeonly image2D outputImage; // Filtered output
+
+layout(set = 0, binding = 5) uniform SpatialParams {
+    ivec2 resolution;
+    int stepSize;              // A-Trous step size (1, 2, 4, 8, 16)
+    float phiColor;            // Color weight (higher = more blur)
+    float phiNormal;           // Normal weight (higher = more edge-aware)
+    float phiDepth;            // Depth weight
+    float varianceBoost;       // How much variance affects filter strength
+    float pad0;
+} params;
+
+// 5x5 Gaussian-like kernel for A-Trous
+const float kernel[3] = float[3](1.0, 2.0/3.0, 1.0/6.0);
+
+float luminance(vec3 color) {
+    return dot(color, vec3(0.2126, 0.7152, 0.0722));
+}
+
+// Calculate edge-stopping weight
+float computeWeight(
+    vec3 centerColor, vec3 sampleColor,
+    vec3 centerNormal, vec3 sampleNormal,
+    float centerDepth, float sampleDepth,
+    float centerVariance,
+    float kernelWeight
+) {
+    // Color weight with variance-guided sigma
+    // Higher variance = larger sigma = more blur allowed
+    float colorSigma = params.phiColor * sqrt(max(centerVariance, 0.0001));
+    vec3 colorDiff = centerColor - sampleColor;
+    float colorDist2 = dot(colorDiff, colorDiff);
+    float colorWeight = exp(-colorDist2 / (colorSigma * colorSigma + 0.0001));
+    
+    // Normal weight - steep falloff for different normals
+    float normalDot = max(0.0, dot(centerNormal, sampleNormal));
+    float normalWeight = pow(normalDot, params.phiNormal);
+    
+    // Depth weight - plane-based depth comparison
+    float depthDiff = abs(centerDepth - sampleDepth);
+    float depthSigma = params.phiDepth * centerDepth * 0.01;
+    float depthWeight = exp(-depthDiff / (depthSigma + 0.0001));
+    
+    return kernelWeight * colorWeight * normalWeight * depthWeight;
+}
+
+void main() {
+    ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
+    
+    if (pixelCoord.x >= params.resolution.x || pixelCoord.y >= params.resolution.y) {
+        return;
+    }
+    
+    // Load center pixel data
+    vec4 centerColor = imageLoad(colorImage, pixelCoord);
+    vec3 centerNormal = imageLoad(normalImage, pixelCoord).xyz;
+    float centerDepth = imageLoad(depthImage, pixelCoord).r;
+    float centerVariance = imageLoad(varianceImage, pixelCoord).r;
+    
+    // Handle invalid pixels
+    if (centerDepth <= 0.0 || length(centerNormal) < 0.5) {
+        imageStore(outputImage, pixelCoord, centerColor);
+        return;
+    }
+    
+    centerNormal = normalize(centerNormal);
+    
+    // Boost filter strength based on variance
+    float varianceFactor = 1.0 + centerVariance * params.varianceBoost;
+    
+    vec3 colorSum = vec3(0.0);
+    float weightSum = 0.0;
+    
+    // 5x5 A-Trous filter
+    for (int dy = -2; dy <= 2; dy++) {
+        for (int dx = -2; dx <= 2; dx++) {
+            ivec2 sampleCoord = pixelCoord + ivec2(dx, dy) * params.stepSize;
+            
+            // Boundary check
+            if (sampleCoord.x < 0 || sampleCoord.x >= params.resolution.x ||
+                sampleCoord.y < 0 || sampleCoord.y >= params.resolution.y) {
+                continue;
+            }
+            
+            // Load sample data
+            vec3 sampleColor = imageLoad(colorImage, sampleCoord).rgb;
+            vec3 sampleNormal = imageLoad(normalImage, sampleCoord).xyz;
+            float sampleDepth = imageLoad(depthImage, sampleCoord).r;
+            
+            // Skip invalid samples
+            if (sampleDepth <= 0.0 || length(sampleNormal) < 0.5) {
+                continue;
+            }
+            
+            sampleNormal = normalize(sampleNormal);
+            
+            // Calculate kernel weight (separable Gaussian approximation)
+            float kx = kernel[abs(dx)];
+            float ky = kernel[abs(dy)];
+            float kernelWeight = kx * ky;
+            
+            // Calculate edge-stopping weight
+            float weight = computeWeight(
+                centerColor.rgb, sampleColor,
+                centerNormal, sampleNormal,
+                centerDepth, sampleDepth,
+                centerVariance * varianceFactor,
+                kernelWeight
+            );
+            
+            colorSum += sampleColor * weight;
+            weightSum += weight;
+        }
+    }
+    
+    // Normalize and output
+    vec3 filteredColor = (weightSum > 0.0001) ? colorSum / weightSum : centerColor.rgb;
+    
+    imageStore(outputImage, pixelCoord, vec4(filteredColor, centerColor.a));
+}

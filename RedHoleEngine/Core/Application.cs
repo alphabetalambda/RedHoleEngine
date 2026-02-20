@@ -72,6 +72,18 @@ public class Application : IDisposable
     public bool VSync { get; set; } = true;
     
     /// <summary>
+    /// Whether to start in fullscreen mode at native resolution.
+    /// When true, WindowWidth and WindowHeight are ignored and native resolution is used.
+    /// </summary>
+    public bool Fullscreen { get; set; } = true;
+    
+    /// <summary>
+    /// Whether to use borderless fullscreen (windowed fullscreen) instead of exclusive fullscreen.
+    /// Borderless allows faster alt-tab but may have slightly higher input latency.
+    /// </summary>
+    public bool BorderlessFullscreen { get; set; } = true;
+    
+    /// <summary>
     /// Whether to show the engine splash screen on startup.
     /// Only shown when IsEditorMode is false (i.e., in compiled games).
     /// </summary>
@@ -217,18 +229,50 @@ public class Application : IDisposable
             Window.PrioritizeGlfw();
         }
         
+        // Get native resolution for fullscreen
+        var monitor = Silk.NET.Windowing.Monitor.GetMainMonitor(null);
+        var nativeRes = monitor?.VideoMode.Resolution ?? new Vector2D<int>(1920, 1080);
+        
+        int width = Fullscreen ? nativeRes.X : WindowWidth;
+        int height = Fullscreen ? nativeRes.Y : WindowHeight;
+        
+        // Determine window state
+        WindowState windowState = WindowState.Normal;
+        WindowBorder windowBorder = WindowBorder.Resizable;
+        
+        if (Fullscreen)
+        {
+            if (BorderlessFullscreen)
+            {
+                // Borderless fullscreen (windowed fullscreen)
+                windowState = WindowState.Fullscreen;
+                windowBorder = WindowBorder.Hidden;
+            }
+            else
+            {
+                // Exclusive fullscreen
+                windowState = WindowState.Fullscreen;
+            }
+        }
+        
         var options = WindowOptions.Default with
         {
-            Size = new Vector2D<int>(WindowWidth, WindowHeight),
+            Size = new Vector2D<int>(width, height),
             Title = WindowTitle,
             API = backendType == GraphicsBackendType.Vulkan 
                 ? GraphicsAPI.DefaultVulkan 
                 : new GraphicsAPI(ContextAPI.OpenGL, ContextProfile.Core, ContextFlags.ForwardCompatible, new APIVersion(4, 1)),
-            VSync = VSync
+            VSync = VSync,
+            WindowState = windowState,
+            WindowBorder = windowBorder
         };
+        
+        // Update stored dimensions to actual resolution
+        WindowWidth = width;
+        WindowHeight = height;
 
         _window = Window.Create(options);
-        Console.WriteLine("Window created successfully");
+        Console.WriteLine($"Window created: {width}x{height} {(Fullscreen ? (BorderlessFullscreen ? "(borderless fullscreen)" : "(exclusive fullscreen)") : "(windowed)")}");
 
         _window.Load += OnLoad;
         _window.Update += OnWindowUpdate;

@@ -729,12 +729,13 @@ public unsafe class VulkanBackend : IGraphicsBackend
         _renderHeight = Math.Max(1, (int)(_height * scale));
         
         // Ensure dimensions are multiples of 16 for compute shader workgroups
-        _renderWidth = (_renderWidth + 15) & ~15;
-        _renderHeight = (_renderHeight + 15) & ~15;
+        // Round DOWN to ensure we don't exceed display resolution
+        _renderWidth = (_renderWidth / 16) * 16;
+        _renderHeight = (_renderHeight / 16) * 16;
         
-        // Don't exceed display resolution
-        _renderWidth = Math.Min(_renderWidth, _width);
-        _renderHeight = Math.Min(_renderHeight, _height);
+        // Minimum of 16x16
+        _renderWidth = Math.Max(16, _renderWidth);
+        _renderHeight = Math.Max(16, _renderHeight);
     }
     
     private void CheckUpscaleSettingsChanged()

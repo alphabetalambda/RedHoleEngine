@@ -186,6 +186,14 @@ public unsafe class VulkanBackend : IGraphicsBackend
     private DeviceMemory _motionVectorMemory;
     private ImageView _motionVectorView;
     
+    // G-buffer for denoising (SVGF/A-Trous)
+    private Image _gbufferNormalImage;      // World-space normals (RGB) + roughness (A)
+    private DeviceMemory _gbufferNormalMemory;
+    private ImageView _gbufferNormalView;
+    private Image _gbufferAlbedoImage;      // Albedo (RGB) + metallic (A)
+    private DeviceMemory _gbufferAlbedoMemory;
+    private ImageView _gbufferAlbedoView;
+    
     // Upscaled output image (for DLSS/FSR/XeSS at display resolution)
     private Image _upscaledImage;
     private DeviceMemory _upscaledMemory;
@@ -712,6 +720,10 @@ public unsafe class VulkanBackend : IGraphicsBackend
         // Create motion vector image (RG16F for screen-space motion) at render resolution
         CreateStorageImage(_renderWidth, _renderHeight, Format.R16G16Sfloat, out _motionVectorImage, out _motionVectorMemory, out _motionVectorView);
         
+        // Create G-buffer images for denoising (RGBA16F at render resolution)
+        CreateStorageImage(_renderWidth, _renderHeight, Format.R16G16B16A16Sfloat, out _gbufferNormalImage, out _gbufferNormalMemory, out _gbufferNormalView);
+        CreateStorageImage(_renderWidth, _renderHeight, Format.R16G16B16A16Sfloat, out _gbufferAlbedoImage, out _gbufferAlbedoMemory, out _gbufferAlbedoView);
+        
         // Create upscaled image at DISPLAY resolution (this is the final output)
         CreateStorageImage(_width, _height, Format.R32G32B32A32Sfloat, out _upscaledImage, out _upscaledMemory, out _upscaledView);
         
@@ -799,6 +811,14 @@ public unsafe class VulkanBackend : IGraphicsBackend
         _vk.DestroyImageView(_device, _motionVectorView, null);
         _vk.DestroyImage(_device, _motionVectorImage, null);
         _vk.FreeMemory(_device, _motionVectorMemory, null);
+        
+        _vk.DestroyImageView(_device, _gbufferNormalView, null);
+        _vk.DestroyImage(_device, _gbufferNormalImage, null);
+        _vk.FreeMemory(_device, _gbufferNormalMemory, null);
+        
+        _vk.DestroyImageView(_device, _gbufferAlbedoView, null);
+        _vk.DestroyImage(_device, _gbufferAlbedoImage, null);
+        _vk.FreeMemory(_device, _gbufferAlbedoMemory, null);
     }
     
     private void CreateRenderResolutionImages()
@@ -808,6 +828,8 @@ public unsafe class VulkanBackend : IGraphicsBackend
         CreateStorageImage(_renderWidth, _renderHeight, out _accumImage, out _accumImageMemory, out _accumImageView);
         CreateStorageImage(_renderWidth, _renderHeight, Format.R32Sfloat, out _raytracingDepthImage, out _raytracingDepthMemory, out _raytracingDepthView);
         CreateStorageImage(_renderWidth, _renderHeight, Format.R16G16Sfloat, out _motionVectorImage, out _motionVectorMemory, out _motionVectorView);
+        CreateStorageImage(_renderWidth, _renderHeight, Format.R16G16B16A16Sfloat, out _gbufferNormalImage, out _gbufferNormalMemory, out _gbufferNormalView);
+        CreateStorageImage(_renderWidth, _renderHeight, Format.R16G16B16A16Sfloat, out _gbufferAlbedoImage, out _gbufferAlbedoMemory, out _gbufferAlbedoView);
         
         _outputImageLayout = ImageLayout.Undefined;
         _raytracingDepthLayout = ImageLayout.Undefined;
@@ -832,6 +854,18 @@ public unsafe class VulkanBackend : IGraphicsBackend
         var depthImageInfo = new DescriptorImageInfo
         {
             ImageView = _raytracingDepthView,
+            ImageLayout = ImageLayout.General
+        };
+        
+        var normalImageInfo = new DescriptorImageInfo
+        {
+            ImageView = _gbufferNormalView,
+            ImageLayout = ImageLayout.General
+        };
+        
+        var albedoImageInfo = new DescriptorImageInfo
+        {
+            ImageView = _gbufferAlbedoView,
             ImageLayout = ImageLayout.General
         };
         
@@ -866,6 +900,26 @@ public unsafe class VulkanBackend : IGraphicsBackend
                 DescriptorType = DescriptorType.StorageImage,
                 DescriptorCount = 1,
                 PImageInfo = &depthImageInfo
+            },
+            new()
+            {
+                SType = StructureType.WriteDescriptorSet,
+                DstSet = _computeDescriptorSet,
+                DstBinding = 9,
+                DstArrayElement = 0,
+                DescriptorType = DescriptorType.StorageImage,
+                DescriptorCount = 1,
+                PImageInfo = &normalImageInfo
+            },
+            new()
+            {
+                SType = StructureType.WriteDescriptorSet,
+                DstSet = _computeDescriptorSet,
+                DstBinding = 10,
+                DstArrayElement = 0,
+                DescriptorType = DescriptorType.StorageImage,
+                DescriptorCount = 1,
+                PImageInfo = &albedoImageInfo
             }
         };
         
@@ -1445,6 +1499,20 @@ public unsafe class VulkanBackend : IGraphicsBackend
                 DescriptorType = DescriptorType.StorageImage,
                 DescriptorCount = 1,
                 StageFlags = ShaderStageFlags.ComputeBit
+            },
+            new() // G-buffer normals (for denoising)
+            {
+                Binding = 9,
+                DescriptorType = DescriptorType.StorageImage,
+                DescriptorCount = 1,
+                StageFlags = ShaderStageFlags.ComputeBit
+            },
+            new() // G-buffer albedo (for denoising)
+            {
+                Binding = 10,
+                DescriptorType = DescriptorType.StorageImage,
+                DescriptorCount = 1,
+                StageFlags = ShaderStageFlags.ComputeBit
             }
         };
 
@@ -1828,7 +1896,7 @@ public unsafe class VulkanBackend : IGraphicsBackend
     {
         var poolSizes = new DescriptorPoolSize[]
         {
-            new() { Type = DescriptorType.StorageImage, DescriptorCount = 5 }, // Output, Accum, RaytracingDepth, MotionVector(2)
+            new() { Type = DescriptorType.StorageImage, DescriptorCount = 7 }, // Output, Accum, RaytracingDepth, MotionVector(2), GBufferNormal, GBufferAlbedo
             new() { Type = DescriptorType.UniformBuffer, DescriptorCount = 2 }, // Raytracer + MotionVector
             new() { Type = DescriptorType.StorageBuffer, DescriptorCount = 3 }, // BVH, Triangles, Materials
             new() { Type = DescriptorType.CombinedImageSampler, DescriptorCount = MaxMaterialTextures + 1 } // Material textures + env map
@@ -1939,6 +2007,18 @@ public unsafe class VulkanBackend : IGraphicsBackend
             ImageView = _raytracingDepthView,
             ImageLayout = ImageLayout.General
         };
+        
+        var gbufferNormalInfo = new DescriptorImageInfo
+        {
+            ImageView = _gbufferNormalView,
+            ImageLayout = ImageLayout.General
+        };
+        
+        var gbufferAlbedoInfo = new DescriptorImageInfo
+        {
+            ImageView = _gbufferAlbedoView,
+            ImageLayout = ImageLayout.General
+        };
 
         var bufferDescInfo = new DescriptorBufferInfo
         {
@@ -2042,6 +2122,26 @@ public unsafe class VulkanBackend : IGraphicsBackend
                 DescriptorType = DescriptorType.StorageImage,
                 DescriptorCount = 1,
                 PImageInfo = &raytracingDepthInfo
+            },
+            new()
+            {
+                SType = StructureType.WriteDescriptorSet,
+                DstSet = _computeDescriptorSet,
+                DstBinding = 9,
+                DstArrayElement = 0,
+                DescriptorType = DescriptorType.StorageImage,
+                DescriptorCount = 1,
+                PImageInfo = &gbufferNormalInfo
+            },
+            new()
+            {
+                SType = StructureType.WriteDescriptorSet,
+                DstSet = _computeDescriptorSet,
+                DstBinding = 10,
+                DstArrayElement = 0,
+                DescriptorType = DescriptorType.StorageImage,
+                DescriptorCount = 1,
+                PImageInfo = &gbufferAlbedoInfo
             }
         };
 
@@ -4126,6 +4226,20 @@ public unsafe class VulkanBackend : IGraphicsBackend
                 _vk.DestroyImageView(_device, _upscaledView, null);
                 _vk.DestroyImage(_device, _upscaledImage, null);
                 _vk.FreeMemory(_device, _upscaledMemory, null);
+            }
+            
+            // Cleanup G-buffer images
+            if (_gbufferNormalView.Handle != 0)
+            {
+                _vk.DestroyImageView(_device, _gbufferNormalView, null);
+                _vk.DestroyImage(_device, _gbufferNormalImage, null);
+                _vk.FreeMemory(_device, _gbufferNormalMemory, null);
+            }
+            if (_gbufferAlbedoView.Handle != 0)
+            {
+                _vk.DestroyImageView(_device, _gbufferAlbedoView, null);
+                _vk.DestroyImage(_device, _gbufferAlbedoImage, null);
+                _vk.FreeMemory(_device, _gbufferAlbedoMemory, null);
             }
         }
 

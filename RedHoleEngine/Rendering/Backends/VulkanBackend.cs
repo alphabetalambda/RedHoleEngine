@@ -36,8 +36,12 @@ public unsafe class VulkanBackend : IGraphicsBackend
     public RenderSettings RenderSettings { get; } = new();
 
     private readonly IWindow _window;
-    private readonly int _width;   // Display resolution
-    private readonly int _height;  // Display resolution
+    private int _width;   // Display resolution
+    private int _height;  // Display resolution
+    private int _pendingWidth;
+    private int _pendingHeight;
+    private bool _resizePending;
+    private bool _minimized;
     
     // Render resolution (may be lower than display when upscaling)
     private int _renderWidth;
@@ -557,7 +561,9 @@ public unsafe class VulkanBackend : IGraphicsBackend
         }
     }
 
-    private void CreateSwapchain()
+    private bool _swapchainValid;
+
+    private void CreateSwapchain(SwapchainKHR oldSwapchain = default)
     {
         var swapchainSupport = QuerySwapchainSupport(_physicalDevice);
 
@@ -585,7 +591,7 @@ public unsafe class VulkanBackend : IGraphicsBackend
             CompositeAlpha = CompositeAlphaFlagsKHR.OpaqueBitKhr,
             PresentMode = presentMode,
             Clipped = true,
-            OldSwapchain = default
+            OldSwapchain = oldSwapchain
         };
 
         var indices = FindQueueFamilies(_physicalDevice);
@@ -619,6 +625,7 @@ public unsafe class VulkanBackend : IGraphicsBackend
 
         _swapchainFormat = surfaceFormat.Format;
         _swapchainExtent = extent;
+        _swapchainValid = true;
     }
 
     private SurfaceFormatKHR ChooseSwapSurfaceFormat(SurfaceFormatKHR[] formats)
@@ -3374,6 +3381,16 @@ public unsafe class VulkanBackend : IGraphicsBackend
     {
         var renderTimer = Profiler.Instance.GetOrCreateTimer("VulkanRender", "GPU");
         renderTimer.Start();
+
+        if (_resizePending)
+            ApplyPendingResize();
+
+        // Window minimized: nothing to present to
+        if (_minimized)
+        {
+            renderTimer.Stop();
+            return;
+        }
         
         fixed (Fence* fence = &_inFlightFence)
         {
@@ -3439,7 +3456,19 @@ public unsafe class VulkanBackend : IGraphicsBackend
 
         // Acquire swapchain image
         uint imageIndex = 0;
-        _khrSwapchain!.AcquireNextImage(_device, _swapchain, ulong.MaxValue, _imageAvailableSemaphore, default, &imageIndex);
+        var acquireResult = _khrSwapchain!.AcquireNextImage(_device, _swapchain, ulong.MaxValue, _imageAvailableSemaphore, default, &imageIndex);
+        if (acquireResult == Result.ErrorOutOfDateKhr)
+        {
+            // Swapchain no longer matches the surface. Re-signal the fence we reset above so the next
+            // frame doesn't wait forever, then rebuild at the window's current size.
+            _vk.QueueSubmit(_graphicsQueue, 0, null, _inFlightFence);
+            var fb = _window.FramebufferSize;
+            Resize(fb.X, fb.Y);
+            _pendingWidth = fb.X; _pendingHeight = fb.Y;
+            _swapchainValid = false;
+            renderTimer.Stop();
+            return;
+        }
         
         // Update motion vector generator for temporal upscaling (DLSS/FSR/XeSS)
         if (_motionVectorGenerator != null && useRaytracer)
@@ -3484,7 +3513,13 @@ public unsafe class VulkanBackend : IGraphicsBackend
             PImageIndices = &imageIndex
         };
 
-        _khrSwapchain.QueuePresent(_presentQueue, &presentInfo);
+        var presentResult = _khrSwapchain.QueuePresent(_presentQueue, &presentInfo);
+        if (presentResult == Result.ErrorOutOfDateKhr || presentResult == Result.SuboptimalKhr)
+        {
+            var fb = _window.FramebufferSize;
+            Resize(fb.X, fb.Y);
+            _swapchainValid = false;
+        }
 
         if (RaytracerSettings.Accumulate)
         {
@@ -4086,7 +4121,89 @@ public unsafe class VulkanBackend : IGraphicsBackend
 
     public void Resize(int width, int height)
     {
-        // TODO: Recreate swapchain and output image
+        // Defer the work to the start of the next Render() call, where the GPU is known to be idle-able
+        // and we are not mid-recording. A zero size means the window is minimized.
+        _pendingWidth = width;
+        _pendingHeight = height;
+        _resizePending = true;
+    }
+
+    /// <summary>
+    /// Applies a pending resize: recreates the swapchain and everything sized from it
+    /// (depth buffer, framebuffers, overlay renderers, render-resolution images).
+    /// </summary>
+    private void ApplyPendingResize()
+    {
+        _resizePending = false;
+
+        _minimized = _pendingWidth <= 0 || _pendingHeight <= 0;
+        if (_minimized)
+            return; // Render() skips until the window has a size again
+
+        if (_pendingWidth == _width && _pendingHeight == _height && _swapchainValid)
+            return;
+
+        _width = _pendingWidth;
+        _height = _pendingHeight;
+        RecreateSwapchain();
+    }
+
+    private void RecreateSwapchain()
+    {
+        _vk!.DeviceWaitIdle(_device);
+
+        // Tear down everything that depends on the swapchain extent
+        foreach (var fb in _rasterFramebuffers)
+            _vk.DestroyFramebuffer(_device, fb, null);
+        _rasterFramebuffers = Array.Empty<Framebuffer>();
+
+        if (_depthImageView.Handle != 0) _vk.DestroyImageView(_device, _depthImageView, null);
+        if (_depthImage.Handle != 0)
+        {
+            _vk.DestroyImage(_device, _depthImage, null);
+            _vk.FreeMemory(_device, _depthImageMemory, null);
+        }
+
+        foreach (var view in _swapchainImageViews)
+            _vk.DestroyImageView(_device, view, null);
+
+        var oldSwapchain = _swapchain;
+        CreateSwapchain(oldSwapchain);
+        if (oldSwapchain.Handle != 0)
+            _khrSwapchain!.DestroySwapchain(_device, oldSwapchain, null);
+
+        CreateImageViews();
+        CreateDepthResources();
+        CreateRasterFramebuffers();
+
+        _debugRenderer?.Resize(_swapchainExtent, _swapchainImageViews);
+        _particleRenderer?.Resize(_swapchainExtent, _swapchainImageViews);
+        _uiRenderer?.Resize(_swapchainExtent, _swapchainImageViews);
+
+        // Render-resolution and display-resolution images
+        DestroyRenderResolutionImages();
+        if (_upscaledView.Handle != 0)
+        {
+            _vk.DestroyImageView(_device, _upscaledView, null);
+            _vk.DestroyImage(_device, _upscaledImage, null);
+            _vk.FreeMemory(_device, _upscaledMemory, null);
+        }
+
+        UpdateRenderResolution();
+        CreateRenderResolutionImages();
+        CreateStorageImage(_width, _height, Format.R32G32B32A32Sfloat, out _upscaledImage, out _upscaledMemory, out _upscaledView);
+        UpdateRenderResolutionDescriptors();
+
+        _motionVectorGenerator?.Resize(_renderWidth, _renderHeight);
+        _upscalerManager?.Resize(_width, _height);
+
+        // Restart accumulation at the new size
+        _accumInitialized = false;
+        _frameIndex = 0;
+        RaytracerSettings.ResetAccumulation = true;
+        _swapchainValid = true;
+
+        Console.WriteLine($"[Rendering] Resized: display {_width}x{_height}, render {_renderWidth}x{_renderHeight}");
     }
 
     public void Dispose()

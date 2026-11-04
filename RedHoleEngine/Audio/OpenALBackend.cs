@@ -100,7 +100,7 @@ public unsafe class OpenALBackend : IAudioBackend
         try
         {
             // Load WAV file
-            var (data, format) = LoadWavFile(path);
+            var (data, format) = WavPcmReader.Load(path);
             if (data == null) return default;
 
             return LoadClipFromMemory(data, format);
@@ -420,92 +420,6 @@ public unsafe class OpenALBackend : IAudioBackend
         // Reclaim finished voices periodically
         ReclaimFinishedSources();
     }
-
-    #region WAV Loading
-
-    private (byte[]? data, AudioFormat format) LoadWavFile(string path)
-    {
-        if (!File.Exists(path))
-        {
-            Console.WriteLine($"OpenAL: File not found: {path}");
-            return (null, default);
-        }
-
-        using var stream = File.OpenRead(path);
-        using var reader = new BinaryReader(stream);
-
-        // RIFF header
-        var riff = new string(reader.ReadChars(4));
-        if (riff != "RIFF")
-        {
-            Console.WriteLine($"OpenAL: Invalid WAV file (no RIFF header): {path}");
-            return (null, default);
-        }
-
-        reader.ReadInt32(); // File size
-        
-        var wave = new string(reader.ReadChars(4));
-        if (wave != "WAVE")
-        {
-            Console.WriteLine($"OpenAL: Invalid WAV file (no WAVE header): {path}");
-            return (null, default);
-        }
-
-        // Find fmt chunk
-        int channels = 0, sampleRate = 0, bitsPerSample = 0;
-        byte[]? audioData = null;
-
-        while (stream.Position < stream.Length)
-        {
-            var chunkId = new string(reader.ReadChars(4));
-            int chunkSize = reader.ReadInt32();
-
-            if (chunkId == "fmt ")
-            {
-                var audioFormat = reader.ReadInt16(); // 1 = PCM
-                channels = reader.ReadInt16();
-                sampleRate = reader.ReadInt32();
-                reader.ReadInt32(); // Byte rate
-                reader.ReadInt16(); // Block align
-                bitsPerSample = reader.ReadInt16();
-                
-                // Skip any extra format bytes
-                if (chunkSize > 16)
-                    reader.ReadBytes(chunkSize - 16);
-            }
-            else if (chunkId == "data")
-            {
-                audioData = reader.ReadBytes(chunkSize);
-            }
-            else
-            {
-                // Skip unknown chunk
-                reader.ReadBytes(chunkSize);
-            }
-            
-            // Align to word boundary
-            if (chunkSize % 2 == 1 && stream.Position < stream.Length)
-                reader.ReadByte();
-        }
-
-        if (audioData == null)
-        {
-            Console.WriteLine($"OpenAL: No audio data found in: {path}");
-            return (null, default);
-        }
-
-        var format = new AudioFormat
-        {
-            Channels = channels,
-            SampleRate = sampleRate,
-            BitsPerSample = bitsPerSample,
-            TotalSamples = audioData.Length / (channels * bitsPerSample / 8)
-        };
-
-        return (audioData, format);
-    }
-
-    #endregion
 
     public void Dispose()
     {

@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Filtered coverage run. Raw coverage is `dotnet test --collect:"XPlat Code Coverage"`
+  with no ExcludeByFile. This file drops only code that cannot run without a GPU,
+  an audio device, a window, or the Steam client. See docs/COVERAGE.md.
+-->
+<RunSettings>
+  <DataCollectionRunSettings>
+    <DataCollectors>
+      <DataCollector friendlyName="XPlat Code Coverage">
+        <Configuration>
+          <Format>cobertura</Format>
+          <Include>[RedHoleEngine]*</Include>
+          <ExcludeByFile>
+            **/Rendering/Backends/VulkanBackend.cs,
+            **/Rendering/UI/UiRenderer.cs,
+            **/Rendering/Particles/ParticleRenderer.cs,
+            **/Rendering/Debug/DebugRenderer.cs,
+            **/Rendering/Renderer.cs,
+            **/Rendering/Upscaling/DLSSUpscaler.cs,
+            **/Rendering/Upscaling/FSR2Upscaler.cs,
+            **/Rendering/Upscaling/XeSSUpscaler.cs,
+            **/Rendering/Upscaling/NoUpscaler.cs,
+            **/Audio/OpenALBackend.cs,
+            **/Input/Providers/SteamInputProvider.cs,
+            **/Input/Providers/SteamInputLoader.cs,
+            **/Input/Providers/SilkInputProvider.cs,
+            **/Input/Providers/KeyboardMouseProvider.cs,
+            **/Input/InputManager.cs,
+            **/Core/Application.cs
+          </ExcludeByFile>
+        </Configuration>
+      </DataCollector>
+    </DataCollectors>
+  </DataCollectionRunSettings>
+</RunSettings>

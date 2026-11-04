@@ -187,7 +187,9 @@ public class EnvironmentMap : IDisposable
         // Convert direction to equirectangular UV
         direction = Vector3.Normalize(direction);
         float u = MathF.Atan2(direction.Z, direction.X) / (2f * MathF.PI) + 0.5f;
-        float v = MathF.Asin(Math.Clamp(direction.Y, -1f, 1f)) / MathF.PI + 0.5f;
+        // v = 0 is +Y, matching CreateProceduralSky (phi = v * pi, y = cos phi)
+        // and the usual equirectangular latitude. The previous asin offset put +Y at v = 1.
+        float v = 0.5f - MathF.Asin(Math.Clamp(direction.Y, -1f, 1f)) / MathF.PI;
         
         // Bilinear sample
         return SampleBilinear(u, v) * _intensity;

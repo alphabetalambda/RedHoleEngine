@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    name: Build & test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+          cache: true
+          cache-dependency-path: "**/*.csproj"
+
+      - name: Restore
+        run: dotnet restore RedHoleEngine.sln
+
+      - name: Build
+        run: dotnet build RedHoleEngine.sln -c Release --no-restore
+
+      - name: Test
+        run: >
+          dotnet test RedHoleEngine.Tests/RedHoleEngine.Tests.csproj
+          -c Release --no-build
+          --logger "trx;LogFileName=test-results.trx"
+          --results-directory TestResults
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.os }}
+          path: TestResults/
+          if-no-files-found: ignore
+
+  vulnerable-packages:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: List vulnerable packages
+        run: |
+          dotnet restore RedHoleEngine.sln
+          dotnet list RedHoleEngine.sln package --vulnerable --include-transitive 2>&1 | tee audit.txt
+          # Report only for now; flip to a hard failure once known advisories (e.g. ImageSharp) are resolved.
+          grep -q "has the following vulnerable packages" audit.txt \
+            && echo "::warning::Vulnerable NuGet packages found - see job log" || true

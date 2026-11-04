@@ -58,8 +58,9 @@ public abstract class ComponentSystem<T1> : GameSystem where T1 : IComponent
     public override void Update(float deltaTime)
     {
         var pool = World.GetPool<T1>();
-        foreach (var entityId in pool.GetEntityIds())
+        for (int i = 0; i < pool.Count; i++)
         {
+            int entityId = pool.GetEntityIdAt(i);
             ref var c1 = ref pool.Get(entityId);
             Process(new Entity(entityId, 0), ref c1, deltaTime);
         }
@@ -79,15 +80,16 @@ public abstract class ComponentSystem<T1, T2> : GameSystem
     {
         var pool1 = World.GetPool<T1>();
         var pool2 = World.GetPool<T2>();
-        
-        // Iterate over the smaller pool for efficiency
-        foreach (var entityId in pool1.GetEntityIds())
+
+        for (int i = 0; i < pool1.Count; i++)
         {
-            if (pool2.TryGet(entityId, out var c2))
-            {
-                ref var c1 = ref pool1.Get(entityId);
-                Process(new Entity(entityId, 0), ref c1, ref c2, deltaTime);
-            }
+            int entityId = pool1.GetEntityIdAt(i);
+            if (!pool2.Has(entityId))
+                continue;
+
+            ref var c1 = ref pool1.Get(entityId);
+            ref var c2 = ref pool2.Get(entityId);
+            Process(new Entity(entityId, 0), ref c1, ref c2, deltaTime);
         }
     }
 
@@ -107,14 +109,17 @@ public abstract class ComponentSystem<T1, T2, T3> : GameSystem
         var pool1 = World.GetPool<T1>();
         var pool2 = World.GetPool<T2>();
         var pool3 = World.GetPool<T3>();
-        
-        foreach (var entityId in pool1.GetEntityIds())
+
+        for (int i = 0; i < pool1.Count; i++)
         {
-            if (pool2.TryGet(entityId, out var c2) && pool3.TryGet(entityId, out var c3))
-            {
-                ref var c1 = ref pool1.Get(entityId);
-                Process(new Entity(entityId, 0), ref c1, ref c2, ref c3, deltaTime);
-            }
+            int entityId = pool1.GetEntityIdAt(i);
+            if (!pool2.Has(entityId) || !pool3.Has(entityId))
+                continue;
+
+            ref var c1 = ref pool1.Get(entityId);
+            ref var c2 = ref pool2.Get(entityId);
+            ref var c3 = ref pool3.Get(entityId);
+            Process(new Entity(entityId, 0), ref c1, ref c2, ref c3, deltaTime);
         }
     }
 

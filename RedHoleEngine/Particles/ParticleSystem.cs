@@ -253,9 +253,9 @@ public class ParticleSystem : ComponentSystem<ParticleEmitterComponent, Transfor
         // Count total particles
         TotalParticleCount = 0;
         var pool = World.GetPool<ParticleEmitterComponent>();
-        foreach (var entityId in pool.GetEntityIds())
+        for (int i = 0; i < pool.Count; i++)
         {
-            ref var emitter = ref pool.Get(entityId);
+            ref var emitter = ref pool.Get(pool.GetEntityIdAt(i));
             TotalParticleCount += emitter.Pool?.AliveCount ?? 0;
         }
     }

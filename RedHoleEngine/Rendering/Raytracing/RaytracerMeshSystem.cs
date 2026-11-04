@@ -23,6 +23,7 @@ public class RaytracerMeshSystem : GameSystem
     private int _lastSceneHash;
     private int _lastTriangleCount;
     private int _lastMaterialHash;
+    private readonly List<RaytracerTriangle> _triangleScratch = new(1024);
 
     public override int Priority => -50;
 
@@ -52,85 +53,139 @@ public class RaytracerMeshSystem : GameSystem
         if (_backend.RenderSettings.Mode == RenderMode.Rasterized)
             return;
 
-        var triangles = new List<RaytracerTriangle>(1024);
+        // Hash first. Building triangles transforms every vertex, and a camera used
+        // to dirty the hash every frame even when the scene had no lasers.
         var hash = new HashCode();
+        int triCount = 0;
+        bool anyLaser = false;
 
         foreach (var entity in World.Query<MeshComponent, TransformComponent, RaytracerMeshComponent>())
         {
-            ref var meshComponent = ref World.GetComponent<MeshComponent>(entity);
-            ref var transform = ref World.GetComponent<TransformComponent>(entity);
-            ref var rayComponent = ref World.GetComponent<RaytracerMeshComponent>(entity);
-
-            if (!rayComponent.Enabled)
+            if (!TryPrepareMesh(entity, out var mesh, out var transform, out var material, out var meshId))
                 continue;
 
-            if (rayComponent.StaticOnly && World.HasComponent<RigidBodyComponent>(entity))
-            {
-                ref var rb = ref World.GetComponent<RigidBodyComponent>(entity);
-                if (rb.Type != RigidBodyType.Static)
-                    continue;
-            }
-
-            var mesh = meshComponent.MeshHandle.Get();
-            if (mesh == null || mesh.Indices.Length < 3)
-                continue;
-
-            MaterialComponent material = MaterialComponent.Default;
-            if (World.TryGetComponent<MaterialComponent>(entity, out var mat))
-                material = mat;
-
-            AddHash(ref hash, meshComponent.MeshHandle.Id, material, transform);
-
-            AppendTriangles(triangles, mesh, transform, material);
+            AddHash(ref hash, meshId, material, transform);
+            triCount += mesh.Indices.Length / 3;
         }
 
-        // Add laser segments as emissive geometry
         if (_camera != null)
         {
             foreach (var entity in World.Query<LaserSegmentComponent>())
             {
+                anyLaser = true;
                 ref var segment = ref World.GetComponent<LaserSegmentComponent>(entity);
-                AppendLaserSegment(triangles, ref segment, _camera, ref hash);
+                triCount += EmitLaser(null, ref segment, _camera, ref hash, updateHash: true);
             }
-            // Force rebuild every frame when lasers are present (they move)
-            hash.Add(Environment.TickCount);
+
+            // Lasers carry unhashed appearance (color, width). Rebuild while any exist.
+            if (anyLaser)
+                hash.Add(Environment.TickCount);
         }
 
         int sceneHash = hash.ToHashCode();
-        
-        // Check if materials need uploading
+
         int materialHash = _materialLibrary?.GetHashCode() ?? 0;
         bool materialsChanged = materialHash != _lastMaterialHash;
-        
+
         if (materialsChanged && _materialLibrary != null)
         {
-            // Upload materials to GPU
             _backend.UploadMaterials(_materialLibrary);
             _lastMaterialHash = materialHash;
         }
-        
-        if (sceneHash == _lastSceneHash && triangles.Count == _lastTriangleCount && !materialsChanged)
+
+        if (sceneHash == _lastSceneHash && triCount == _lastTriangleCount && !materialsChanged)
             return;
 
-        var data = RaytracerMeshBuilder.Build(triangles);
+        _triangleScratch.Clear();
+        foreach (var entity in World.Query<MeshComponent, TransformComponent, RaytracerMeshComponent>())
+        {
+            if (!TryPrepareMesh(entity, out var mesh, out var transform, out var material, out _))
+                continue;
+
+            AppendTriangles(_triangleScratch, mesh, transform, material);
+        }
+
+        if (_camera != null && anyLaser)
+        {
+            var ignored = new HashCode();
+            foreach (var entity in World.Query<LaserSegmentComponent>())
+            {
+                ref var segment = ref World.GetComponent<LaserSegmentComponent>(entity);
+                EmitLaser(_triangleScratch, ref segment, _camera, ref ignored, updateHash: false);
+            }
+        }
+
+        var data = RaytracerMeshBuilder.Build(_triangleScratch);
         _backend.SetRaytracerMeshData(data);
 
         _lastSceneHash = sceneHash;
-        _lastTriangleCount = triangles.Count;
+        _lastTriangleCount = _triangleScratch.Count;
+    }
+
+    private bool TryPrepareMesh(
+        Entity entity,
+        out Mesh mesh,
+        out TransformComponent transform,
+        out MaterialComponent material,
+        out string meshId)
+    {
+        mesh = null!;
+        transform = default;
+        material = default;
+        meshId = string.Empty;
+
+        ref var meshComponent = ref World.GetComponent<MeshComponent>(entity);
+        ref var rayComponent = ref World.GetComponent<RaytracerMeshComponent>(entity);
+        if (!rayComponent.Enabled)
+            return false;
+
+        if (rayComponent.StaticOnly && World.HasComponent<RigidBodyComponent>(entity))
+        {
+            ref var rb = ref World.GetComponent<RigidBodyComponent>(entity);
+            if (rb.Type != RigidBodyType.Static)
+                return false;
+        }
+
+        var loaded = meshComponent.MeshHandle.Get();
+        if (loaded == null || loaded.Indices.Length < 3)
+            return false;
+
+        material = MaterialComponent.Default;
+        if (World.TryGetComponent<MaterialComponent>(entity, out var mat))
+            material = mat;
+
+        mesh = loaded;
+        transform = World.GetComponent<TransformComponent>(entity);
+        meshId = meshComponent.MeshHandle.Id;
+        return true;
     }
     
-    private static void AppendLaserSegment(
-        List<RaytracerTriangle> triangles,
+    /// <summary>
+    /// Hash and/or emit a laser billboard. A null sink counts triangles without
+    /// transforming them, so an unchanged scene can skip the build.
+    /// </summary>
+    private static int EmitLaser(
+        List<RaytracerTriangle>? triangles,
         ref LaserSegmentComponent segment,
         Camera camera,
-        ref HashCode hash)
+        ref HashCode hash,
+        bool updateHash)
     {
         var start = segment.Start;
         var end = segment.End;
         var beamDir = end - start;
         float length = beamDir.Length();
         if (length < 0.001f)
-            return;
+            return 0;
+
+        if (updateHash)
+        {
+            hash.Add(start.X); hash.Add(start.Y); hash.Add(start.Z);
+            hash.Add(end.X); hash.Add(end.Y); hash.Add(end.Z);
+        }
+
+        if (triangles == null)
+            return segment.CoreWidth > 0f ? 4 : 2;
 
         beamDir /= length;
 
@@ -213,9 +268,7 @@ public class RaytracerMeshSystem : GameSystem
             });
         }
 
-        // Add to hash
-        hash.Add(start.X); hash.Add(start.Y); hash.Add(start.Z);
-        hash.Add(end.X); hash.Add(end.Y); hash.Add(end.Z);
+        return segment.CoreWidth > 0f ? 4 : 2;
     }
 
     private static void AppendTriangles(

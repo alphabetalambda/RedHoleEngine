@@ -789,18 +789,14 @@ vec3 schwarzschildAcceleration(vec3 pos, vec3 vel, float rs) {
 // Calculate frame dragging angular velocity (omega) for Kerr metric
 // omega = 2Mar / ((r^2 + a^2)^2 - a^2 * Delta * sin^2(theta))
 // where Delta = r^2 - 2Mr + a^2
-float frameDraggingOmega(float r, float theta, float M, float a) {
+// sin2Theta is supplied by the caller (|spinAxis x rHat|^2 for unit vectors),
+// which is sin^2(theta) without acos/sin.
+float frameDraggingOmega(float r, float sin2Theta, float M, float a) {
     if (r < M * 0.5) return 0.0; // Inside singularity region
     
     float r2 = r * r;
     float a2 = a * a;
     float Delta = r2 - 2.0 * M * r + a2;
-    float sinTheta = sin(theta);
-    float sin2Theta = sinTheta * sinTheta;
-    
-    // Sigma = r^2 + a^2 * cos^2(theta)
-    float cosTheta = cos(theta);
-    float Sigma = r2 + a2 * cosTheta * cosTheta;
     
     // Denominator: (r^2 + a^2)^2 - a^2 * Delta * sin^2(theta)
     float rpa2 = r2 + a2;
@@ -836,25 +832,19 @@ vec3 kerrAcceleration(vec3 pos, vec3 vel, float rs, float a, vec3 spinAxis) {
         return accelRadial;
     }
     
-    // Calculate theta (angle from spin axis)
+    // |spinAxis x rHat| = sin(theta) for unit vectors (theta from the spin axis).
+    // Reuses the cross product the drag direction already needs, instead of acos+sin.
     vec3 rNorm = r / rMag;
-    float cosTheta = dot(rNorm, spinAxis);
-    float theta = acos(clamp(cosTheta, -1.0, 1.0));
-    
-    // Frame dragging angular velocity
-    float omega = frameDraggingOmega(rMag, theta, M, a);
-    
-    // Frame dragging velocity: v_drag = omega * (spinAxis x r)
-    // This is the velocity that local inertial frames are dragged with
     vec3 dragDirection = cross(spinAxis, rNorm);
-    float dragDirLen = length(dragDirection);
+    float sinTheta = length(dragDirection);
     
-    if (dragDirLen > 1e-6) {
-        dragDirection /= dragDirLen;
+    if (sinTheta > 1e-6) {
+        float omega = frameDraggingOmega(rMag, sinTheta * sinTheta, M, a);
+        dragDirection /= sinTheta;
         
         // The frame dragging "pulls" the light ray azimuthally
         // Acceleration toward the dragging direction
-        float dragStrength = omega * rMag * sin(theta);
+        float dragStrength = omega * rMag * sinTheta;
         
         // Scale by distance factor (stronger closer to black hole)
         float distFactor = rs / (rMag * rMag);

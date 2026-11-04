@@ -282,51 +282,35 @@ public class World : IDisposable
     #region Queries
 
     /// <summary>
-    /// Query entities with a specific component
+    /// Query entities with a specific component.
+    /// The returned view enumerates without allocating.
     /// </summary>
-    public IEnumerable<Entity> Query<T>() where T : IComponent
+    public EntityQuery<T> Query<T>() where T : IComponent
     {
-        var pool = GetPool<T>();
-        foreach (var entityId in pool.GetEntityIds())
-        {
-            yield return new Entity(entityId, _entityGenerations[entityId]);
-        }
+        return new EntityQuery<T>(GetPool<T>(), _entityGenerations);
     }
 
     /// <summary>
-    /// Query entities with two components
+    /// Query entities with two components.
+    /// The returned view enumerates without allocating.
     /// </summary>
-    public IEnumerable<Entity> Query<T1, T2>() 
-        where T1 : IComponent 
+    public EntityQuery<T1, T2> Query<T1, T2>()
+        where T1 : IComponent
         where T2 : IComponent
     {
-        var pool1 = GetPool<T1>();
-        var pool2 = GetPool<T2>();
-        
-        foreach (var entityId in pool1.GetEntityIds())
-        {
-            if (pool2.Has(entityId))
-                yield return new Entity(entityId, _entityGenerations[entityId]);
-        }
+        return new EntityQuery<T1, T2>(GetPool<T1>(), GetPool<T2>(), _entityGenerations);
     }
 
     /// <summary>
-    /// Query entities with three components
+    /// Query entities with three components.
+    /// The returned view enumerates without allocating.
     /// </summary>
-    public IEnumerable<Entity> Query<T1, T2, T3>() 
-        where T1 : IComponent 
+    public EntityQuery<T1, T2, T3> Query<T1, T2, T3>()
+        where T1 : IComponent
         where T2 : IComponent
         where T3 : IComponent
     {
-        var pool1 = GetPool<T1>();
-        var pool2 = GetPool<T2>();
-        var pool3 = GetPool<T3>();
-        
-        foreach (var entityId in pool1.GetEntityIds())
-        {
-            if (pool2.Has(entityId) && pool3.Has(entityId))
-                yield return new Entity(entityId, _entityGenerations[entityId]);
-        }
+        return new EntityQuery<T1, T2, T3>(GetPool<T1>(), GetPool<T2>(), GetPool<T3>(), _entityGenerations);
     }
 
     #endregion

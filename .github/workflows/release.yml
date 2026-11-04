@@ -46,7 +46,7 @@ jobs:
             (cd publish && zip -qr "../$name.zip" "$name")
           fi
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.project }}-${{ matrix.rid }}
           path: ${{ matrix.project }}-${{ matrix.rid }}.zip

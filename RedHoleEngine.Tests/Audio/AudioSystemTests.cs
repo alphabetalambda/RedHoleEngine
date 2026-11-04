@@ -230,13 +230,6 @@ public class AudioSystemTests
     }
 
     [Fact]
-    public void Doppler_AtTheSpeedOfSound_BecomesInfinite()
-    {
-        float sonic = PitchFor(new Vector3(-SoundSpeed, 0, 0), Vector3.Zero);
-        Assert.True(float.IsPositiveInfinity(sonic));
-    }
-
-    [Fact(Skip = "BUG: AudioSystem.CalculateSimpleDoppler uses 0.01 * MathF.Sign(denominator). Sign(0) is 0, so a source speed of exactly c divides by zero. Expected: a finite positive pitch, matching AcousticRaytracer's non-zero epsilon guard.")]
     public void Doppler_AtTheSpeedOfSound_StaysFinite()
     {
         float sonic = PitchFor(new Vector3(-SoundSpeed, 0, 0), Vector3.Zero);

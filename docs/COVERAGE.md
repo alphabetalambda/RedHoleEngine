@@ -58,7 +58,7 @@ dotnet test RedHoleEngine.Tests/RedHoleEngine.Tests.csproj -c Release \
 
 - `AudioEngine` accepts an `IAudioBackend`. The existing constructor still creates `OpenALBackend`.
 - WAV parsing moved to `WavPcmReader`. A WAV with a data chunk and no `fmt` chunk used to divide by zero; it now fails the parse the same way other malformed files do (`LoadClip` already treated that as "no clip").
-- Doppler pitch when source speed equals the speed of sound used `MathF.Sign(0)`, which is 0, and then divided by zero. The clamp now stays finite.
+- Doppler pitch when source speed equals the speed of sound used `MathF.Sign(0)`, which is 0, and then divided by zero. The same clamp in `AcousticRaytracer`, `AudioEngine`, and `AudioSystem` now stays finite.
 - Parenting a scene node updates the scene's root list. Previously `OnNodeParentChanged` was never called, so a child stayed in `RootNodes` and was walked twice. `DestroyNode` also drops descendants from the lookup.
 - `UnpixSystem` snapshots piece entities before updating them. Destroying a piece during a live sparse-set walk skipped the entity that swapped into that slot, so a sibling could miss its age update.
 - `EnvironmentMap.Sample` maps +Y to v = 0, matching `CreateProceduralSky` and the usual equirectangular latitude. The previous `asin` offset sampled the ground when asked for the sky.
@@ -70,4 +70,14 @@ dotnet test RedHoleEngine.Tests/RedHoleEngine.Tests.csproj -c Release \
 - `GravitySourceComponent.PhotonSphereRadius` is `3 * Mass` for Kerr sources as well. `AudioDebugVisualizer` draws that radius. There is no separate Kerr accessor, and the comment scopes the formula to Schwarzschild.
 - `RecordedFrame` does not store `GamepadConnected`, so playback restores sticks and buttons with the flag still false. Adding a field would break existing binary recordings.
 - `HapticPattern.Pulse` passes the pulse duration into `HapticFeedback.Rumble` as the right motor.
-- `VelocityOverLifetimeModule` multiplies speed again on every `Apply`. `NoiseModule.Octaves` does not change the sample.
+- `VelocityOverLifetimeModule` multiplies speed again on every `Apply`. `NoiseModule.Octaves` does not change the sample. Duplicate gradient times divide by zero.
+- A source faster than sound gets a large negative Doppler shift. A source sitting on the listener with nonzero velocity produces NaN pitch, and directivity in that spot produces NaN volume.
+- `AttenuationModel.None` still falls off. `MaxBounces`, listener `RayCount`, reverb zones, and acoustic-surface flags are not read by the mixer or raytracer. Diffraction is never emitted or drawn.
+- `AudioSystem` keeps the previous mix when the listener disappears. Listener volume updates the mixer and not `SetMasterVolume`.
+- Inside a Schwarzschild horizon but outside `MinDistance`, gravity stays Newtonian. A body on the source gets a NaN force. Kerr frame-drag ignores `GravitationalConstant`. `UseDefaultGravity` is never read.
+- Capsule raycasts miss. Box raycast normals point inward, and a ray that starts inside a box misses. Sphere-box and sphere-capsule normals are reversed. Overlapping box and capsule report no contact.
+- `AngleLimits` are stored and never applied. `ApplyImpact` can break unsolved links. `RemoveAllForEntity` drops solver links but leaves chains and meshes registered. Removing `MeshRelComponent` or `LinkComponent` leaves the solver objects behind.
+- Kinematic velocity integrates once, then the body is put to sleep. A rigid-body velocity set before the body exists is discarded.
+- `UnloadModel` does not dispose the prediction engine cached under the composite key. `ComponentSystem` passes `Entity(id, 0)` and drops mutations to the second and third component copies.
+- `cat` adds a second newline. Destroying a terminal entity does not drop its session. `FindAction` can miss an action added after the asset cache was built, including the FPS map's renamed ADS action.
+- Removing a duplicate material name drops the earlier material. Pure white `MaterialComponent.Default` converts as metal. `HasContent` ignores text-only debug draws. `CopyRenderData` can return a negative count. A looping emitter whose duration equals the frame step emits once and stalls.

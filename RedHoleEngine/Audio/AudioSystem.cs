@@ -214,7 +214,7 @@ public class AudioSystem : GameSystem
         
         float c = QualitySettings.SpeedOfSound;
         float denom = c - sourceSpeed;
-        if (MathF.Abs(denom) < 0.01f) denom = 0.01f * MathF.Sign(denom);
+        if (MathF.Abs(denom) < 0.01f) denom = denom < 0f ? -0.01f : 0.01f;
         
         return (c - listenerSpeed) / denom;
     }

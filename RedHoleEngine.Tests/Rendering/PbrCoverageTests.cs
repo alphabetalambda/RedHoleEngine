@@ -604,7 +604,7 @@ public class EnvironmentMapCoverageTests
         Assert.Empty(sky.GetRgb16fData());
     }
 
-    [Fact(Skip = "BUG: expected Sample(+Y) to read the blue procedural sky, actual +Y maps to v=1 while CreateProceduralSky stores +Y at v=0, so Sample(+Y) returns the ground color")]
+    [Fact]
     public void ProceduralSky_UpDirection_IsBlue()
     {
         using var sky = EnvironmentMap.CreateProceduralSky(32, 16);

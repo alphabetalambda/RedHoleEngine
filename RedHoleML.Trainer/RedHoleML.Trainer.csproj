@@ -23,7 +23,7 @@
         <PackageReference Include="Microsoft.ML.LightGbm" Version="4.0.2" />
         
         <!-- CSV Parsing -->
-        <PackageReference Include="CsvHelper" Version="33.0.1" />
+        <PackageReference Include="CsvHelper" Version="34.0.0" />
     </ItemGroup>
 
     <ItemGroup>

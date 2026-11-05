@@ -81,6 +81,9 @@ public class PhysicsWorld
     // Collision data
     private readonly HashSet<CollisionPair> _broadphasePairs = new();
     private readonly List<CollisionManifold> _manifolds = new();
+    private readonly SweepAndPruneBroadphase _sweep = new();
+    private readonly List<CollisionPair> _pairBuffer = new();
+    private BroadphaseProxy[] _proxies = Array.Empty<BroadphaseProxy>();
     
     // Settings
     public PhysicsSettings Settings { get; } = new();
@@ -269,9 +272,11 @@ public class PhysicsWorld
             // Angular velocity (simplified - using diagonal inertia tensor)
             body.AngularVelocity += body.Torque * body.InverseInertia * dt;
             
-            // Apply damping
-            body.LinearVelocity *= MathF.Pow(1f - body.LinearDamping, dt);
-            body.AngularVelocity *= MathF.Pow(1f - body.AngularDamping, dt);
+            // Pow(1, dt) is 1, so a zero coefficient does not change velocity.
+            if (body.LinearDamping != 0f)
+                body.LinearVelocity *= MathF.Pow(1f - body.LinearDamping, dt);
+            if (body.AngularDamping != 0f)
+                body.AngularVelocity *= MathF.Pow(1f - body.AngularDamping, dt);
             
             // Clamp velocities
             ClampVelocity(body);
@@ -326,44 +331,36 @@ public class PhysicsWorld
 
     private void BroadphaseDetection()
     {
-        _broadphasePairs.Clear();
-        
-        // Simple O(n^2) broadphase with AABB tests
-        // TODO: Replace with spatial partitioning (BVH, grid, etc.) for better performance
-        
-        for (int i = 0; i < _colliders.Count; i++)
+        int n = _colliders.Count;
+        if (_proxies.Length < n)
+            _proxies = new BroadphaseProxy[Math.Max(16, n * 2)];
+
+        for (int i = 0; i < n; i++)
         {
-            var colliderA = _colliders[i];
-            if (colliderA.Body == null) continue;
-            
-            var aabbA = colliderA.GetWorldAABB(colliderA.Body.Position, colliderA.Body.Rotation);
-            
-            for (int j = i + 1; j < _colliders.Count; j++)
+            var collider = _colliders[i];
+            var body = collider.Body;
+            if (body == null)
             {
-                var colliderB = _colliders[j];
-                if (colliderB.Body == null) continue;
-                
-                // Skip if same body
-                if (colliderA.Body == colliderB.Body) continue;
-                
-                // Skip if both static/kinematic
-                if (colliderA.Body.Type != RigidBodyType.Dynamic && 
-                    colliderB.Body.Type != RigidBodyType.Dynamic)
-                    continue;
-                
-                // Check collision layers
-                if ((colliderA.Body.CollisionLayer & colliderB.Body.CollisionMask) == 0 &&
-                    (colliderB.Body.CollisionLayer & colliderA.Body.CollisionMask) == 0)
-                    continue;
-                
-                // AABB test
-                var aabbB = colliderB.GetWorldAABB(colliderB.Body.Position, colliderB.Body.Rotation);
-                if (aabbA.Intersects(aabbB))
-                {
-                    _broadphasePairs.Add(new CollisionPair(i, j));
-                }
+                _proxies[i] = BroadphaseProxy.Inactive(i);
+                continue;
             }
+
+            _proxies[i] = new BroadphaseProxy(
+                i,
+                collider.GetWorldAABB(body.Position, body.Rotation),
+                body.EntityId,
+                hasBody: true,
+                isDynamic: body.Type == RigidBodyType.Dynamic,
+                body.CollisionLayer,
+                body.CollisionMask);
         }
+
+        // Same pairs and insertion order as the previous nested loop, so the
+        // sequential impulse solver sees contacts in the same order.
+        _sweep.CollectPairs(_proxies.AsSpan(0, n), _pairBuffer);
+        _broadphasePairs.Clear();
+        for (int i = 0; i < _pairBuffer.Count; i++)
+            _broadphasePairs.Add(_pairBuffer[i]);
     }
 
     private void NarrowphaseDetection()

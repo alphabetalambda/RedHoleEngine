@@ -368,7 +368,7 @@ public class PhysicsSystem : GameSystem
     private void DrawWireOBB(Vector3 center, Vector3 halfExtents, Quaternion rotation, DebugColor color)
     {
         var he = halfExtents;
-        var corners = new Vector3[8];
+        Span<Vector3> corners = stackalloc Vector3[8];
         
         corners[0] = new Vector3(-he.X, -he.Y, -he.Z);
         corners[1] = new Vector3(+he.X, -he.Y, -he.Z);

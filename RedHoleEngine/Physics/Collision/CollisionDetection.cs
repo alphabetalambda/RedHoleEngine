@@ -470,8 +470,9 @@ public static class CollisionDetection
         if (centerDist > projRadius)
             return false;
         
-        // Generate contacts for vertices below the plane
-        var corners = new Vector3[8];
+        // Generate contacts for vertices below the plane.
+        // Stack buffer: this runs for every box-plane contact.
+        Span<Vector3> corners = stackalloc Vector3[8];
         var he = box.HalfExtents;
         
         corners[0] = new Vector3(-he.X, -he.Y, -he.Z);

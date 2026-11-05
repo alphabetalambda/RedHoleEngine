@@ -182,31 +182,21 @@ public class BoxCollider : Collider
     public override AABB GetWorldAABB(Vector3 position, Quaternion rotation)
     {
         var center = position + Vector3.Transform(Offset, rotation);
-        
-        // Transform all 8 corners and find min/max
-        var corners = new Vector3[8];
-        var he = HalfExtents;
-        
-        corners[0] = new Vector3(-he.X, -he.Y, -he.Z);
-        corners[1] = new Vector3(+he.X, -he.Y, -he.Z);
-        corners[2] = new Vector3(-he.X, +he.Y, -he.Z);
-        corners[3] = new Vector3(+he.X, +he.Y, -he.Z);
-        corners[4] = new Vector3(-he.X, -he.Y, +he.Z);
-        corners[5] = new Vector3(+he.X, -he.Y, +he.Z);
-        corners[6] = new Vector3(-he.X, +he.Y, +he.Z);
-        corners[7] = new Vector3(+he.X, +he.Y, +he.Z);
 
-        var min = new Vector3(float.MaxValue);
-        var max = new Vector3(float.MinValue);
+        // AABB of a rotated box is the sum of the absolute axis vectors.
+        // Same result as transforming all 8 corners, without a per-call array.
+        float hx = MathF.Abs(HalfExtents.X);
+        float hy = MathF.Abs(HalfExtents.Y);
+        float hz = MathF.Abs(HalfExtents.Z);
+        var ax = Vector3.Transform(new Vector3(hx, 0f, 0f), rotation);
+        var ay = Vector3.Transform(new Vector3(0f, hy, 0f), rotation);
+        var az = Vector3.Transform(new Vector3(0f, 0f, hz), rotation);
+        var extent = new Vector3(
+            MathF.Abs(ax.X) + MathF.Abs(ay.X) + MathF.Abs(az.X),
+            MathF.Abs(ax.Y) + MathF.Abs(ay.Y) + MathF.Abs(az.Y),
+            MathF.Abs(ax.Z) + MathF.Abs(ay.Z) + MathF.Abs(az.Z));
 
-        foreach (var corner in corners)
-        {
-            var worldCorner = center + Vector3.Transform(corner, rotation);
-            min = Vector3.Min(min, worldCorner);
-            max = Vector3.Max(max, worldCorner);
-        }
-
-        return new AABB(min, max);
+        return new AABB(center - extent, center + extent);
     }
 
     public override Vector3 GetClosestPoint(Vector3 point, Vector3 position, Quaternion rotation)

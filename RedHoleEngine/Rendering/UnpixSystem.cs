@@ -287,8 +287,12 @@ public sealed class UnpixSystem : GameSystem
 
     private void UpdatePieces(float deltaTime)
     {
-        foreach (var entity in World!.Query<UnpixPieceComponent, TransformComponent>())
+        // Snapshot first. DestroyEntity swaps the live sparse set, so iterating
+        // the query directly skips the entity that moves into a destroyed slot.
+        foreach (var entity in World!.Query<UnpixPieceComponent, TransformComponent>().ToList())
         {
+            if (!World.IsAlive(entity))
+                continue;
             ref var piece = ref World.GetComponent<UnpixPieceComponent>(entity);
             ref var transform = ref World.GetComponent<TransformComponent>(entity);
 

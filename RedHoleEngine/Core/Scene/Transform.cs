@@ -224,6 +224,9 @@ public class Transform
 
     public void SetParent(Transform? newParent, bool worldPositionStays = true)
     {
+        if (newParent == this)
+            throw new InvalidOperationException("Cannot parent a transform to itself");
+
         if (_parent == newParent)
             return;
 

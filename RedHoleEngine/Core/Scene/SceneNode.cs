@@ -39,6 +39,11 @@ public class SceneNode
     private readonly World _world;
 
     /// <summary>
+    /// Notifies the owning scene when the parent changes so root membership stays in sync.
+    /// </summary>
+    internal Action<SceneNode, SceneNode?, SceneNode?>? HierarchyChanged;
+
+    /// <summary>
     /// Parent node (null if root)
     /// </summary>
     public SceneNode? Parent { get; private set; }
@@ -75,12 +80,15 @@ public class SceneNode
         if (Parent == newParent)
             return;
 
-        // Prevent circular hierarchy
-        if (newParent != null && IsAncestorOf(newParent))
+        // A node is not an ancestor of itself, so self-parenting would otherwise
+        // recurse through the transform hierarchy until the stack overflows.
+        if (newParent == this || (newParent != null && IsAncestorOf(newParent)))
             throw new InvalidOperationException("Cannot set a descendant as parent (circular hierarchy)");
 
+        var oldParent = Parent;
+
         // Remove from old parent
-        Parent?._children.Remove(this);
+        oldParent?._children.Remove(this);
 
         // Set new parent
         Parent = newParent;
@@ -88,6 +96,7 @@ public class SceneNode
 
         // Update transform hierarchy
         Transform.SetParent(newParent?.Transform, worldPositionStays);
+        HierarchyChanged?.Invoke(this, oldParent, newParent);
     }
 
     /// <summary>

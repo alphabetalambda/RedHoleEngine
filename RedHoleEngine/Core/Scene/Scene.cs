@@ -49,6 +49,7 @@ public class Scene
     public SceneNode CreateNode(string name = "Node")
     {
         var node = new SceneNode(World, name);
+        node.HierarchyChanged = OnNodeParentChanged;
         _rootNodes.Add(node);
         _nodesByEntity[node.Entity] = node;
         return node;
@@ -77,6 +78,7 @@ public class Scene
     /// </summary>
     public void RegisterNode(SceneNode node)
     {
+        node.HierarchyChanged = OnNodeParentChanged;
         if (node.Parent == null && !_rootNodes.Contains(node))
         {
             _rootNodes.Add(node);
@@ -90,6 +92,8 @@ public class Scene
     public void DestroyNode(SceneNode node)
     {
         _nodesByEntity.Remove(node.Entity);
+        foreach (var descendant in node.GetDescendants())
+            _nodesByEntity.Remove(descendant.Entity);
         _rootNodes.Remove(node);
         node.Destroy();
     }

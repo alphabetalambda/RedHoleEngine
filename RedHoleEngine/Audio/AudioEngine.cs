@@ -70,14 +70,24 @@ public class AudioEngine : IDisposable
     public AudioDebugVisualizer? DebugVisualizer => _debugVisualizer;
 
     public AudioEngine(World world, AcousticQualitySettings? settings = null)
+        : this(world, new OpenALBackend(), settings)
+    {
+    }
+
+    /// <summary>
+    /// Create an audio engine with an injected backend. The parameterless-backend
+    /// constructor still builds an <see cref="OpenALBackend"/>, so playback behavior
+    /// is unchanged when the engine is constructed the usual way.
+    /// </summary>
+    public AudioEngine(World world, IAudioBackend backend, AcousticQualitySettings? settings = null)
     {
         _world = world;
         QualitySettings = settings ?? AcousticQualitySettings.Medium;
-        
-        _backend = new OpenALBackend();
+
+        _backend = backend ?? throw new ArgumentNullException(nameof(backend));
         _raytracer = new AcousticRaytracer(world, QualitySettings);
         _mixer = new AudioMixer();
-        
+
         _raytraceInterval = 1f / QualitySettings.UpdateRate;
     }
 
@@ -315,7 +325,7 @@ public class AudioEngine : IDisposable
             float listenerSpeed = Vector3.Dot(_listenerVelocity, dir);
             float c = QualitySettings.SpeedOfSound;
             float denom = c - sourceSpeed;
-            if (MathF.Abs(denom) < 0.01f) denom = 0.01f * MathF.Sign(denom);
+            if (MathF.Abs(denom) < 0.01f) denom = denom < 0f ? -0.01f : 0.01f;
             doppler = (c - listenerSpeed) / denom;
         }
 

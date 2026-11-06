@@ -626,7 +626,7 @@ public class AcousticRaytracer
         float numerator = c - listenerSpeed; // Listener moving toward reduces this
         
         if (MathF.Abs(denominator) < 0.01f)
-            denominator = 0.01f * MathF.Sign(denominator);
+            denominator = denominator < 0f ? -0.01f : 0.01f;
 
         return numerator / denominator;
     }

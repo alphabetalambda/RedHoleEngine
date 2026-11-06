@@ -9,6 +9,12 @@
     </PropertyGroup>
 
     <ItemGroup>
+      <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+        <_Parameter1>RedHoleEngine.Tests</_Parameter1>
+      </AssemblyAttribute>
+    </ItemGroup>
+
+    <ItemGroup>
       <PackageReference Include="Silk.NET.Core" Version="2.23.0" />
       <PackageReference Include="Silk.NET.Input" Version="2.23.0" />
       <PackageReference Include="Silk.NET.Input.Sdl" Version="2.23.0" />

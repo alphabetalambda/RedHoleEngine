@@ -1,6 +1,7 @@
 using System.Numerics;
 using RedHoleEngine.Components;
 using RedHoleEngine.Core.ECS;
+using RedHoleEngine.Physics.Collision;
 
 namespace RedHoleEngine.Audio;
 
@@ -177,6 +178,7 @@ public class AcousticRaytracer
     
     // Cached data for performance
     private readonly List<(Entity entity, Vector3 position, AcousticSurfaceComponent surface, TransformComponent transform)> _surfaces = new();
+    private readonly List<IAcousticShape> _shapes = new(); // parallel to _surfaces
     private readonly List<(Entity entity, Vector3 position, GravitySourceComponent gravity)> _gravitySources = new();
     
     // Speed of light for relativistic calculations (in same units as world)
@@ -197,6 +199,7 @@ public class AcousticRaytracer
     public void UpdateSceneCache()
     {
         _surfaces.Clear();
+        _shapes.Clear();
         _gravitySources.Clear();
 
         // Cache acoustic surfaces
@@ -205,6 +208,7 @@ public class AcousticRaytracer
             ref var surface = ref _world.GetComponent<AcousticSurfaceComponent>(entity);
             ref var transform = ref _world.GetComponent<TransformComponent>(entity);
             _surfaces.Add((entity, transform.Position, surface, transform));
+            _shapes.Add(BuildShape(entity, transform));
         }
 
         // Cache gravity sources for relativistic effects
@@ -479,6 +483,36 @@ public class AcousticRaytracer
     }
 
     /// <summary>
+    /// Pick the best geometry for a surface: triangle mesh, then sphere/box collider,
+    /// then the legacy fixed-radius sphere.
+    /// </summary>
+    private IAcousticShape BuildShape(Entity entity, TransformComponent transform)
+    {
+        if (_world.TryGetComponent<MeshComponent>(entity, out var meshComp) && meshComp.MeshHandle.IsValid)
+        {
+            var mesh = meshComp.MeshHandle.Get();
+            if (mesh != null && mesh.Indices.Length >= 3)
+                return new MeshAcousticShape(mesh, transform.WorldMatrix);
+        }
+
+        if (_world.TryGetComponent<ColliderComponent>(entity, out var col))
+        {
+            Collider? collider = col.ShapeType switch
+            {
+                ColliderType.Sphere when col.SphereRadius > 0f =>
+                    new SphereCollider(col.SphereRadius) { Offset = col.Offset },
+                ColliderType.Box when col.BoxHalfExtents.LengthSquared() > 0f =>
+                    new BoxCollider(col.BoxHalfExtents) { Offset = col.Offset },
+                _ => null
+            };
+            if (collider != null)
+                return new ColliderAcousticShape(collider, transform.Position, transform.Rotation);
+        }
+
+        return new SphereAcousticShape(transform.Position);
+    }
+
+    /// <summary>
     /// Raycast against acoustic surfaces
     /// </summary>
     private AcousticRayHit? RaycastSurfaces(Vector3 origin, Vector3 direction, float maxDist)
@@ -486,29 +520,14 @@ public class AcousticRaytracer
         AcousticRayHit? closestHit = null;
         float closestDist = maxDist;
 
-        foreach (var (entity, position, surface, transform) in _surfaces)
+        for (int i = 0; i < _surfaces.Count; i++)
         {
-            // Simple sphere collision for now (TODO: mesh collision)
-            // Assume each surface is a sphere with radius 1 at its position
-            float radius = 5f; // Default surface radius
-            
-            var toSurface = position - origin;
-            float tca = Vector3.Dot(toSurface, direction);
-            
-            if (tca < 0) continue; // Behind ray origin
-            
-            float d2 = Vector3.Dot(toSurface, toSurface) - tca * tca;
-            float r2 = radius * radius;
-            
-            if (d2 > r2) continue; // Misses sphere
-            
-            float thc = MathF.Sqrt(r2 - d2);
-            float t = tca - thc;
-            
-            if (t < 0.01f || t > closestDist) continue;
+            var (entity, _, surface, _) = _surfaces[i];
+
+            if (!_shapes[i].Raycast(origin, direction, 0.01f, closestDist, out float t, out Vector3 normal))
+                continue;
 
             var hitPos = origin + direction * t;
-            var normal = Vector3.Normalize(hitPos - position);
 
             closestHit = new AcousticRayHit
             {

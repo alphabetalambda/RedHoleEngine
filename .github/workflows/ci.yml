@@ -95,6 +95,11 @@ jobs:
         run: |
           dotnet restore RedHoleEngine.sln
           dotnet list RedHoleEngine.sln package --vulnerable --include-transitive 2>&1 | tee audit.txt
-          # Report only for now; flip to a hard failure once known advisories (e.g. ImageSharp) are resolved.
-          grep -q "has the following vulnerable packages" audit.txt \
-            && echo "::warning::Vulnerable NuGet packages found - see job log" || true
+          # Fail the job on any vulnerable package (NuGet reports severity per package; fail on High/Critical).
+          if grep -qE "has the following vulnerable packages" audit.txt; then
+            if grep -qE "^\s*>\s.*\s(High|Critical)\s" audit.txt; then
+              echo "::error::High/Critical vulnerable NuGet packages found - see job log"
+              exit 1
+            fi
+            echo "::warning::Low/Moderate vulnerable NuGet packages found - see job log"
+          fi

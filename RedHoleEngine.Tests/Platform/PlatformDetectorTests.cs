@@ -6,6 +6,7 @@ namespace RedHoleEngine.Tests.Platform;
 /// <summary>
 /// Unit tests for PlatformDetector - tests platform detection and forcing.
 /// </summary>
+[Collection("PlatformDetector")]
 public class PlatformDetectorTests
 {
     private readonly ITestOutputHelper _output;

@@ -1,14 +1,15 @@
+using System.Runtime.InteropServices;
 using RedHoleEngine.Platform;
 
 namespace RedHoleEngine.Tests.Platform;
 
+[Collection("PlatformDetector")]
 public class PlatformDetectorCoverageTests
 {
     [Fact]
     public void LinuxDetection_RejectsWindowsAndAppleOnlyPlatforms()
     {
-        Assert.True(OperatingSystem.IsLinux());
-
+        PlatformDetector.HostOsOverride = OSPlatform.Linux;
         PlatformDetector.ResetDetection();
         try
         {
@@ -32,6 +33,7 @@ public class PlatformDetectorCoverageTests
         }
         finally
         {
+            PlatformDetector.HostOsOverride = null;
             PlatformDetector.ResetDetection();
         }
     }
@@ -43,6 +45,7 @@ public class PlatformDetectorCoverageTests
         var previousUpper = Environment.GetEnvironmentVariable("STEAM_DECK");
         try
         {
+            PlatformDetector.HostOsOverride = OSPlatform.Linux;
             Environment.SetEnvironmentVariable("SteamDeck", null);
             Environment.SetEnvironmentVariable("STEAM_DECK", "1");
             PlatformDetector.ResetDetection();
@@ -54,6 +57,7 @@ public class PlatformDetectorCoverageTests
         }
         finally
         {
+            PlatformDetector.HostOsOverride = null;
             Environment.SetEnvironmentVariable("SteamDeck", previousSteamDeck);
             Environment.SetEnvironmentVariable("STEAM_DECK", previousUpper);
             PlatformDetector.ResetDetection();
@@ -139,3 +143,6 @@ public class PlatformDetectorCoverageTests
         }
     }
 }
+
+[CollectionDefinition("PlatformDetector", DisableParallelization = true)]
+public class PlatformDetectorCollection { }

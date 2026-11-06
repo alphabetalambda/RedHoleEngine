@@ -3,6 +3,20 @@ using RedHoleEngine.ML.Services;
 
 namespace RedHoleEngine.Tests.ML;
 
+/// <summary>
+/// Fact that is skipped (with a reason) when the LightGBM native library cannot be loaded,
+/// e.g. on osx-arm64 where Microsoft.ML.LightGbm ships no native build.
+/// </summary>
+public sealed class LightGbmFactAttribute : FactAttribute
+{
+    public LightGbmFactAttribute()
+    {
+        if (!MLService.IsLightGbmAvailable)
+            Skip = "LightGBM native library (lib_lightgbm) is unavailable on this platform " +
+                   "(no osx-arm64 build in Microsoft.ML.LightGbm; Linux/macOS need libgomp/libomp). See BUILD.md.";
+    }
+}
+
 public class MLServiceTests
 {
     private sealed class BinaryRow
@@ -119,10 +133,16 @@ public class MLServiceTests
 
     [Theory]
     [InlineData(BinaryClassifierType.FastTree)]
-    [InlineData(BinaryClassifierType.LightGbm)]
     [InlineData(BinaryClassifierType.SdcaLogisticRegression)]
     [InlineData(BinaryClassifierType.AveragedPerceptron)]
     public void TrainBinaryClassifier_LinearlySeparableSet_ClassifiesTrainingPoints(BinaryClassifierType type)
+        => AssertBinaryClassifies(type);
+
+    [LightGbmFact]
+    public void TrainBinaryClassifier_LightGbm_ClassifiesTrainingPoints()
+        => AssertBinaryClassifies(BinaryClassifierType.LightGbm);
+
+    private void AssertBinaryClassifies(BinaryClassifierType type)
     {
         var rows = LinearBinaryRows();
         using var service = new MLService(42);
@@ -166,8 +186,14 @@ public class MLServiceTests
 
     [Theory]
     [InlineData(MultiClassifierType.SdcaMaximumEntropy)]
-    [InlineData(MultiClassifierType.LightGbm)]
     public void TrainMultiClassifier_SeparatedClasses_ClassifiesTrainingPoints(MultiClassifierType type)
+        => AssertMultiClassifies(type);
+
+    [LightGbmFact]
+    public void TrainMultiClassifier_LightGbm_ClassifiesTrainingPoints()
+        => AssertMultiClassifies(MultiClassifierType.LightGbm);
+
+    private void AssertMultiClassifies(MultiClassifierType type)
     {
         var rows = MultiClassRows();
         using var service = new MLService(42);
@@ -192,10 +218,16 @@ public class MLServiceTests
 
     [Theory]
     [InlineData(RegressorType.FastTree)]
-    [InlineData(RegressorType.LightGbm)]
     [InlineData(RegressorType.Sdca)]
     [InlineData(RegressorType.OnlineGradientDescent)]
     public void TrainRegressor_MonotoneLine_PredictsIncreasingScores(RegressorType type)
+        => AssertRegressorPredicts(type);
+
+    [LightGbmFact]
+    public void TrainRegressor_LightGbm_PredictsIncreasingScores()
+        => AssertRegressorPredicts(RegressorType.LightGbm);
+
+    private void AssertRegressorPredicts(RegressorType type)
     {
         var rows = LineRows();
         using var service = new MLService(42);

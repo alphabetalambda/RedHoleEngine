@@ -131,7 +131,7 @@ public sealed class TerminalSession
                 throw new InvalidOperationException("Missing redirect path");
 
             var path = VirtualPath.Normalize(args[redirectIndex + 1], CurrentDirectory);
-            _fileSystem.WriteFile(path, text + "\n", append);
+            _fileSystem.WriteFile(path, text + Environment.NewLine, append);
             return;
         }
 

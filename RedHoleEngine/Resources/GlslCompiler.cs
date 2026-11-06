@@ -53,7 +53,7 @@ public static unsafe class GlslCompiler
             return new GlslCompileResult(true, spirv, null, false);
         }
         catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException or BadImageFormatException
-                                   or TypeInitializationException or NotSupportedException)
+                                   or TypeInitializationException or NotSupportedException or FileNotFoundException)
         {
             return new GlslCompileResult(false, Array.Empty<byte>(), $"shaderc is unavailable: {ex.Message}", true);
         }

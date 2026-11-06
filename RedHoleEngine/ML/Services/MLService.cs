@@ -1,5 +1,7 @@
 using Microsoft.ML;
 using Microsoft.ML.Data;
+using System.Reflection;
+using System.Runtime.InteropServices;
 
 namespace RedHoleEngine.ML.Services;
 
@@ -23,6 +25,46 @@ public sealed class MLService : IDisposable
     /// Seed for reproducible results (null for random)
     /// </summary>
     public int? Seed { get; }
+
+    private static readonly Lazy<bool> _lightGbmAvailable = new(ProbeLightGbm);
+
+    /// <summary>
+    /// Whether the LightGBM native library (lib_lightgbm) can be loaded on this machine.
+    /// Microsoft.ML.LightGbm ships no osx-arm64 build, so this is false on Apple Silicon
+    /// (and on Linux/macOS when libgomp/libomp is missing). Other trainers are unaffected.
+    /// </summary>
+    public static bool IsLightGbmAvailable => _lightGbmAvailable.Value;
+
+    private static bool ProbeLightGbm()
+    {
+        try
+        {
+            // The managed wrapper resolves the native lib via the default probing paths (runtimes/<rid>/native).
+            var asm = typeof(Microsoft.ML.LightGbmExtensions).Assembly;
+            return NativeLibrary.TryLoad("lib_lightgbm", asm, DllImportSearchPath.AssemblyDirectory, out var handle)
+                   && Free(handle);
+        }
+        catch
+        {
+            return false;
+        }
+
+        static bool Free(IntPtr h) { NativeLibrary.Free(h); return true; }
+    }
+
+    private static ITransformer FitLightGbm(Func<ITransformer> fit)
+    {
+        if (!IsLightGbmAvailable)
+            throw new PlatformNotSupportedException(
+                "LightGBM native library (lib_lightgbm) is not available on this platform " +
+                "(Microsoft.ML.LightGbm has no osx-arm64 build; Linux/macOS also need libgomp/libomp). " +
+                "Use FastTree or another trainer instead.");
+        try { return fit(); }
+        catch (DllNotFoundException ex)
+        {
+            throw new PlatformNotSupportedException("LightGBM native library could not be loaded: " + ex.Message, ex);
+        }
+    }
 
     public MLService(int? seed = null)
     {
@@ -158,7 +200,7 @@ public sealed class MLService : IDisposable
         ITransformer model = classifierType switch
         {
             BinaryClassifierType.FastTree => _mlContext.BinaryClassification.Trainers.FastTree(labelColumnName, featureColumnName).Fit(dataView),
-            BinaryClassifierType.LightGbm => _mlContext.BinaryClassification.Trainers.LightGbm(labelColumnName, featureColumnName).Fit(dataView),
+            BinaryClassifierType.LightGbm => FitLightGbm(() => _mlContext.BinaryClassification.Trainers.LightGbm(labelColumnName, featureColumnName).Fit(dataView)),
             BinaryClassifierType.SdcaLogisticRegression => _mlContext.BinaryClassification.Trainers.SdcaLogisticRegression(labelColumnName, featureColumnName).Fit(dataView),
             BinaryClassifierType.AveragedPerceptron => _mlContext.BinaryClassification.Trainers.AveragedPerceptron(labelColumnName, featureColumnName).Fit(dataView),
             _ => throw new ArgumentOutOfRangeException(nameof(classifierType))
@@ -181,7 +223,7 @@ public sealed class MLService : IDisposable
         ITransformer model = classifierType switch
         {
             MultiClassifierType.SdcaMaximumEntropy => _mlContext.MulticlassClassification.Trainers.SdcaMaximumEntropy(labelColumnName, featureColumnName).Fit(dataView),
-            MultiClassifierType.LightGbm => _mlContext.MulticlassClassification.Trainers.LightGbm(labelColumnName, featureColumnName).Fit(dataView),
+            MultiClassifierType.LightGbm => FitLightGbm(() => _mlContext.MulticlassClassification.Trainers.LightGbm(labelColumnName, featureColumnName).Fit(dataView)),
             MultiClassifierType.NaiveBayes => _mlContext.MulticlassClassification.Trainers.NaiveBayes(labelColumnName, featureColumnName).Fit(dataView),
             _ => throw new ArgumentOutOfRangeException(nameof(classifierType))
         };
@@ -203,7 +245,7 @@ public sealed class MLService : IDisposable
         ITransformer model = regressorType switch
         {
             RegressorType.FastTree => _mlContext.Regression.Trainers.FastTree(labelColumnName, featureColumnName).Fit(dataView),
-            RegressorType.LightGbm => _mlContext.Regression.Trainers.LightGbm(labelColumnName, featureColumnName).Fit(dataView),
+            RegressorType.LightGbm => FitLightGbm(() => _mlContext.Regression.Trainers.LightGbm(labelColumnName, featureColumnName).Fit(dataView)),
             RegressorType.Sdca => _mlContext.Regression.Trainers.Sdca(labelColumnName, featureColumnName).Fit(dataView),
             RegressorType.OnlineGradientDescent => _mlContext.Regression.Trainers.OnlineGradientDescent(labelColumnName, featureColumnName).Fit(dataView),
             _ => throw new ArgumentOutOfRangeException(nameof(regressorType))

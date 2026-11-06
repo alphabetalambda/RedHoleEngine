@@ -407,9 +407,12 @@ public class LinkConstraint
         float invMassA = BodyA?.InverseMass ?? 0f;
         float invMassB = BodyB?.InverseMass ?? 0f;
         
-        // Simple case: just inverse masses
-        // TODO: Add angular contributions for more accuracy
-        EffectiveMass = invMassA + invMassB;
+        // Linear terms plus angular contributions: n . ((I^-1 (r x n)) x r) for each body.
+        // Uses the same (diagonal, componentwise) inverse inertia convention as
+        // RigidBody.ApplyImpulseAtPosition so the computed mass matches the applied impulse.
+        float angularA = AngularContribution(BodyA, WorldAnchorA);
+        float angularB = AngularContribution(BodyB, WorldAnchorB);
+        EffectiveMass = invMassA + invMassB + angularA + angularB;
         
         if (EffectiveMass > 0.0001f)
         {
@@ -419,6 +422,13 @@ public class LinkConstraint
         {
             EffectiveMass = 0f;
         }
+    }
+    
+    private float AngularContribution(RigidBody? body, Vector3 worldAnchor)
+    {
+        if (body == null) return 0f;
+        Vector3 rxn = Vector3.Cross(worldAnchor - body.Position, Axis);
+        return Vector3.Dot(rxn * body.InverseInertia, rxn);
     }
     
     /// <summary>

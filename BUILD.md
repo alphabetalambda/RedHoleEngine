@@ -13,10 +13,16 @@
 ### macOS
 - Xcode Command Line Tools (`xcode-select --install`)
 - MoltenVK (included via Silk.NET)
+- LightGBM (optional): `Microsoft.ML.LightGbm` ships native libraries for osx-x64, linux-x64 and
+  win-x64 only. On Apple Silicon (osx-arm64) `lib_lightgbm` cannot be loaded, so
+  `MLService.IsLightGbmAvailable` is false, LightGBM trainers throw `PlatformNotSupportedException`
+  with a clear message, and the LightGBM unit tests are skipped. Use FastTree or another trainer there.
+  (On x64 macOS, `brew install libomp` is required.)
 
 ### Linux
 - Vulkan drivers for your GPU
 - X11 or Wayland development libraries
+- `libgomp` (for LightGBM; usually already installed)
 
 ## Building
 
@@ -194,14 +200,6 @@ If you see errors about `DebugDrawManager` or `DebugRenderer`, ensure the `RedHo
 
 ```bash
 dotnet test RedHoleEngine.Tests/RedHoleEngine.Tests.csproj
-```
-
-## Package Warnings
-
-The project uses `SixLabors.ImageSharp` which has known vulnerabilities. These are display-only warnings and don't affect the build. To suppress:
-
-```bash
-dotnet build -p:NoWarn=NU1902;NU1903
 ```
 
 ## IDE Support

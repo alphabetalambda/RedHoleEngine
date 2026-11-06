@@ -2,9 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Numerics;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.PixelFormats;
-using SixLabors.ImageSharp.Processing;
 
 namespace RedHoleEngine.Rendering.PBR;
 
@@ -140,22 +137,18 @@ public class TextureLibrary : IDisposable
 
         try
         {
-            using var image = Image.Load<Rgba32>(path);
-            
+            var image = ImageDecoder.LoadRgba(path);
+
             // Resize if too large
             if (image.Width > MaxTextureSize || image.Height > MaxTextureSize)
             {
                 float scale = Math.Min(
                     (float)MaxTextureSize / image.Width,
                     (float)MaxTextureSize / image.Height);
-                int newWidth = (int)(image.Width * scale);
-                int newHeight = (int)(image.Height * scale);
-                image.Mutate(x => x.Resize(newWidth, newHeight));
+                image = ImageDecoder.Resize(image, (int)(image.Width * scale), (int)(image.Height * scale));
             }
 
-            // Extract pixel data
-            var pixelData = new byte[image.Width * image.Height * 4];
-            image.CopyPixelDataTo(pixelData);
+            var pixelData = image.Pixels;
 
             bool isSrgb = type == PbrTextureType.BaseColor || type == PbrTextureType.Emissive;
             var texture = new PbrTexture(path, image.Width, image.Height, pixelData, isSrgb);

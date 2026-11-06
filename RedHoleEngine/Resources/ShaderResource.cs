@@ -62,6 +62,11 @@ public class ShaderLoader : ResourceLoader<ShaderResource>
     /// </summary>
     public bool CompileGlsl { get; set; } = false;
 
+    /// <summary>
+    /// Error from the most recent failed GLSL compilation (null if none).
+    /// </summary>
+    public string? LastError { get; private set; }
+
     public override ShaderResource? Load(string path)
     {
         if (!File.Exists(path))
@@ -81,8 +86,16 @@ public class ShaderLoader : ResourceLoader<ShaderResource>
         }
         else if (CompileGlsl)
         {
-            // TODO: Compile with shaderc
-            throw new NotImplementedException("GLSL compilation not yet implemented");
+            var result = GlslCompiler.Compile(File.ReadAllText(path), stage, Path.GetFileName(path));
+            if (!result.Success)
+            {
+                LastError = result.Error;
+                Console.WriteLine($"GLSL compilation failed for {path}: {result.Error}");
+                return null;
+            }
+
+            LastError = null;
+            return new ShaderResource(stage, result.SpirV, path);
         }
         else
         {

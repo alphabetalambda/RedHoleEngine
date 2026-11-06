@@ -15,6 +15,7 @@ public unsafe class OpenALBackend : IAudioBackend
     private Context* _context;
     
     private bool _initialized;
+    private EfxFilterController? _efx;
     
     // Clip management
     private readonly Dictionary<uint, AudioFormat> _clipFormats = new();
@@ -80,6 +81,12 @@ public unsafe class OpenALBackend : IAudioBackend
             // Forward = -Z, Up = +Y (OpenGL convention)
             float* orientation = stackalloc float[6] { 0, 0, -1, 0, 1, 0 };
             _al.SetListenerProperty(ListenerFloatArray.Orientation, orientation);
+
+            var efxApi = new NativeEfxApi(_al, _alc, _device);
+            _efx = efxApi.IsSupported ? new EfxFilterController(efxApi) : null;
+            Console.WriteLine(_efx != null
+                ? "OpenAL: EFX filters available"
+                : "OpenAL: EFX not supported, voice filters disabled");
 
             _initialized = true;
             return true;
@@ -221,7 +228,8 @@ public unsafe class OpenALBackend : IAudioBackend
 
         _al.SourceStop(source);
         _al.SetSourceProperty(source, SourceInteger.Buffer, 0);
-        
+        _efx?.Release(voice.Id);
+
         _voiceToSource.Remove(voice.Id);
         _voiceToBuffer.Remove(voice.Id);
         _availableSources.Enqueue(source);
@@ -350,15 +358,17 @@ public unsafe class OpenALBackend : IAudioBackend
 
     public void SetLowPassFilter(VoiceHandle voice, float cutoffHz)
     {
-        // OpenAL EFX extension required for filters
-        // For now, this is a no-op - would need OpenAL.Extensions.EXT
-        // TODO: Implement with EFX filters
+        // Uses ALC_EXT_EFX direct filters; silently ignored when EFX is unsupported.
+        if (!_initialized || _efx == null || !voice.IsValid) return;
+        if (!_voiceToSource.TryGetValue(voice.Id, out uint source)) return;
+        _efx.SetLowPass(voice.Id, source, cutoffHz);
     }
 
     public void SetHighPassFilter(VoiceHandle voice, float cutoffHz)
     {
-        // OpenAL EFX extension required for filters
-        // TODO: Implement with EFX filters
+        if (!_initialized || _efx == null || !voice.IsValid) return;
+        if (!_voiceToSource.TryGetValue(voice.Id, out uint source)) return;
+        _efx.SetHighPass(voice.Id, source, cutoffHz);
     }
 
     #endregion
@@ -424,6 +434,8 @@ public unsafe class OpenALBackend : IAudioBackend
     public void Dispose()
     {
         if (!_initialized) return;
+
+        _efx?.ReleaseAll();
 
         // Stop all sources
         foreach (var source in _allSources)

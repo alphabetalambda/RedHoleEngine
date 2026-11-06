@@ -1,5 +1,6 @@
 using System.Numerics;
 using ImGuiNET;
+using RedHoleEngine.ML.Services;
 
 namespace RedHoleML.Trainer.UI.Panels;
 
@@ -11,6 +12,8 @@ public class ModelDesignerPanel
     private readonly TrainerState _state;
     private int _selectedCategory;
     private readonly string[] _categories = { "Classification", "Regression", "Clustering", "Anomaly Detection" };
+
+    private string? _fallbackMessage;
 
     public bool IsVisible { get; set; } = true;
 
@@ -43,6 +46,16 @@ public class ModelDesignerPanel
     private void DrawModelTypeSelector()
     {
         ImGui.Text("Model Type");
+
+        // If a loaded/saved selection uses an unavailable trainer, fall back instead of failing at train time.
+        var (resolved, message) = ModelTypeAvailability.Resolve(_state.ModelType, MLService.IsLightGbmAvailable);
+        if (message != null)
+        {
+            _state.ModelType = resolved;
+            _fallbackMessage = message;
+        }
+        if (_fallbackMessage != null)
+            ImGui.TextColored(new Vector4(1f, 0.7f, 0.2f, 1f), _fallbackMessage);
         
         // Category tabs
         ImGui.SetNextItemWidth(-1);
@@ -124,15 +137,22 @@ public class ModelDesignerPanel
         if (isSelected)
             ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(0.3f, 0.5f, 0.7f, 1f));
         
+        bool available = ModelTypeAvailability.IsAvailable(type, MLService.IsLightGbmAvailable);
+        if (!available)
+            ImGui.BeginDisabled();
+
         bool clicked = ImGui.Button(name, new Vector2(130, 40));
-        
+
+        if (!available)
+            ImGui.EndDisabled();
+
         if (isSelected)
             ImGui.PopStyleColor();
-        
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip(description);
 
-        return clicked;
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip(available ? description : ModelTypeAvailability.LightGbmUnavailableReason);
+
+        return clicked && available;
     }
 
     private void DrawHyperparameters()

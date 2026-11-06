@@ -3,8 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.PixelFormats;
+using RedHoleEngine.Rendering;
 
 namespace RedHoleEngine.Rendering.UI;
 
@@ -14,10 +13,8 @@ public static class UiMediaLoader
 
     public static UiTextureFrame LoadImage(string path, int version)
     {
-        using var image = Image.Load<Rgba32>(path);
-        var rgba = new byte[image.Width * image.Height * 4];
-        image.CopyPixelDataTo(rgba);
-        return new UiTextureFrame(image.Width, image.Height, rgba, version);
+        var image = ImageDecoder.LoadRgba(path);
+        return new UiTextureFrame(image.Width, image.Height, image.Pixels, version);
     }
     
     /// <summary>
@@ -26,11 +23,8 @@ public static class UiMediaLoader
     public static UiTextureFrame LoadImageFromBase64(string base64Data, int version)
     {
         var bytes = Convert.FromBase64String(base64Data);
-        using var stream = new MemoryStream(bytes);
-        using var image = Image.Load<Rgba32>(stream);
-        var rgba = new byte[image.Width * image.Height * 4];
-        image.CopyPixelDataTo(rgba);
-        return new UiTextureFrame(image.Width, image.Height, rgba, version);
+        var image = ImageDecoder.LoadRgba(bytes);
+        return new UiTextureFrame(image.Width, image.Height, image.Pixels, version);
     }
     
     /// <summary>
@@ -54,16 +48,12 @@ public static class UiMediaLoader
 
     public static List<UiTextureFrame> LoadGifFrames(string path, int baseVersion)
     {
-        using var image = Image.Load<Rgba32>(path);
         var frames = new List<UiTextureFrame>();
         int version = baseVersion;
 
-        for (int i = 0; i < image.Frames.Count; i++)
+        foreach (var frame in ImageDecoder.LoadGifFrames(path))
         {
-            var frame = image.Frames.CloneFrame(i);
-            var rgba = new byte[frame.Width * frame.Height * 4];
-            frame.CopyPixelDataTo(rgba);
-            frames.Add(new UiTextureFrame(frame.Width, frame.Height, rgba, version++));
+            frames.Add(new UiTextureFrame(frame.Width, frame.Height, frame.Pixels, version++));
         }
 
         return frames;

@@ -20,6 +20,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\RedHoleEngine\RedHoleEngine.csproj" />
+    <ProjectReference Include="..\RedHoleML.Trainer\RedHoleML.Trainer.csproj" />
   </ItemGroup>
 
 </Project>

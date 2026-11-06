@@ -204,6 +204,13 @@ public class TrainingPanel
     {
         _trainingLog.Clear();
         Log("Starting training...");
+        var (resolved, fallbackMessage) = ModelTypeAvailability.Resolve(
+            _state.ModelType, RedHoleEngine.ML.Services.MLService.IsLightGbmAvailable);
+        if (fallbackMessage != null)
+        {
+            _state.ModelType = resolved;
+            Log(fallbackMessage);
+        }
         Log($"Model: {_state.ModelType}");
         Log($"Dataset: {_state.DatasetRowCount} rows");
         Log($"Features: {string.Join(", ", _state.FeatureColumns)}");

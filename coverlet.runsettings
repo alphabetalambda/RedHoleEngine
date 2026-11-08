@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Filtered coverage run. Raw coverage is `dotnet test --collect:"XPlat Code Coverage"`
-  with no ExcludeByFile. This file drops only code that cannot run without a GPU,
+  Filtered coverage run. Raw coverage is `dotnet test` with the XPlat Code Coverage collector
+  and no ExcludeByFile. This file drops only code that cannot run without a GPU,
   an audio device, a window, or the Steam client. See docs/COVERAGE.md.
 -->
 <RunSettings>

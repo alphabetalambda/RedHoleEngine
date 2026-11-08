@@ -83,15 +83,17 @@ public class Denoiser : IDisposable
     /// <summary>
     /// Get parameters for SVGF temporal pass.
     /// </summary>
-    public SVGFTemporalParams GetSVGFTemporalParams()
+    public SVGFTemporalParams GetSVGFTemporalParams(int flags = 0)
     {
         return new SVGFTemporalParams
         {
             Resolution = new Vector2(Width, Height),
             TemporalAlpha = _settings.SVGFTemporalAlpha,
-            NormalThreshold = 0.9f,  // cos(~25 degrees)
-            DepthThreshold = 0.1f,   // 10% relative depth difference
-            MaxHistoryLength = 32
+            NormalThreshold = _settings.TemporalNormalThreshold,  // default cos(~25 degrees)
+            DepthThreshold = _settings.TemporalDepthThreshold,    // default 10% relative depth difference
+            MaxHistoryLength = _settings.TemporalMaxHistory,
+            Flags = flags,
+            VarianceClampGamma = _settings.TemporalVarianceClamp
         };
     }
 
@@ -157,8 +159,9 @@ public struct SVGFTemporalParams
     public float NormalThreshold;
     public float DepthThreshold;
     public int MaxHistoryLength;
-    public float Pad0;
-    public float Pad1;
+    /// <summary>bit0 = gravity gate allows temporal, bit1 = history valid (see TemporalFramePlan.ShaderFlags).</summary>
+    public int Flags;
+    public float VarianceClampGamma;
 }
 
 /// <summary>

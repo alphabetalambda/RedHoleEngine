@@ -1,6 +1,7 @@
 using System;
 using ImGuiNET;
 using RedHoleEngine.Rendering;
+using RedHoleEngine.Rendering.Denoising;
 using RedHoleEngine.Rendering.Upscaling;
 
 namespace RedHoleEngine.Editor.UI.Panels;
@@ -12,12 +13,59 @@ public class RaytracerSettingsPanel : EditorPanel
 {
     private readonly RaytracerSettings _settings;
 
+    /// <summary>Supplies the gravity gate decision for the current scene (temporal denoise is forbidden while lensing is active).</summary>
+    public Func<TemporalGateDecision>? TemporalGateProvider { get; set; }
+
     public RaytracerSettingsPanel(RaytracerSettings settings)
     {
         _settings = settings;
     }
 
     public override string Title => "Raytracer";
+
+    private void DrawTemporalDenoiseControls()
+    {
+        var gate = TemporalGateProvider?.Invoke() ?? new TemporalGateDecision(true, TemporalDenoiseGate.AllowedReason);
+        ImGui.Separator();
+
+        bool temporal = _settings.TemporalDenoise;
+        ImGui.BeginDisabled(!gate.Allowed);
+        if (ImGui.Checkbox("Temporal (history reuse)", ref temporal))
+        {
+            _settings.TemporalDenoise = temporal;
+            _settings.ResetAccumulation = true;
+        }
+        ImGui.EndDisabled();
+
+        if (!gate.Allowed)
+        {
+            ImGui.TextColored(new System.Numerics.Vector4(1f, 0.6f, 0.3f, 1f), gate.Reason);
+            return;
+        }
+
+        if (!_settings.TemporalDenoise)
+            return;
+
+        float alpha = _settings.SVGFTemporalAlpha;
+        if (ImGui.SliderFloat("Blend (current weight)", ref alpha, 0.01f, 1.0f))
+            _settings.SVGFTemporalAlpha = alpha;
+
+        int maxHistory = _settings.TemporalMaxHistory;
+        if (ImGui.SliderInt("Max History", ref maxHistory, 1, 64))
+            _settings.TemporalMaxHistory = maxHistory;
+
+        float normalThreshold = _settings.TemporalNormalThreshold;
+        if (ImGui.SliderFloat("Normal Reject (cos)", ref normalThreshold, 0.5f, 1.0f))
+            _settings.TemporalNormalThreshold = normalThreshold;
+
+        float depthThreshold = _settings.TemporalDepthThreshold;
+        if (ImGui.SliderFloat("Depth Reject (rel)", ref depthThreshold, 0.01f, 0.5f))
+            _settings.TemporalDepthThreshold = depthThreshold;
+
+        float clampGamma = _settings.TemporalVarianceClamp;
+        if (ImGui.SliderFloat("Variance Clamp (sigma)", ref clampGamma, 0.5f, 5.0f))
+            _settings.TemporalVarianceClamp = clampGamma;
+    }
 
     protected override void OnDraw()
     {
@@ -128,6 +176,8 @@ public class RaytracerSettingsPanel : EditorPanel
                 }
             }
             
+            DrawTemporalDenoiseControls();
+
             ImGui.Unindent();
         }
 

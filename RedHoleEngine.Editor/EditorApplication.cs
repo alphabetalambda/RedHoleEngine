@@ -14,6 +14,7 @@ using RedHoleEngine.Game;
 using RedHoleEngine.Physics;
 using RedHoleEngine.Physics.Collision;
 using RedHoleEngine.Rendering;
+using RedHoleEngine.Rendering.Denoising;
 using RedHoleEngine.Rendering.Backends;
 using RedHoleEngine.Rendering.PBR;
 using RedHoleEngine.Resources;
@@ -137,6 +138,7 @@ public class EditorApplication : IDisposable
         _inspectorPanel = new InspectorPanel();
         _consolePanel = new ConsolePanel();
         _raytracerPanel = new RaytracerSettingsPanel(_raytracerSettings);
+        _raytracerPanel.TemporalGateProvider = () => TemporalDenoiseGate.Evaluate(GetPreviewBlackHole(), null, _raytracerSettings);
         _renderPanel = new RenderSettingsPanel(_renderSettings);
         _gameProjectPanel = new GameProjectPanel(_projectManager, _buildSystem, LoadGameProjectFromSettings);
         _terminalPanel = new TerminalPanel(_terminalSession, () => _terminalSaveManager);
@@ -167,6 +169,7 @@ public class EditorApplication : IDisposable
         Silk.NET.Windowing.Glfw.GlfwWindowing.RegisterPlatform();
         Silk.NET.Input.Glfw.GlfwInput.RegisterPlatform();
         Window.PrioritizeGlfw();
+        RedHoleEngine.Rendering.Backends.MoltenVkLoader.ConfigureGlfw();
 
         var options = WindowOptions.Default with
         {
@@ -1097,6 +1100,13 @@ public class EditorApplication : IDisposable
         target.SamplesPerFrame = _raytracerSettings.SamplesPerFrame;
         target.Accumulate = _raytracerSettings.Accumulate;
         target.Denoise = _raytracerSettings.Denoise;
+        target.DenoiseMethod = _raytracerSettings.DenoiseMethod;
+        target.TemporalDenoise = _raytracerSettings.TemporalDenoise;
+        target.SVGFTemporalAlpha = _raytracerSettings.SVGFTemporalAlpha;
+        target.TemporalMaxHistory = _raytracerSettings.TemporalMaxHistory;
+        target.TemporalNormalThreshold = _raytracerSettings.TemporalNormalThreshold;
+        target.TemporalDepthThreshold = _raytracerSettings.TemporalDepthThreshold;
+        target.TemporalVarianceClamp = _raytracerSettings.TemporalVarianceClamp;
         target.Preset = _raytracerSettings.Preset;
         target.MaxRaysPerPixelLimit = _raytracerSettings.MaxRaysPerPixelLimit;
         target.MaxBouncesLimit = _raytracerSettings.MaxBouncesLimit;

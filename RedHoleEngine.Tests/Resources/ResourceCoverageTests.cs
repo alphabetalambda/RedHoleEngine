@@ -222,7 +222,22 @@ public class ShaderResourceCoverageTests
             Assert.Equal(source, sibling.SourcePath);
 
             loader.CompileGlsl = true;
-            Assert.Throws<NotImplementedException>(() => loader.Load(source));
+            Assert.Null(loader.Load(source)); // invalid GLSL: error result, no throw
+            Assert.False(string.IsNullOrEmpty(loader.LastError));
+
+            File.WriteAllText(source, "#version 450\nvoid main() { gl_Position = vec4(0.0); }\n");
+            var compiled = loader.Load(source);
+            if (compiled != null)
+            {
+                Assert.Equal(ShaderStage.Vertex, compiled.Stage);
+                Assert.True(compiled.SpirVCode.Length > 4);
+                Assert.Equal(0x07230203u, BitConverter.ToUInt32(compiled.SpirVCode, 0));
+                Assert.Null(loader.LastError);
+            }
+            else
+            {
+                Assert.Contains("unavailable", loader.LastError); // native shaderc not present
+            }
 
             var custom = new ShaderResource(ShaderStage.Fragment, new byte[] { 1 }, "mem", "frag_main");
             Assert.Equal("frag_main", custom.EntryPoint);

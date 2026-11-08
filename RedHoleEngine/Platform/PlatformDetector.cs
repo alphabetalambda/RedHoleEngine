@@ -98,6 +98,16 @@ public static partial class PlatformDetector
     private static PlatformType? _cachedPlatform;
     private static GpuInfo? _cachedGpuInfo;
     private static bool _detected;
+
+    /// <summary>
+    /// Test seam: pretend the host OS is the given one (null = real OS). Lets platform
+    /// detection tests run hermetically on any developer machine.
+    /// </summary>
+    internal static OSPlatform? HostOsOverride { get; set; }
+
+    private static bool IsWindowsHost => HostOsOverride is { } o ? o == OSPlatform.Windows : OperatingSystem.IsWindows();
+    private static bool IsLinuxHost => HostOsOverride is { } o ? o == OSPlatform.Linux : OperatingSystem.IsLinux();
+    private static bool IsMacHost => HostOsOverride is { } o ? o == OSPlatform.OSX : OperatingSystem.IsMacOS();
     
     /// <summary>
     /// The detected platform type (cached after first detection)
@@ -202,7 +212,7 @@ public static partial class PlatformDetector
         
         // PRIORITY 2: Apple Silicon (macOS only)
         // Apple Silicon Macs have unique GPU architecture that doesn't fit standard tiers
-        if (OperatingSystem.IsMacOS())
+        if (IsMacHost)
         {
             var applePlatform = DetectAppleSilicon();
             if (applePlatform != null)
@@ -256,7 +266,7 @@ public static partial class PlatformDetector
     
     private static bool DetectSteamDeck()
     {
-        if (!OperatingSystem.IsLinux())
+        if (!IsLinuxHost)
             return false;
 
         // Method 1: Environment variables
@@ -290,7 +300,7 @@ public static partial class PlatformDetector
     private static bool DetectROGAlly()
     {
         // ROG Ally runs Windows
-        if (!OperatingSystem.IsWindows())
+        if (!IsWindowsHost)
             return false;
 
         // Check for ASUS ROG Ally specific identifiers
@@ -317,7 +327,7 @@ public static partial class PlatformDetector
     
     private static bool DetectLegionGo()
     {
-        if (!OperatingSystem.IsWindows())
+        if (!IsWindowsHost)
             return false;
 
         var productName = GetWindowsProductName();
@@ -344,12 +354,12 @@ public static partial class PlatformDetector
         string? productName = null;
         string? manufacturer = null;
         
-        if (OperatingSystem.IsWindows())
+        if (IsWindowsHost)
         {
             productName = GetWindowsProductName();
             manufacturer = GetWindowsManufacturer();
         }
-        else if (OperatingSystem.IsLinux())
+        else if (IsLinuxHost)
         {
             productName = ReadDmiField("product_name");
             manufacturer = ReadDmiField("board_vendor");
@@ -375,12 +385,12 @@ public static partial class PlatformDetector
         string? productName = null;
         string? manufacturer = null;
         
-        if (OperatingSystem.IsWindows())
+        if (IsWindowsHost)
         {
             productName = GetWindowsProductName();
             manufacturer = GetWindowsManufacturer();
         }
-        else if (OperatingSystem.IsLinux())
+        else if (IsLinuxHost)
         {
             productName = ReadDmiField("product_name");
             manufacturer = ReadDmiField("board_vendor");
@@ -406,12 +416,12 @@ public static partial class PlatformDetector
         string? productName = null;
         string? manufacturer = null;
         
-        if (OperatingSystem.IsWindows())
+        if (IsWindowsHost)
         {
             productName = GetWindowsProductName();
             manufacturer = GetWindowsManufacturer();
         }
-        else if (OperatingSystem.IsLinux())
+        else if (IsLinuxHost)
         {
             productName = ReadDmiField("product_name");
             manufacturer = ReadDmiField("board_vendor");
@@ -435,7 +445,7 @@ public static partial class PlatformDetector
     
     private static PlatformType? DetectAppleSilicon()
     {
-        if (!OperatingSystem.IsMacOS())
+        if (!IsMacHost)
             return null;
 
         try
@@ -504,15 +514,15 @@ public static partial class PlatformDetector
     
     private static bool DetectIsLaptop()
     {
-        if (OperatingSystem.IsWindows())
+        if (IsWindowsHost)
         {
             return DetectIsLaptopWindows();
         }
-        else if (OperatingSystem.IsLinux())
+        else if (IsLinuxHost)
         {
             return DetectIsLaptopLinux();
         }
-        else if (OperatingSystem.IsMacOS())
+        else if (IsMacHost)
         {
             return DetectIsLaptopMacOS();
         }
@@ -612,15 +622,15 @@ public static partial class PlatformDetector
     
     private static GpuInfo DetectGpu()
     {
-        if (OperatingSystem.IsWindows())
+        if (IsWindowsHost)
         {
             return DetectGpuWindows();
         }
-        else if (OperatingSystem.IsLinux())
+        else if (IsLinuxHost)
         {
             return DetectGpuLinux();
         }
-        else if (OperatingSystem.IsMacOS())
+        else if (IsMacHost)
         {
             return DetectGpuMacOS();
         }
@@ -982,7 +992,7 @@ public static partial class PlatformDetector
         try
         {
             // Simple check - look for battery in power supply
-            if (OperatingSystem.IsWindows())
+            if (IsWindowsHost)
             {
                 using var key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Services\ACPI\Enum");
                 var count = key?.GetValue("Count");

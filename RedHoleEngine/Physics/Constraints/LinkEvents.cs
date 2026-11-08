@@ -136,12 +136,12 @@ public struct ChainBreakEvent
     public int OriginalChainId;
     
     /// <summary>
-    /// New chain ID for the first segment (or -1 if only one link remained)
+    /// New chain ID for the first segment (or -1 if no links remained on that side)
     /// </summary>
     public int NewChainIdA;
     
     /// <summary>
-    /// New chain ID for the second segment (or -1 if only one link remained)
+    /// New chain ID for the second segment (or -1 if no links remained on that side)
     /// </summary>
     public int NewChainIdB;
     

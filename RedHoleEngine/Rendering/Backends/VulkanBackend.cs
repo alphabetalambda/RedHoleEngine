@@ -30,7 +30,7 @@ namespace RedHoleEngine.Rendering.Backends;
 /// <summary>
 /// Vulkan graphics backend - uses MoltenVK on macOS for Metal support
 /// </summary>
-public unsafe class VulkanBackend : IGraphicsBackend
+public unsafe partial class VulkanBackend : IGraphicsBackend
 {
     public RaytracerSettings RaytracerSettings { get; } = new();
     public RenderSettings RenderSettings { get; } = new();
@@ -238,7 +238,7 @@ public unsafe class VulkanBackend : IGraphicsBackend
 
     public void Initialize()
     {
-        _vk = Vk.GetApi();
+        _vk = MoltenVkLoader.CreateApi();
         
         CreateInstance();
         CreateSurface();
@@ -255,6 +255,7 @@ public unsafe class VulkanBackend : IGraphicsBackend
         CreateComputePipeline();
         CreateMotionVectorPipeline();
         CreateDescriptorPool();
+        CreateTemporalDenoisePipeline();
         CreateDescriptorSets();
         CreateUniformBuffer();
         CreateMotionVectorUniformBuffer();
@@ -789,6 +790,7 @@ public unsafe class VulkanBackend : IGraphicsBackend
             UpdateRenderResolutionDescriptors();
             
             // Reset accumulation
+            _temporalForceReset = true;
             _accumInitialized = false;
             _frameIndex = 0;
             RaytracerSettings.ResetAccumulation = true;
@@ -995,7 +997,7 @@ public unsafe class VulkanBackend : IGraphicsBackend
             ArrayLayers = 1,
             Samples = SampleCountFlags.Count1Bit,
             Tiling = ImageTiling.Optimal,
-            Usage = ImageUsageFlags.StorageBit | ImageUsageFlags.TransferSrcBit,
+            Usage = ImageUsageFlags.StorageBit | ImageUsageFlags.TransferSrcBit | ImageUsageFlags.TransferDstBit,
             SharingMode = SharingMode.Exclusive,
             InitialLayout = ImageLayout.Undefined
         };
@@ -1903,8 +1905,8 @@ public unsafe class VulkanBackend : IGraphicsBackend
     {
         var poolSizes = new DescriptorPoolSize[]
         {
-            new() { Type = DescriptorType.StorageImage, DescriptorCount = 7 }, // Output, Accum, RaytracingDepth, MotionVector(2), GBufferNormal, GBufferAlbedo
-            new() { Type = DescriptorType.UniformBuffer, DescriptorCount = 2 }, // Raytracer + MotionVector
+            new() { Type = DescriptorType.StorageImage, DescriptorCount = 7 + 24 }, // (+24 temporal denoise: 12 per set x2) Output, Accum, RaytracingDepth, MotionVector(2), GBufferNormal, GBufferAlbedo
+            new() { Type = DescriptorType.UniformBuffer, DescriptorCount = 2 + 2 }, // Raytracer + MotionVector + Temporal x2
             new() { Type = DescriptorType.StorageBuffer, DescriptorCount = 3 }, // BVH, Triangles, Materials
             new() { Type = DescriptorType.CombinedImageSampler, DescriptorCount = MaxMaterialTextures + 1 } // Material textures + env map
         };
@@ -1916,7 +1918,7 @@ public unsafe class VulkanBackend : IGraphicsBackend
                 SType = StructureType.DescriptorPoolCreateInfo,
                 PoolSizeCount = (uint)poolSizes.Length,
                 PPoolSizes = poolSizesPtr,
-                MaxSets = 2 // Raytracer + MotionVector
+                MaxSets = 4 // Raytracer + MotionVector + Temporal x2
             };
 
             fixed (DescriptorPool* pool = &_descriptorPool)
@@ -3404,6 +3406,7 @@ public unsafe class VulkanBackend : IGraphicsBackend
         CheckUpscaleSettingsChanged();
 
         UpdateAccumulationState(camera);
+        PlanTemporalDenoise(blackHole);
 
         // Update uniforms - use render resolution for raytracer
         RaytracerSettings.Clamp();
@@ -3549,6 +3552,7 @@ public unsafe class VulkanBackend : IGraphicsBackend
     public void RenderToReadback(Camera camera, BlackHole? blackHole, float time, byte[] rgbaBuffer)
     {
         UpdateAccumulationState(camera);
+        PlanTemporalDenoise(blackHole);
 
         RaytracerSettings.Clamp();
         var uniforms = new RaytracerUniforms
@@ -3716,7 +3720,7 @@ public unsafe class VulkanBackend : IGraphicsBackend
         
         // Motion vector pass - generate motion vectors from depth
         if (_motionVectorPipeline.Handle != 0 && _motionVectorGenerator != null && 
-            RaytracerSettings.UpscaleMethod != UpscaleMethod.None)
+            (RaytracerSettings.UpscaleMethod != UpscaleMethod.None || _temporalPlan.Run))
         {
             // Transition motion vector image to general layout
             if (_motionVectorImageLayout != ImageLayout.General)
@@ -3739,6 +3743,9 @@ public unsafe class VulkanBackend : IGraphicsBackend
             
             _vk.CmdDispatch(_computeCommandBuffer, groupsX, groupsY, 1);
         }
+
+        // Temporal denoise (gravity-gated: records nothing when lensing is active)
+        RecordTemporalDenoisePass(_computeCommandBuffer);
 
         // Transition output image for transfer
         TransitionImageLayout(_computeCommandBuffer, _outputImage, ImageLayout.General, ImageLayout.TransferSrcOptimal);
@@ -3789,6 +3796,9 @@ public unsafe class VulkanBackend : IGraphicsBackend
         {
             _frameIndex = 0;
             _accumInitialized = false;
+            // Scene/settings mutation invalidates temporal history (camera motion alone does not).
+            if (RaytracerSettings.ResetAccumulation || settingsHash != _lastSettingsHash)
+                _temporalForceReset = true;
             RaytracerSettings.ResetAccumulation = false;
         }
 
@@ -4300,6 +4310,8 @@ public unsafe class VulkanBackend : IGraphicsBackend
             _vk.DestroyPipelineLayout(_device, _computePipelineLayout, null);
             _vk.DestroyDescriptorSetLayout(_device, _computeDescriptorSetLayout, null);
             
+            DestroyTemporalPipeline();
+
             // Cleanup motion vector pipeline
             if (_motionVectorPipeline.Handle != 0)
             {

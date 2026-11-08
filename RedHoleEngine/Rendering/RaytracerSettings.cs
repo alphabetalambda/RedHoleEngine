@@ -48,6 +48,13 @@ public class RaytracerSettings
     public int SVGFSpatialIterations { get; set; } = 5;      // Spatial filter iterations
     public float SVGFPhiColor { get; set; } = 10.0f;         // Color weight for spatial filter
     public float SVGFPhiNormal { get; set; } = 128.0f;       // Normal weight for spatial filter
+    // Temporal denoise (history reprojection). HARD RULE: never runs while gravity can bend rays
+    // (see TemporalDenoiseGate). Requires Denoise = true.
+    public bool TemporalDenoise { get; set; } = false;
+    public int TemporalMaxHistory { get; set; } = 32;          // Max frames of history (1-64)
+    public float TemporalNormalThreshold { get; set; } = 0.9f; // Min dot(normal, prevNormal) to accept history
+    public float TemporalDepthThreshold { get; set; } = 0.1f;  // Max relative depth difference to accept history
+    public float TemporalVarianceClamp { get; set; } = 1.5f;   // History clamp = neighbourhood mean +/- gamma*sigma
     public RaytracerQualityPreset Preset { get; set; } = RaytracerQualityPreset.Balanced;
     
     // Gravitational lensing quality settings
@@ -113,6 +120,10 @@ public class RaytracerSettings
         ATrousDepthSigma = Math.Clamp(ATrousDepthSigma, 0.01f, 1.0f);
         SVGFTemporalAlpha = Math.Clamp(SVGFTemporalAlpha, 0.01f, 1.0f);
         SVGFSpatialIterations = Math.Clamp(SVGFSpatialIterations, 1, 6);
+        TemporalMaxHistory = Math.Clamp(TemporalMaxHistory, 1, 64);
+        TemporalNormalThreshold = Math.Clamp(TemporalNormalThreshold, 0.5f, 1.0f);
+        TemporalDepthThreshold = Math.Clamp(TemporalDepthThreshold, 0.01f, 0.5f);
+        TemporalVarianceClamp = Math.Clamp(TemporalVarianceClamp, 0.5f, 5.0f);
         SVGFPhiColor = Math.Clamp(SVGFPhiColor, 1.0f, 100.0f);
         SVGFPhiNormal = Math.Clamp(SVGFPhiNormal, 1.0f, 256.0f);
         

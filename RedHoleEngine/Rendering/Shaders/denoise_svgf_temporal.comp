@@ -2,27 +2,34 @@
 
 /*
  * SVGF Denoiser - Temporal Accumulation Pass
- * 
- * Spatiotemporal Variance-Guided Filtering (SVGF)
- * This pass performs temporal reprojection and accumulation of color and moments.
- * 
- * Reference: "Spatiotemporal Variance-Guided Filtering: Real-Time Reconstruction
- *            for Path-Traced Global Illumination" - Schied et al., HPG 2017
+ *
+ * Reprojects the previous accumulated frame with motion vectors, validates the history
+ * (bounds / depth / normal rejection), clamps it to the current 3x3 neighbourhood
+ * (variance-guided, mean +/- gamma*sigma) to kill ghosting, and blends exponentially.
+ *
+ * SAFETY (HARD RULE): this pass assumes STRAIGHT camera rays. It must never blend history when
+ * gravitational lensing can bend rays. The CPU gate (TemporalDenoiseGate) never dispatches this
+ * pass in that case; as a second line of defence bit0 of params.flags must be set by the CPU,
+ * otherwise this shader passes the current frame through untouched and reads NO history.
+ *
+ * CPU mirror of the math: RedHoleEngine/Rendering/Denoising/TemporalReprojection.cs
+ *
+ * Reference: "Spatiotemporal Variance-Guided Filtering" - Schied et al., HPG 2017
  */
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
 // Current frame inputs
 layout(set = 0, binding = 0, rgba32f) uniform readonly image2D currentColor;      // Noisy input color
-layout(set = 0, binding = 1, rgba32f) uniform readonly image2D currentNormal;     // World-space normals
-layout(set = 0, binding = 2, r32f) uniform readonly image2D currentDepth;         // Linear depth
-layout(set = 0, binding = 3, rg16f) uniform readonly image2D motionVectors;       // Screen-space motion
+layout(set = 0, binding = 1, rgba16f) uniform readonly image2D currentNormal;     // World-space normals (G-buffer)
+layout(set = 0, binding = 2, r32f) uniform readonly image2D currentDepth;         // Linear depth (0 = sky)
+layout(set = 0, binding = 3, rg16f) uniform readonly image2D motionVectors;       // current -> previous, in pixels
 
 // Previous frame data
 layout(set = 0, binding = 4, rgba32f) uniform readonly image2D prevColor;         // Previous accumulated color
 layout(set = 0, binding = 5, rgba32f) uniform readonly image2D prevMoments;       // Previous moments (mean, mean^2)
 layout(set = 0, binding = 6, r16f) uniform readonly image2D prevHistoryLength;    // Previous history length
-layout(set = 0, binding = 7, rgba32f) uniform readonly image2D prevNormal;        // Previous normals
+layout(set = 0, binding = 7, rgba16f) uniform readonly image2D prevNormal;        // Previous normals
 layout(set = 0, binding = 8, r32f) uniform readonly image2D prevDepth;            // Previous depth
 
 // Outputs
@@ -31,117 +38,115 @@ layout(set = 0, binding = 10, rgba32f) uniform writeonly image2D outMoments;    
 layout(set = 0, binding = 11, r16f) uniform writeonly image2D outHistoryLength;   // Updated history length
 
 layout(set = 0, binding = 12) uniform SVGFParams {
-    ivec2 resolution;
-    float temporalAlpha;       // Base temporal blend factor
-    float normalThreshold;     // Threshold for normal rejection
-    float depthThreshold;      // Threshold for depth rejection
+    vec2 resolution;
+    float temporalAlpha;       // Minimum weight of the current frame (blend strength)
+    float normalThreshold;     // Min dot(normal, prevNormal)
+    float depthThreshold;      // Max relative depth difference
     int maxHistoryLength;      // Maximum history frames to accumulate
-    float pad0;
-    float pad1;
-} params;
+    int flags;                 // bit0 = gravity gate allows temporal, bit1 = history valid
+    float varianceClampGamma;  // Neighbourhood clamp width in sigmas
+} u;
 
-// Calculate luminance for variance estimation
+const int FLAG_TEMPORAL_ALLOWED = 1;
+const int FLAG_HISTORY_VALID = 2;
+
 float luminance(vec3 color) {
     return dot(color, vec3(0.2126, 0.7152, 0.0722));
 }
 
-// Check if reprojected sample is valid (consistency check)
-bool isReprojectionValid(ivec2 currentCoord, ivec2 prevCoord, vec3 currentNormal, float currentDepth) {
-    // Boundary check
-    if (prevCoord.x < 0 || prevCoord.x >= params.resolution.x ||
-        prevCoord.y < 0 || prevCoord.y >= params.resolution.y) {
+bool isReprojectionValid(ivec2 prevCoord, ivec2 size, vec3 curNormal, float curDepth) {
+    if (prevCoord.x < 0 || prevCoord.x >= size.x || prevCoord.y < 0 || prevCoord.y >= size.y) {
         return false;
     }
-    
-    // Load previous frame data
+
     vec3 prevNormalVal = imageLoad(prevNormal, prevCoord).xyz;
     float prevDepthVal = imageLoad(prevDepth, prevCoord).r;
-    
-    // Skip invalid samples
+
     if (prevDepthVal <= 0.0 || length(prevNormalVal) < 0.5) {
         return false;
     }
-    
-    prevNormalVal = normalize(prevNormalVal);
-    
-    // Normal consistency check
-    float normalSimilarity = dot(currentNormal, prevNormalVal);
-    if (normalSimilarity < params.normalThreshold) {
+
+    if (dot(curNormal, normalize(prevNormalVal)) < u.normalThreshold) {
         return false;
     }
-    
-    // Depth consistency check (relative depth difference)
-    float depthDiff = abs(currentDepth - prevDepthVal) / max(currentDepth, 0.0001);
-    if (depthDiff > params.depthThreshold) {
-        return false;
-    }
-    
-    return true;
+
+    float depthDiff = abs(curDepth - prevDepthVal) / max(curDepth, 0.0001);
+    return depthDiff <= u.depthThreshold;
 }
 
 void main() {
+    ivec2 size = ivec2(u.resolution);
     ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
-    
-    if (pixelCoord.x >= params.resolution.x || pixelCoord.y >= params.resolution.y) {
+
+    if (pixelCoord.x >= size.x || pixelCoord.y >= size.y) {
         return;
     }
-    
-    // Load current frame data
+
     vec4 currentColorVal = imageLoad(currentColor, pixelCoord);
-    vec3 currentNormalVal = imageLoad(currentNormal, pixelCoord).xyz;
-    float currentDepthVal = imageLoad(currentDepth, pixelCoord).r;
-    vec2 motion = imageLoad(motionVectors, pixelCoord).rg;
-    
-    // Handle invalid pixels (sky, etc.) - no temporal accumulation
-    if (currentDepthVal <= 0.0 || length(currentNormalVal) < 0.5) {
+    float currentLum = luminance(currentColorVal.rgb);
+    vec2 currentMoments = vec2(currentLum, currentLum * currentLum);
+
+    // GRAVITY GATE (shader side): if the CPU did not explicitly allow temporal accumulation,
+    // pass the current frame through. No history is read, none is meaningful.
+    if ((u.flags & FLAG_TEMPORAL_ALLOWED) == 0) {
         imageStore(outColor, pixelCoord, currentColorVal);
-        imageStore(outMoments, pixelCoord, vec4(luminance(currentColorVal.rgb), 0.0, 0.0, 0.0));
+        imageStore(outMoments, pixelCoord, vec4(currentMoments, 0.0, 0.0));
         imageStore(outHistoryLength, pixelCoord, vec4(1.0));
         return;
     }
-    
+
+    vec3 currentNormalVal = imageLoad(currentNormal, pixelCoord).xyz;
+    float currentDepthVal = imageLoad(currentDepth, pixelCoord).r;
+
+    // Sky / invalid pixels: no temporal accumulation
+    if (currentDepthVal <= 0.0 || length(currentNormalVal) < 0.5) {
+        imageStore(outColor, pixelCoord, currentColorVal);
+        imageStore(outMoments, pixelCoord, vec4(currentMoments, 0.0, 0.0));
+        imageStore(outHistoryLength, pixelCoord, vec4(1.0));
+        return;
+    }
     currentNormalVal = normalize(currentNormalVal);
-    
-    // Calculate reprojected position
-    vec2 prevUV = (vec2(pixelCoord) + 0.5) / vec2(params.resolution) - motion / vec2(params.resolution);
-    ivec2 prevCoord = ivec2(prevUV * vec2(params.resolution));
-    
-    // Check if reprojection is valid
-    bool validReprojection = isReprojectionValid(pixelCoord, prevCoord, currentNormalVal, currentDepthVal);
-    
-    vec3 accumulatedColor;
-    vec2 accumulatedMoments;
-    float historyLength;
-    
-    if (validReprojection) {
-        // Load previous frame accumulated data
+
+    // Reproject: motion points from current to previous, so prev = current - motion
+    vec2 motion = imageLoad(motionVectors, pixelCoord).rg;
+    ivec2 prevCoord = ivec2(floor(vec2(pixelCoord) + 0.5 - motion));
+
+    bool valid = ((u.flags & FLAG_HISTORY_VALID) != 0) &&
+                 isReprojectionValid(prevCoord, size, currentNormalVal, currentDepthVal);
+
+    vec3 accumulatedColor = currentColorVal.rgb;
+    vec2 accumulatedMoments = currentMoments;
+    float historyLength = 1.0;
+
+    if (valid) {
         vec3 prevColorVal = imageLoad(prevColor, prevCoord).rgb;
         vec2 prevMomentsVal = imageLoad(prevMoments, prevCoord).rg;
         float prevHistoryLen = imageLoad(prevHistoryLength, prevCoord).r;
-        
-        // Increment history length (capped)
-        historyLength = min(prevHistoryLen + 1.0, float(params.maxHistoryLength));
-        
-        // Calculate adaptive alpha based on history length
-        // Shorter history = more weight to current frame
-        float alpha = max(params.temporalAlpha, 1.0 / historyLength);
-        
-        // Temporal accumulation of color
-        accumulatedColor = mix(prevColorVal, currentColorVal.rgb, alpha);
-        
-        // Temporal accumulation of moments for variance estimation
-        float currentLum = luminance(currentColorVal.rgb);
-        vec2 currentMoments = vec2(currentLum, currentLum * currentLum);
+
+        // Variance-guided neighbourhood clamp of the history colour (anti-ghosting)
+        vec3 m1 = vec3(0.0);
+        vec3 m2 = vec3(0.0);
+        for (int dy = -1; dy <= 1; dy++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                ivec2 nc = clamp(pixelCoord + ivec2(dx, dy), ivec2(0), size - 1);
+                vec3 c = imageLoad(currentColor, nc).rgb;
+                m1 += c;
+                m2 += c * c;
+            }
+        }
+        vec3 mean = m1 / 9.0;
+        vec3 sigma = sqrt(max(m2 / 9.0 - mean * mean, vec3(0.0)));
+        vec3 clampedHistory = clamp(prevColorVal,
+                                    mean - u.varianceClampGamma * sigma,
+                                    mean + u.varianceClampGamma * sigma);
+
+        historyLength = min(prevHistoryLen + 1.0, float(u.maxHistoryLength));
+        float alpha = min(1.0, max(u.temporalAlpha, 1.0 / historyLength));
+
+        accumulatedColor = mix(clampedHistory, currentColorVal.rgb, alpha);
         accumulatedMoments = mix(prevMomentsVal, currentMoments, alpha);
-    } else {
-        // No valid history - use current frame only
-        accumulatedColor = currentColorVal.rgb;
-        float currentLum = luminance(currentColorVal.rgb);
-        accumulatedMoments = vec2(currentLum, currentLum * currentLum);
-        historyLength = 1.0;
     }
-    
-    // Output accumulated data
+
     imageStore(outColor, pixelCoord, vec4(accumulatedColor, currentColorVal.a));
     imageStore(outMoments, pixelCoord, vec4(accumulatedMoments, 0.0, 0.0));
     imageStore(outHistoryLength, pixelCoord, vec4(historyLength));

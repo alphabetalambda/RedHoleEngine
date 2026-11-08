@@ -544,14 +544,18 @@ public class ConstraintSolver
             var chain = _chains.FirstOrDefault(c => c.Id == link.ChainId);
             if (chain != null)
             {
-                chain.OnLinkBroken(link.IndexInCollection);
-                
+                int breakIndex = chain.Links.IndexOf(link);
+                if (breakIndex < 0) breakIndex = link.IndexInCollection;
+                chain.OnLinkBroken(breakIndex);
+
+                var (newA, newB) = SplitChain(chain, breakIndex);
+
                 _pendingChainBreakEvents.Add(new ChainBreakEvent
                 {
                     OriginalChainId = chain.Id,
-                    NewChainIdA = -1,  // TODO: Create new chains from segments
-                    NewChainIdB = -1,
-                    BreakIndex = link.IndexInCollection,
+                    NewChainIdA = newA,
+                    NewChainIdB = newB,
+                    BreakIndex = breakIndex,
                     BreakPoint = link.Midpoint
                 });
             }
@@ -583,6 +587,55 @@ public class ConstraintSolver
         }
     }
     
+    /// <summary>
+    /// Split a chain around a broken link into two new chains (links before and after the break).
+    /// The original chain keeps only the broken link. Returns the new chain ids, or -1 for a side with no links.
+    /// </summary>
+    private (int a, int b) SplitChain(LinkChain chain, int breakIndex)
+    {
+        if (breakIndex < 0 || breakIndex >= chain.Links.Count)
+            return (-1, -1);
+
+        var broken = chain.Links[breakIndex];
+        var before = chain.Links.GetRange(0, breakIndex);
+        var after = chain.Links.GetRange(breakIndex + 1, chain.Links.Count - breakIndex - 1);
+        bool nodesAligned = chain.NodeEntities.Count == chain.Links.Count + 1;
+
+        int Create(List<LinkConstraint> segment, int firstNode)
+        {
+            if (segment.Count == 0) return -1;
+
+            var newChain = new LinkChain { Id = _nextChainId++, Type = chain.Type };
+            if (nodesAligned)
+                newChain.NodeEntities.AddRange(chain.NodeEntities.GetRange(firstNode, segment.Count + 1));
+
+            foreach (var l in segment)
+            {
+                l.ChainId = newChain.Id;
+                l.IndexInCollection = newChain.Links.Count;
+                newChain.Links.Add(l);
+            }
+            _chains.Add(newChain);
+            return newChain.Id;
+        }
+
+        int idA = Create(before, 0);
+        int idB = Create(after, breakIndex + 1);
+
+        chain.Links.Clear();
+        chain.Links.Add(broken);
+        broken.IndexInCollection = 0;
+        if (nodesAligned)
+        {
+            // Original keeps just the nodes bridging the broken link.
+            var nodes = chain.NodeEntities.GetRange(breakIndex, 2);
+            chain.NodeEntities.Clear();
+            chain.NodeEntities.AddRange(nodes);
+        }
+
+        return (idA, idB);
+    }
+
     // ===== Query Methods =====
     
     /// <summary>

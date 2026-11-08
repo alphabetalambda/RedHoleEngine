@@ -108,8 +108,11 @@ void main() {
     // Reconstruct world position
     // Note: depth interpretation depends on how raytracer stores it
     // Assuming linear depth in world units
-    float normalizedDepth = depth / farPlane;
-    vec3 worldPos = reconstructWorldPos(unjitteredUV, normalizedDepth);
+    // The raytracer stores the distance from the camera to the first hit, so place the point
+    // along the (straight) camera ray through this pixel. NOTE: this is only valid for straight
+    // rays; temporal use of these vectors is disabled when gravity bends rays (TemporalDenoiseGate).
+    vec3 rayDir = normalize(reconstructWorldPos(unjitteredUV, 0.5) - currentCameraPos);
+    vec3 worldPos = currentCameraPos + rayDir * depth;
     
     // Project to previous frame
     vec2 prevUV = projectToPrevFrame(worldPos);

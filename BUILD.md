@@ -4,7 +4,7 @@
 
 ### All Platforms
 - [.NET 10 SDK](https://dotnet.microsoft.com/download) (or later)
-- [Vulkan SDK](https://vulkan.lunarg.com/) (for shader compilation)
+- [Vulkan SDK](https://vulkan.lunarg.com/) is only needed if you want to regenerate the committed `.spv` files with `glslangValidator` (see Shader Compilation). Building and running do not require it.
 
 ### Windows
 - Visual Studio 2022 (optional, for IDE support)
@@ -12,7 +12,7 @@
 
 ### macOS
 - Xcode Command Line Tools (`xcode-select --install`)
-- MoltenVK (included via Silk.NET)
+- No Vulkan SDK, MoltenVK, or Homebrew `vulkan-loader` install is needed: `libMoltenVK.dylib` ships with the `Silk.NET.MoltenVK.Native` package, is copied to the build/publish output, and is loaded directly as the Vulkan loader. See [docs/MACOS_GRAPHICS_OPTIONS.md](docs/MACOS_GRAPHICS_OPTIONS.md) for how this works and the alternatives considered.
 - LightGBM (optional): `Microsoft.ML.LightGbm` ships native libraries for osx-x64, linux-x64 and
   win-x64 only. On Apple Silicon (osx-arm64) `lib_lightgbm` cannot be loaded, so
   `MLService.IsLightGbmAvailable` is false, LightGBM trainers throw `PlatformNotSupportedException`
@@ -175,13 +175,10 @@ world.AddComponent(entity, new RenderSettingsComponent(RenderMode.Raytraced)
 NVIDIA drivers compile shaders on first use. This causes brief stuttering that fades as the shader cache builds. Use `LensingQuality.Low` for smoother initial experience.
 
 ### macOS: Vulkan Not Found
-Ensure MoltenVK is properly loaded. The engine uses Silk.NET which bundles MoltenVK, but you may need to set:
-```bash
-export DYLD_LIBRARY_PATH=/path/to/vulkan/lib:$DYLD_LIBRARY_PATH
-```
+No external install is required. The engine loads the bundled `libMoltenVK.dylib` from the app directory (or `runtimes/osx*/native`). Look for a `[MoltenVkLoader] Using bundled MoltenVK...` line in the log. If it says the library was not found, make sure the output folder contains `libMoltenVK.dylib`, or set `REDHOLE_MOLTENVK_PATH` to its full path. See [docs/MACOS_GRAPHICS_OPTIONS.md](docs/MACOS_GRAPHICS_OPTIONS.md).
 
 ### Shader Compilation Errors
-Ensure you have the Vulkan SDK installed and `glslangValidator` is in your PATH:
+Only needed when regenerating `.spv` files: ensure you have the Vulkan SDK installed and `glslangValidator` is in your PATH:
 ```bash
 # Check installation
 glslangValidator --version

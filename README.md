@@ -54,7 +54,7 @@ RedHoleEngine is a modern game engine built around a unique specialization: real
 | Category | Technology |
 |----------|------------|
 | Runtime | .NET 10, C# 13 |
-| Graphics | Vulkan (Silk.NET), MoltenVK for macOS |
+| Graphics | Vulkan (Silk.NET), MoltenVK for macOS (bundled, no install needed) |
 | Audio | OpenAL (Silk.NET) |
 | UI | ImGui.NET |
 | ML | Microsoft.ML, FastTree, LightGBM |
@@ -101,7 +101,7 @@ world.AddComponent(blackHole, new AccretionDiskComponent
 ## Platform Support
 
 - **Windows** — Native Vulkan
-- **macOS** — MoltenVK (Metal backend)
+- **macOS** — MoltenVK (Metal backend), bundled with the game; no Vulkan SDK, MoltenVK, or Homebrew install required
 - **Linux** — Vulkan
 
 ---

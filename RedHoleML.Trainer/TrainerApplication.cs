@@ -39,6 +39,7 @@ public class TrainerApplication : IDisposable
         Silk.NET.Windowing.Glfw.GlfwWindowing.RegisterPlatform();
         Silk.NET.Input.Glfw.GlfwInput.RegisterPlatform();
         Window.PrioritizeGlfw();
+        RedHoleEngine.Rendering.Backends.MoltenVkLoader.ConfigureGlfw();
 
         var options = WindowOptions.Default with
         {

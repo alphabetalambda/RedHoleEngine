@@ -64,7 +64,7 @@ This file is a concise, AI-oriented guide to the RedHoleEngine codebase: archite
 - Engine project: `RedHoleEngine/RedHoleEngine.csproj` (TargetFramework `net10.0`).
 - Editor project: `RedHoleEngine.Editor/RedHoleEngine.Editor.csproj`.
 - Test project: `RedHoleEngine.Tests/RedHoleEngine.Tests.csproj`.
-- On macOS, `RedHoleEngine.csproj` copies Vulkan loader and builds a native launcher.
+- On macOS, `Rendering/Backends/MoltenVkLoader.cs` loads the bundled `libMoltenVK.dylib` (from `Silk.NET.MoltenVK.Native`) directly as the Vulkan loader; no Homebrew/system Vulkan install or native launcher is needed. See `docs/MACOS_GRAPHICS_OPTIONS.md`.
 
 ## AI contribution guidance
 - Prefer adding new runtime systems under `RedHoleEngine/` and editor-only tooling under `RedHoleEngine.Editor/`.

@@ -238,7 +238,7 @@ public unsafe class VulkanBackend : IGraphicsBackend
 
     public void Initialize()
     {
-        _vk = Vk.GetApi();
+        _vk = MoltenVkLoader.CreateApi();
         
         CreateInstance();
         CreateSurface();

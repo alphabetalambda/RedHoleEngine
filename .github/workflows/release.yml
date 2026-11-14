@@ -23,7 +23,7 @@ jobs:
           - { os: macos-latest,  rid: osx-arm64,   project: RedHoleGame }
           - { os: macos-latest,  rid: osx-arm64,   project: RedHoleEngine.Editor }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-dotnet@v4
         with:

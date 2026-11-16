@@ -209,6 +209,7 @@ public class Application : IDisposable
         
         // Register default loaders
         _resourceManager.RegisterLoader(new ShaderLoader());
+        _resourceManager.RegisterLoader(new Resources.ModelImport.ModelLoader());
     }
 
     /// <summary>

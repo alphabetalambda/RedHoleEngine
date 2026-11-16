@@ -41,6 +41,7 @@ public class AssetBrowserPanel : EditorPanel
 {
     private readonly Func<string> _getProjectPath;
     private readonly Action<string> _openSceneAction;
+    private readonly Action<string>? _importModelAction;
     
     private string _currentPath = "";
     private string _rootPath = "";
@@ -62,10 +63,11 @@ public class AssetBrowserPanel : EditorPanel
 
     public override string Title => "Assets";
 
-    public AssetBrowserPanel(Func<string> getProjectPath, Action<string> openSceneAction)
+    public AssetBrowserPanel(Func<string> getProjectPath, Action<string> openSceneAction, Action<string>? importModelAction = null)
     {
         _getProjectPath = getProjectPath;
         _openSceneAction = openSceneAction;
+        _importModelAction = importModelAction;
     }
 
     protected override void OnDraw()
@@ -390,6 +392,10 @@ public class AssetBrowserPanel : EditorPanel
         {
             InstantiatePrefab(entry.FullPath);
         }
+        else if (CanImportModel(entry))
+        {
+            _importModelAction!(entry.FullPath);
+        }
     }
 
     private void InstantiatePrefab(string path)
@@ -420,6 +426,13 @@ public class AssetBrowserPanel : EditorPanel
         }
     }
 
+    private bool CanImportModel(AssetEntry entry)
+    {
+        return _importModelAction != null
+            && entry.Type == AssetType.Mesh
+            && RedHoleEngine.Resources.ModelImport.ModelLoader.IsSupported(entry.FullPath);
+    }
+
     private void HandleContextMenu()
     {
         if (_showContextMenu)
@@ -447,6 +460,15 @@ public class AssetBrowserPanel : EditorPanel
                     if (ImGui.MenuItem("Instantiate in Scene"))
                     {
                         InstantiatePrefab(_selectedEntry.FullPath);
+                    }
+                    ImGui.Separator();
+                }
+
+                if (CanImportModel(_selectedEntry))
+                {
+                    if (ImGui.MenuItem("Add to Scene"))
+                    {
+                        _importModelAction!(_selectedEntry.FullPath);
                     }
                     ImGui.Separator();
                 }

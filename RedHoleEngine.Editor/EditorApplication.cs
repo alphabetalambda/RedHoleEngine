@@ -145,7 +145,8 @@ public class EditorApplication : IDisposable
         _terminalPanel = new TerminalPanel(_terminalSession, () => _terminalSaveManager);
         _assetBrowserPanel = new AssetBrowserPanel(
             () => _projectManager.HasProject ? _projectManager.GetAssetPath() : "",
-            path => LoadScene(path));
+            path => LoadScene(path),
+            path => ImportModel(path));
         _materialEditorPanel = new MaterialEditorPanel(_projectManager, _materialLibrary);
         _environmentPanel = new EnvironmentPanel(OnEnvironmentMapChanged);
 
@@ -1412,6 +1413,34 @@ public class EditorApplication : IDisposable
             // Reload default scene on failure
             LoadDefaultShowcaseScene();
         }
+    }
+
+    /// <summary>
+    /// Import a glTF/GLB model and add its meshes to the current scene
+    /// </summary>
+    private void ImportModel(string path)
+    {
+        if (_world == null) return;
+
+        // Flattened: scene files do not store transform parenting.
+        var instance = Resources.ModelImport.ModelInstantiator.Instantiate(_world, _gameResources, path,
+            new Resources.ModelImport.ModelInstantiateOptions
+            {
+                MaterialLibrary = _materialLibrary,
+                FlattenHierarchy = true
+            });
+
+        if (instance == null)
+        {
+            Console.WriteLine($"Failed to import model: {path}");
+            return;
+        }
+
+        if (instance.MeshEntities.Count > 0)
+            _selection.SelectMultiple(instance.MeshEntities);
+
+        _raytracerSettings.ResetAccumulation = true;
+        Console.WriteLine($"Imported model {Path.GetFileName(path)}: {instance.MeshEntities.Count} mesh entities");
     }
 
     private string GetSceneDirectory()

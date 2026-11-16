@@ -444,3 +444,13 @@ steam_api64.dll
 libsteam_api.dylib
 libsteam_api.so
 # Note: steam_appid.txt is NOT ignored - it's needed for development/testing
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# OS / IDE / local tool state
+# ═══════════════════════════════════════════════════════════════════════════════
+.DS_Store
+.idea/
+# Dear ImGui writes window layout here at runtime
+imgui.ini
+# Pixelmator Pro source files (exported .svg/.png assets are kept)
+*.pxd

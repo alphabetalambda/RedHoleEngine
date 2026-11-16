@@ -9,6 +9,9 @@ public class GameProjectPanel : EditorPanel
     private readonly ProjectManager _projectManager;
     private readonly BuildSystem _buildSystem;
     private readonly Action _onProjectLoaded;
+    private readonly Action<string>? _onOpenScene;
+    private readonly FileDialog _projectFileDialog = new();
+    private readonly FileDialog _folderDialog = new();
     
     private string _pathBuffer = "";
     private string _newProjectName = "New Project";
@@ -17,11 +20,16 @@ public class GameProjectPanel : EditorPanel
     private bool _showProjectSettings;
     private BuildConfiguration _buildConfiguration = BuildConfiguration.Debug;
 
-    public GameProjectPanel(ProjectManager projectManager, BuildSystem buildSystem, Action onProjectLoaded)
+    /// <param name="projectManager">Project manager</param>
+    /// <param name="buildSystem">Build system for the game project</param>
+    /// <param name="onProjectLoaded">Called after a project is opened or rebuilt</param>
+    /// <param name="onOpenScene">Called to open a scene file (e.g. from the recent scenes list)</param>
+    public GameProjectPanel(ProjectManager projectManager, BuildSystem buildSystem, Action onProjectLoaded, Action<string>? onOpenScene = null)
     {
         _projectManager = projectManager;
         _buildSystem = buildSystem;
         _onProjectLoaded = onProjectLoaded;
+        _onOpenScene = onOpenScene;
     }
     
     /// <summary>
@@ -58,7 +66,16 @@ public class GameProjectPanel : EditorPanel
         ImGui.SameLine();
         if (ImGui.Button("Browse..."))
         {
-            // TODO: Integrate with file dialog
+            _projectFileDialog.Open(
+                FileDialogMode.Open,
+                "Project",
+                GetBrowseStartDirectory(_pathBuffer),
+                $"RedHole Project (*{ProjectManager.ProjectExtension})|*{ProjectManager.ProjectExtension}|All Files (*.*)|*.*");
+        }
+        if (_projectFileDialog.Draw() == FileDialogResult.Ok)
+        {
+            _pathBuffer = _projectFileDialog.SelectedPath;
+            OpenProject(_pathBuffer);
         }
 
         if (ImGui.Button("Open Project", new Vector2(120, 0)))
@@ -257,9 +274,11 @@ public class GameProjectPanel : EditorPanel
             foreach (var scene in project.Editor.RecentScenes.Take(5))
             {
                 var sceneName = Path.GetFileName(scene);
-                if (ImGui.Selectable(sceneName))
+                var exists = File.Exists(scene);
+                if (ImGui.Selectable(exists ? sceneName : $"{sceneName} (missing)", false,
+                        exists && _onOpenScene != null ? ImGuiSelectableFlags.None : ImGuiSelectableFlags.Disabled))
                 {
-                    // TODO: Open scene
+                    _onOpenScene?.Invoke(scene);
                 }
                 if (ImGui.IsItemHovered())
                 {
@@ -333,7 +352,12 @@ public class GameProjectPanel : EditorPanel
             ImGui.SameLine();
             if (ImGui.Button("Browse..."))
             {
-                // TODO: Folder picker
+                _folderDialog.OpenFolder("Project Location", GetBrowseStartDirectory(_pathBuffer));
+            }
+            // Drawn inside this modal so it stacks on top of it
+            if (_folderDialog.Draw() == FileDialogResult.Ok)
+            {
+                _pathBuffer = _folderDialog.SelectedPath;
             }
 
             ImGui.Spacing();
@@ -649,6 +673,24 @@ public class GameProjectPanel : EditorPanel
         ImGui.SetNextItemWidth(-1);
         ImGui.InputText($"##{label}Path", ref path, 128);
         return path;
+    }
+
+    /// <summary>
+    /// Pick a sensible starting folder for a browse dialog from the text currently in a path field
+    /// </summary>
+    private static string GetBrowseStartDirectory(string currentPath)
+    {
+        if (!string.IsNullOrWhiteSpace(currentPath))
+        {
+            if (Directory.Exists(currentPath))
+                return currentPath;
+
+            var parent = Path.GetDirectoryName(currentPath);
+            if (!string.IsNullOrEmpty(parent) && Directory.Exists(parent))
+                return parent;
+        }
+
+        return Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
     }
 
     private void OpenProject(string path)

@@ -55,7 +55,13 @@ public class MaterialEditorPanel : EditorPanel
     private readonly FileDialog _textureFileDialog = new();
     private string _pendingTextureSlot = string.Empty;
     
-    private static readonly string[] TextureFilter = { "png", "jpg", "jpeg", "tga", "bmp" };
+    private const string TextureFileFilter =
+        "Image Files (*.png;*.jpg;*.jpeg;*.tga;*.bmp;*.hdr)|*.png;*.jpg;*.jpeg;*.tga;*.bmp;*.hdr|All Files (*.*)|*.*";
+
+    // File dialog for opening material files
+    private readonly FileDialog _materialFileDialog = new();
+    private static readonly string MaterialFileFilter =
+        $"Material Files (*{MaterialSerializer.FileExtension})|*{MaterialSerializer.FileExtension}|All Files (*.*)|*.*";
     
     private static readonly string[] AlphaModeNames = { "Opaque", "Mask", "Blend" };
     private static readonly string[] PresetNames = 
@@ -499,6 +505,7 @@ public class MaterialEditorPanel : EditorPanel
         
         // Draw texture file dialog (must be called every frame when open)
         DrawTextureFileDialog();
+        DrawMaterialFileDialog();
     }
     
     private void DrawPreview()
@@ -598,13 +605,17 @@ public class MaterialEditorPanel : EditorPanel
         
         if (ImGui.Button("Open"))
         {
-            // TODO: Open file dialog
-            var materialsPath = GetMaterialsPath();
-            if (!string.IsNullOrEmpty(materialsPath))
+            var startDir = GetMaterialsPath();
+            if (string.IsNullOrEmpty(startDir) || !Directory.Exists(startDir))
             {
-                // For now, just list available materials
-                Console.WriteLine($"Materials folder: {materialsPath}");
+                startDir = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
             }
+            _materialFileDialog.Open(
+                FileDialogMode.Open,
+                "Material",
+                startDir,
+                MaterialFileFilter,
+                MaterialSerializer.FileExtension);
         }
         
         ImGui.SameLine();
@@ -726,7 +737,7 @@ public class MaterialEditorPanel : EditorPanel
                 FileDialogMode.Open, 
                 "Texture", 
                 startDir, 
-                "Image Files|*.png|*.jpg|*.jpeg|*.tga|*.bmp|*.hdr",
+                TextureFileFilter,
                 "");
         }
         if (ImGui.IsItemHovered())
@@ -771,6 +782,14 @@ public class MaterialEditorPanel : EditorPanel
         return Path.Combine(assetsPath, "Textures");
     }
     
+    private void DrawMaterialFileDialog()
+    {
+        if (_materialFileDialog.Draw() == FileDialogResult.Ok)
+        {
+            LoadMaterial(_materialFileDialog.SelectedPath);
+        }
+    }
+
     private void DrawTextureFileDialog()
     {
         var result = _textureFileDialog.Draw();

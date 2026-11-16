@@ -8,8 +8,12 @@ namespace RedHoleEngine.Editor.UI;
 /// </summary>
 public enum FileDialogMode
 {
+    /// <summary>Pick an existing file</summary>
     Open,
-    Save
+    /// <summary>Pick a file name to write (may not exist yet)</summary>
+    Save,
+    /// <summary>Pick a directory</summary>
+    SelectFolder
 }
 
 /// <summary>
@@ -23,33 +27,54 @@ public enum FileDialogResult
 }
 
 /// <summary>
-/// Simple ImGui-based file browser dialog
+/// Simple cross-platform ImGui file browser, shown as a modal popup.
+/// Call <see cref="Open"/> once, then call
+/// <see cref="Draw"/> every frame; it returns <see cref="FileDialogResult.Ok"/> on the frame the
+/// user confirms. Because it is a popup, Draw may be called from inside another modal popup.
+/// This file is also compiled into RedHoleML.Trainer.
 /// </summary>
 public class FileDialog
 {
+    private static int _nextInstanceId;
+
+    private readonly int _instanceId = Interlocked.Increment(ref _nextInstanceId);
     private FileDialogMode _mode;
     private string _title = "File Dialog";
     private string _currentDirectory;
     private string _fileName = "";
-    private string _filter = "*.*";
     private string _defaultExtension = "";
-    private string[] _filterExtensions = Array.Empty<string>();
-    
-    private List<string> _directories = new();
-    private List<string> _files = new();
+    private IReadOnlyList<FileFilter> _filters = FileDialogLogic.ParseFilter(null);
+    private int _activeFilter;
+    private bool _showHidden;
+
+    private readonly List<string> _directories = new();
+    private readonly List<string> _files = new();
     private int _selectedIndex = -1;
     private bool _isOpen;
+    private bool _openRequested;
     private bool _needsRefresh = true;
-    
+    private string _error = "";
+    private string? _pendingOverwritePath;
+
     /// <summary>
     /// Whether the dialog is currently open
     /// </summary>
     public bool IsOpen => _isOpen;
-    
+
     /// <summary>
-    /// The selected file path (valid after Ok result)
+    /// The current mode
+    /// </summary>
+    public FileDialogMode Mode => _mode;
+
+    /// <summary>
+    /// The selected file or folder path (valid after an Ok result)
     /// </summary>
     public string SelectedPath { get; private set; } = "";
+
+    /// <summary>
+    /// Ask before overwriting an existing file in Save mode (default true)
+    /// </summary>
+    public bool ConfirmOverwrite { get; set; } = true;
 
     public FileDialog()
     {
@@ -59,53 +84,46 @@ public class FileDialog
     /// <summary>
     /// Open the dialog in the specified mode
     /// </summary>
-    public void Open(FileDialogMode mode, string title, string filter = "All Files (*.*)|*.*", string defaultExtension = "")
+    /// <param name="mode">Open, Save or SelectFolder</param>
+    /// <param name="title">Noun shown in the title, e.g. "Scene"</param>
+    /// <param name="startDirectory">Folder to show first; ignored if it does not exist (the last folder is kept)</param>
+    /// <param name="filter">Filter string: "Description|*.a;*.b|All Files|*.*"</param>
+    /// <param name="defaultExtension">Extension appended in Save mode when missing</param>
+    /// <param name="defaultFileName">Initial file name in Save mode</param>
+    public void Open(FileDialogMode mode, string title, string startDirectory, string filter = "All Files (*.*)|*.*", string defaultExtension = "", string? defaultFileName = null)
     {
+        if (!string.IsNullOrEmpty(startDirectory) && Directory.Exists(startDirectory))
+        {
+            _currentDirectory = Path.GetFullPath(startDirectory);
+        }
+
+
         _mode = mode;
         _title = title;
-        _filter = filter;
         _defaultExtension = defaultExtension;
+        _filters = FileDialogLogic.ParseFilter(filter);
+        _activeFilter = 0;
         _isOpen = true;
+        _openRequested = true;
         _needsRefresh = true;
         _selectedIndex = -1;
-        
-        // Parse filter (format: "Description (*.ext)|*.ext")
-        ParseFilter(filter);
-        
-        if (_mode == FileDialogMode.Save && !string.IsNullOrEmpty(_defaultExtension))
+        _error = "";
+        _pendingOverwritePath = null;
+        SelectedPath = "";
+
+        _fileName = mode switch
         {
-            _fileName = "NewScene" + _defaultExtension;
-        }
+            FileDialogMode.Save => defaultFileName ?? ("New" + title.Replace(" ", "") + defaultExtension),
+            _ => ""
+        };
     }
 
     /// <summary>
-    /// Open the dialog with a starting directory
+    /// Open a folder picker
     /// </summary>
-    public void Open(FileDialogMode mode, string title, string startDirectory, string filter = "All Files (*.*)|*.*", string defaultExtension = "")
+    public void OpenFolder(string title, string? startDirectory = null)
     {
-        if (Directory.Exists(startDirectory))
-        {
-            _currentDirectory = startDirectory;
-        }
-        Open(mode, title, filter, defaultExtension);
-    }
-
-    private void ParseFilter(string filter)
-    {
-        // Parse filter like "Scene Files (*.rhes)|*.rhes|All Files (*.*)|*.*"
-        var parts = filter.Split('|');
-        var extensions = new List<string>();
-        
-        for (int i = 1; i < parts.Length; i += 2)
-        {
-            var ext = parts[i].Trim();
-            if (ext != "*.*")
-            {
-                extensions.Add(ext.TrimStart('*'));
-            }
-        }
-        
-        _filterExtensions = extensions.ToArray();
+        Open(FileDialogMode.SelectFolder, title, startDirectory ?? "", "", "");
     }
 
     /// <summary>
@@ -114,7 +132,15 @@ public class FileDialog
     public void Close()
     {
         _isOpen = false;
+        _openRequested = false;
     }
+
+    private string PopupId => _mode switch
+    {
+        FileDialogMode.Open => $"Open {_title}",
+        FileDialogMode.Save => $"Save {_title}",
+        _ => $"Select {_title}"
+    } + $"###FileDialog{_instanceId}";
 
     /// <summary>
     /// Draw the dialog and return the result
@@ -123,26 +149,43 @@ public class FileDialog
     {
         if (!_isOpen) return FileDialogResult.None;
 
-        var result = FileDialogResult.None;
-        
-        ImGui.SetNextWindowSize(new Vector2(600, 450), ImGuiCond.FirstUseEver);
-        
-        var windowTitle = _mode == FileDialogMode.Open ? $"Open {_title}" : $"Save {_title}";
-        
-        bool open = true;
-        if (ImGui.Begin(windowTitle + "###FileDialog", ref open, ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoDocking))
+        var popupId = PopupId;
+        if (_openRequested)
         {
-            if (!open)
+            ImGui.OpenPopup(popupId);
+            _openRequested = false;
+        }
+
+        var result = FileDialogResult.None;
+
+        var viewport = ImGui.GetMainViewport();
+        ImGui.SetNextWindowPos(viewport.GetCenter(), ImGuiCond.Appearing, new Vector2(0.5f, 0.5f));
+        ImGui.SetNextWindowSize(new Vector2(640, 460), ImGuiCond.Appearing);
+
+        bool open = true;
+        if (ImGui.BeginPopupModal(popupId, ref open, ImGuiWindowFlags.NoCollapse))
+        {
+            result = DrawContent();
+
+            if (!open && result == FileDialogResult.None)
             {
-                _isOpen = false;
                 result = FileDialogResult.Cancel;
             }
-            else
+
+            if (result != FileDialogResult.None)
             {
-                result = DrawContent();
+                _isOpen = false;
+                ImGui.CloseCurrentPopup();
             }
+
+            ImGui.EndPopup();
         }
-        ImGui.End();
+        else
+        {
+            // Popup was closed externally (e.g. its parent popup closed)
+            _isOpen = false;
+            result = FileDialogResult.Cancel;
+        }
 
         return result;
     }
@@ -150,233 +193,313 @@ public class FileDialog
     private FileDialogResult DrawContent()
     {
         var result = FileDialogResult.None;
-        
-        // Current path display with navigation
+
         DrawPathBar();
-        
         ImGui.Separator();
-        
-        // Refresh directory listing if needed
+
         if (_needsRefresh)
         {
             RefreshDirectory();
             _needsRefresh = false;
         }
-        
+
         // File/folder list
-        float listHeight = ImGui.GetContentRegionAvail().Y - 70;
-        if (ImGui.BeginChild("FileList", new Vector2(0, listHeight), ImGuiChildFlags.Border))
+        float listHeight = ImGui.GetContentRegionAvail().Y - ImGui.GetFrameHeightWithSpacing() * 2.5f;
+        if (ImGui.BeginChild("FileList", new Vector2(0, MathF.Max(listHeight, 60f)), ImGuiChildFlags.Border))
         {
-            DrawFileList();
+            result = DrawFileList();
         }
         ImGui.EndChild();
-        
-        ImGui.Separator();
-        
-        // File name input
-        ImGui.Text("File name:");
+
+        if (!string.IsNullOrEmpty(_error))
+        {
+            ImGui.TextColored(new Vector4(1f, 0.5f, 0.4f, 1f), _error);
+        }
+        else if (_pendingOverwritePath != null)
+        {
+            ImGui.TextColored(new Vector4(1f, 0.8f, 0.3f, 1f),
+                $"\"{Path.GetFileName(_pendingOverwritePath)}\" exists. Click Save again to overwrite.");
+        }
+        else
+        {
+            ImGui.Spacing();
+        }
+
+        // Name input
+        var label = _mode == FileDialogMode.SelectFolder ? "Folder:" : "File name:";
+        ImGui.Text(label);
         ImGui.SameLine();
-        ImGui.SetNextItemWidth(ImGui.GetContentRegionAvail().X - 160);
-        if (ImGui.InputText("##FileName", ref _fileName, 256, ImGuiInputTextFlags.EnterReturnsTrue))
+
+        float filterWidth = _mode == FileDialogMode.SelectFolder || _filters.Count <= 1 ? 0f : 170f;
+        ImGui.SetNextItemWidth(ImGui.GetContentRegionAvail().X - 160 - filterWidth);
+        if (ImGui.InputText("##FileName", ref _fileName, 512, ImGuiInputTextFlags.EnterReturnsTrue))
         {
             result = TryConfirm();
         }
-        
+        else if (ImGui.IsItemEdited())
+        {
+            _pendingOverwritePath = null;
+            _error = "";
+        }
+
+        if (filterWidth > 0)
+        {
+            ImGui.SameLine();
+            ImGui.SetNextItemWidth(filterWidth - 8);
+            if (ImGui.BeginCombo("##Filter", _filters[_activeFilter].Description))
+            {
+                for (int i = 0; i < _filters.Count; i++)
+                {
+                    if (ImGui.Selectable(_filters[i].Description, i == _activeFilter))
+                    {
+                        _activeFilter = i;
+                        _needsRefresh = true;
+                    }
+                }
+                ImGui.EndCombo();
+            }
+        }
+
         // Buttons
         ImGui.SameLine();
-        var buttonText = _mode == FileDialogMode.Open ? "Open" : "Save";
-        if (ImGui.Button(buttonText, new Vector2(70, 0)))
+        var buttonText = _mode switch
+        {
+            FileDialogMode.Open => "Open",
+            FileDialogMode.Save => "Save",
+            _ => "Select"
+        };
+        if (ImGui.Button(buttonText, new Vector2(70, 0)) && result == FileDialogResult.None)
         {
             result = TryConfirm();
         }
-        
+
         ImGui.SameLine();
-        if (ImGui.Button("Cancel", new Vector2(70, 0)))
+        if (ImGui.Button("Cancel", new Vector2(70, 0)) || ImGui.IsKeyPressed(ImGuiKey.Escape))
         {
-            _isOpen = false;
             result = FileDialogResult.Cancel;
         }
-        
+
         return result;
+    }
+
+    private void Navigate(string directory)
+    {
+        _currentDirectory = directory;
+        _needsRefresh = true;
+        _selectedIndex = -1;
+        _error = "";
+        _pendingOverwritePath = null;
+        if (_mode == FileDialogMode.SelectFolder)
+        {
+            _fileName = "";
+        }
     }
 
     private void DrawPathBar()
     {
-        // Up button
         if (ImGui.Button("^"))
         {
             var parent = Directory.GetParent(_currentDirectory);
             if (parent != null)
             {
-                _currentDirectory = parent.FullName;
-                _needsRefresh = true;
-                _selectedIndex = -1;
+                Navigate(parent.FullName);
             }
         }
-        
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("Parent folder");
+
         ImGui.SameLine();
-        
-        // Path breadcrumbs
-        var pathParts = _currentDirectory.Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries);
-        var builtPath = Path.DirectorySeparatorChar.ToString();
-        
-        // On Windows, handle drive letter
-        if (OperatingSystem.IsWindows() && pathParts.Length > 0)
+        if (ImGui.Button("~"))
         {
-            builtPath = pathParts[0] + Path.DirectorySeparatorChar;
-            if (ImGui.SmallButton(pathParts[0]))
-            {
-                _currentDirectory = builtPath;
-                _needsRefresh = true;
-                _selectedIndex = -1;
-            }
-            pathParts = pathParts.Skip(1).ToArray();
+            Navigate(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
         }
-        else if (!OperatingSystem.IsWindows())
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("Home folder");
+
+        ImGui.SameLine();
+        if (ImGui.Checkbox("Hidden", ref _showHidden))
         {
-            if (ImGui.SmallButton("/"))
-            {
-                _currentDirectory = "/";
-                _needsRefresh = true;
-                _selectedIndex = -1;
-            }
+            _needsRefresh = true;
         }
-        
-        foreach (var part in pathParts)
+
+        // Breadcrumbs
+        var crumbs = FileDialogLogic.GetBreadcrumbs(_currentDirectory);
+        for (int i = 0; i < crumbs.Count; i++)
         {
-            ImGui.SameLine(0, 2);
-            ImGui.Text(">");
-            ImGui.SameLine(0, 2);
-            
-            builtPath = Path.Combine(builtPath, part);
-            var pathCopy = builtPath; // Capture for lambda
-            
-            if (ImGui.SmallButton(part))
+            ImGui.SameLine(0, i == 0 ? 8 : 2);
+            if (i > 0)
             {
-                _currentDirectory = pathCopy;
-                _needsRefresh = true;
-                _selectedIndex = -1;
+                ImGui.TextDisabled(">");
+                ImGui.SameLine(0, 2);
             }
+
+            ImGui.PushID(i);
+            if (ImGui.SmallButton(crumbs[i].Label))
+            {
+                Navigate(crumbs[i].Path);
+            }
+            ImGui.PopID();
         }
     }
 
-    private void DrawFileList()
+    private FileDialogResult DrawFileList()
     {
         int index = 0;
-        
-        // Draw directories first
+
         foreach (var dir in _directories)
         {
             var name = Path.GetFileName(dir);
-            var displayName = "[DIR] " + name;
-            
             bool isSelected = _selectedIndex == index;
-            if (ImGui.Selectable(displayName, isSelected, ImGuiSelectableFlags.AllowDoubleClick))
+            if (ImGui.Selectable("[DIR] " + name + "##d" + index, isSelected, ImGuiSelectableFlags.AllowDoubleClick))
             {
                 _selectedIndex = index;
-                
+                if (_mode == FileDialogMode.SelectFolder)
+                {
+                    _fileName = name;
+                }
+
                 if (ImGui.IsMouseDoubleClicked(ImGuiMouseButton.Left))
                 {
-                    _currentDirectory = dir;
-                    _needsRefresh = true;
-                    _selectedIndex = -1;
+                    Navigate(dir);
+                    return FileDialogResult.None;
                 }
             }
             index++;
         }
-        
-        // Draw files
+
+        if (_mode == FileDialogMode.SelectFolder)
+        {
+            // Show files for context, but they cannot be chosen
+            foreach (var file in _files)
+            {
+                ImGui.TextDisabled("      " + Path.GetFileName(file));
+            }
+            return FileDialogResult.None;
+        }
+
         foreach (var file in _files)
         {
             var name = Path.GetFileName(file);
-            
             bool isSelected = _selectedIndex == index;
-            if (ImGui.Selectable(name, isSelected, ImGuiSelectableFlags.AllowDoubleClick))
+            if (ImGui.Selectable(name + "##f" + index, isSelected, ImGuiSelectableFlags.AllowDoubleClick))
             {
                 _selectedIndex = index;
                 _fileName = name;
-                
-                if (ImGui.IsMouseDoubleClicked(ImGuiMouseButton.Left) && _mode == FileDialogMode.Open)
+                _pendingOverwritePath = null;
+                _error = "";
+
+                if (ImGui.IsMouseDoubleClicked(ImGuiMouseButton.Left))
                 {
-                    SelectedPath = file;
-                    _isOpen = false;
-                    return;
+                    return TryConfirm();
                 }
             }
             index++;
         }
+
+        return FileDialogResult.None;
     }
 
     private void RefreshDirectory()
     {
         _directories.Clear();
         _files.Clear();
-        
+
         try
         {
-            // Get directories
-            var dirs = Directory.GetDirectories(_currentDirectory)
-                .Where(d => !Path.GetFileName(d).StartsWith('.')) // Hide hidden dirs
-                .OrderBy(d => d, StringComparer.OrdinalIgnoreCase);
-            _directories.AddRange(dirs);
-            
-            // Get files with filter
-            IEnumerable<string> files;
-            if (_filterExtensions.Length == 0)
-            {
-                files = Directory.GetFiles(_currentDirectory);
-            }
-            else
-            {
-                files = Directory.GetFiles(_currentDirectory)
-                    .Where(f => _filterExtensions.Any(ext => 
-                        f.EndsWith(ext, StringComparison.OrdinalIgnoreCase) || ext == ".*"));
-            }
-            
-            _files.AddRange(files
-                .Where(f => !Path.GetFileName(f).StartsWith('.'))
+            _directories.AddRange(Directory.GetDirectories(_currentDirectory)
+                .Where(d => _showHidden || !FileDialogLogic.IsHidden(Path.GetFileName(d)))
+                .OrderBy(d => d, StringComparer.OrdinalIgnoreCase));
+
+            var filter = _filters[Math.Clamp(_activeFilter, 0, _filters.Count - 1)];
+            _files.AddRange(Directory.GetFiles(_currentDirectory)
+                .Where(f =>
+                {
+                    var name = Path.GetFileName(f);
+                    return (_showHidden || !FileDialogLogic.IsHidden(name)) &&
+                           (_mode == FileDialogMode.SelectFolder || FileDialogLogic.Matches(filter, name));
+                })
                 .OrderBy(f => f, StringComparer.OrdinalIgnoreCase));
         }
         catch (UnauthorizedAccessException)
         {
-            // Can't access directory
+            _error = "Access denied.";
         }
         catch (DirectoryNotFoundException)
         {
-            // Directory doesn't exist, go to home
             _currentDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
             RefreshDirectory();
+        }
+        catch (IOException ex)
+        {
+            _error = ex.Message;
         }
     }
 
     private FileDialogResult TryConfirm()
     {
+        _error = "";
+
+        if (_mode == FileDialogMode.SelectFolder)
+        {
+            var folder = string.IsNullOrWhiteSpace(_fileName)
+                ? _currentDirectory
+                : FileDialogLogic.ResolveInput(_currentDirectory, _fileName);
+
+            if (!Directory.Exists(folder))
+            {
+                _error = "Folder does not exist.";
+                return FileDialogResult.None;
+            }
+
+            SelectedPath = folder;
+            return FileDialogResult.Ok;
+        }
+
         if (string.IsNullOrWhiteSpace(_fileName))
             return FileDialogResult.None;
 
-        var path = Path.Combine(_currentDirectory, _fileName);
-        
-        // Add default extension if missing (for save mode)
-        if (_mode == FileDialogMode.Save && !string.IsNullOrEmpty(_defaultExtension))
+        string path;
+        try
         {
-            if (!Path.HasExtension(path) || 
-                (_filterExtensions.Length > 0 && !_filterExtensions.Any(ext => path.EndsWith(ext, StringComparison.OrdinalIgnoreCase))))
-            {
-                path += _defaultExtension;
-            }
+            path = FileDialogLogic.ResolveInput(_currentDirectory, _fileName);
         }
-        
-        if (_mode == FileDialogMode.Open)
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
         {
-            if (!File.Exists(path))
+            _error = "Invalid path.";
+            return FileDialogResult.None;
+        }
+
+        // Typing a folder path navigates into it
+        if (Directory.Exists(path))
+        {
+            Navigate(path);
+            _fileName = "";
+            return FileDialogResult.None;
+        }
+
+        if (_mode == FileDialogMode.Save)
+        {
+            path = FileDialogLogic.ApplyDefaultExtension(path, _defaultExtension, _filters[_activeFilter]);
+
+            var dir = Path.GetDirectoryName(path);
+            if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir))
             {
-                // File doesn't exist
+                _error = "Folder does not exist.";
+                return FileDialogResult.None;
+            }
+
+            if (ConfirmOverwrite && File.Exists(path) && _pendingOverwritePath != path)
+            {
+                _pendingOverwritePath = path;
                 return FileDialogResult.None;
             }
         }
-        
+        else if (!File.Exists(path))
+        {
+            _error = "File not found.";
+            return FileDialogResult.None;
+        }
+
+        _pendingOverwritePath = null;
         SelectedPath = path;
-        _isOpen = false;
         return FileDialogResult.Ok;
     }
 }

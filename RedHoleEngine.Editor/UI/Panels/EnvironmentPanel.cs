@@ -124,7 +124,7 @@ public class EnvironmentPanel : EditorPanel
                     FileDialogMode.Open,
                     "Environment Map",
                     startDir,
-                    "HDR Files (*.hdr)|*.hdr|All Images|*.png|*.jpg|*.hdr",
+                    "HDR Files (*.hdr)|*.hdr|All Images (*.hdr;*.png;*.jpg;*.jpeg)|*.hdr;*.png;*.jpg;*.jpeg",
                     "");
             }
             ImGui.SameLine();

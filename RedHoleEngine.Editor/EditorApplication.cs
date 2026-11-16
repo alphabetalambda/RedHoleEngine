@@ -77,6 +77,20 @@ public class EditorApplication : IDisposable
     
     // File dialogs
     private readonly UI.FileDialog _fileDialog = new();
+    private readonly UI.AboutDialog _aboutDialog = new(
+        "RedHole Engine Editor",
+        "Scene editor for RedHole Engine - general relativistic black hole rendering",
+        typeof(EditorApplication).Assembly,
+        typeof(World).Assembly);
+
+    // Unsaved-changes tracking
+    private readonly SceneDirtyTracker _dirtyTracker;
+    private Action? _pendingSceneChange;
+    private bool _showUnsavedChangesPrompt;
+    private Action? _afterSaveAs;
+
+    // Viewport camera focus animation
+    private Viewport.CameraFocusAnimation? _cameraFocusAnimation;
 
     // Viewport state
     private Renderer? _viewportRenderer;
@@ -126,23 +140,25 @@ public class EditorApplication : IDisposable
         _terminalSession = new TerminalSession(_terminalFileSystem);
         _terminalSaveManager = new GameSaveManager("Editor");
         _buildSystem = new BuildSystem(_projectManager);
+        _dirtyTracker = new SceneDirtyTracker(_undoRedo);
+        _dirtyTracker.DirtyChanged += _ => UpdateWindowTitle();
         _autoSaveManager = new AutoSaveManager(
             _projectManager,
             () => _currentScenePath,
-            () => true, // TODO: track actual unsaved changes
-            SaveScene);
+            () => _dirtyTracker.IsDirty,
+            AutoSaveScene);
 
         // Create panels
-        _hierarchyPanel = new SceneHierarchyPanel();
+        _hierarchyPanel = new SceneHierarchyPanel(entity => FocusOnEntity(entity));
         _inspectorPanel = new InspectorPanel();
         _consolePanel = new ConsolePanel();
         _raytracerPanel = new RaytracerSettingsPanel(_raytracerSettings);
         _renderPanel = new RenderSettingsPanel(_renderSettings);
-        _gameProjectPanel = new GameProjectPanel(_projectManager, _buildSystem, LoadGameProjectFromSettings);
+        _gameProjectPanel = new GameProjectPanel(_projectManager, _buildSystem, LoadGameProjectFromSettings, RequestOpenScene);
         _terminalPanel = new TerminalPanel(_terminalSession, () => _terminalSaveManager);
         _assetBrowserPanel = new AssetBrowserPanel(
             () => _projectManager.HasProject ? _projectManager.GetAssetPath() : "",
-            path => LoadScene(path));
+            RequestOpenScene);
         _materialEditorPanel = new MaterialEditorPanel(_projectManager, _materialLibrary);
         _environmentPanel = new EnvironmentPanel(OnEnvironmentMapChanged);
 
@@ -156,6 +172,12 @@ public class EditorApplication : IDisposable
         _panels.Add(_assetBrowserPanel);
         _panels.Add(_materialEditorPanel);
         _panels.Add(_environmentPanel);
+
+        // Panels that edit the scene outside the undo system report it here
+        foreach (var panel in _panels)
+        {
+            panel.SceneModified = OnSceneModified;
+        }
     }
 
     /// <summary>
@@ -230,6 +252,7 @@ public class EditorApplication : IDisposable
             keyboard.KeyDown += OnKeyDown;
         }
 
+        UpdateWindowTitle();
         Console.WriteLine("Editor loaded successfully");
         Console.WriteLine("Controls: Ctrl+N = New Entity, Delete = Delete Selected, Ctrl+D = Duplicate");
     }
@@ -253,6 +276,20 @@ public class EditorApplication : IDisposable
 
         // Auto-save check
         _autoSaveManager?.Update();
+
+        // Animate viewport camera toward a focused entity
+        if (_cameraFocusAnimation != null)
+        {
+            var pose = _cameraFocusAnimation.Step((float)deltaTime);
+            _viewportCamera.Position = pose.Position;
+            _viewportCamera.Yaw = pose.Yaw;
+            _viewportCamera.Pitch = pose.Pitch;
+            _raytracerSettings.ResetAccumulation = true;
+            if (_cameraFocusAnimation.IsComplete)
+            {
+                _cameraFocusAnimation = null;
+            }
+        }
     }
 
     private void OnRender(double deltaTime)
@@ -283,6 +320,8 @@ public class EditorApplication : IDisposable
 
         // Draw file dialog (modal, on top)
         DrawFileDialog();
+        DrawUnsavedChangesPrompt();
+        _aboutDialog.Draw();
 
         // Render ImGui
         _imguiController?.Render();
@@ -323,13 +362,13 @@ public class EditorApplication : IDisposable
         {
             if (ImGui.BeginMenu("File"))
             {
-                if (ImGui.MenuItem("New Scene", "Ctrl+N"))
+                if (ImGui.MenuItem("New Scene"))
                 {
-                    NewScene();
+                    RequestSceneChange(NewScene);
                 }
                 if (ImGui.MenuItem("Load Default Showcase"))
                 {
-                    LoadDefaultShowcaseScene();
+                    RequestSceneChange(LoadDefaultShowcaseScene);
                 }
                 if (ImGui.MenuItem("Open Scene", "Ctrl+O"))
                 {
@@ -346,7 +385,7 @@ public class EditorApplication : IDisposable
                 ImGui.Separator();
                 if (ImGui.MenuItem("Exit", "Alt+F4"))
                 {
-                    _window?.Close();
+                    RequestSceneChange(() => _window?.Close());
                 }
                 ImGui.EndMenu();
             }
@@ -450,9 +489,16 @@ public class EditorApplication : IDisposable
 
             if (ImGui.BeginMenu("Help"))
             {
+                if (ImGui.MenuItem("Documentation"))
+                {
+                    if (!UI.AppInfo.TryOpenDocumentation(out var docsMessage))
+                    {
+                        Console.WriteLine($"Failed to open documentation: {docsMessage}");
+                    }
+                }
                 if (ImGui.MenuItem("About"))
                 {
-                    // TODO: About dialog
+                    _aboutDialog.Show();
                 }
                 ImGui.EndMenu();
             }
@@ -563,7 +609,7 @@ public class EditorApplication : IDisposable
 
             if (ImGui.Button("Showcase", new Vector2(100, 24)))
             {
-                LoadActiveScene();
+                RequestSceneChange(LoadActiveScene);
             }
 
             // Status
@@ -712,6 +758,13 @@ public class EditorApplication : IDisposable
 
         if (hovered)
         {
+            // Manual navigation cancels an in-progress focus animation
+            if (ImGui.IsMouseDown(ImGuiMouseButton.Right) || ImGui.IsMouseDown(ImGuiMouseButton.Middle) ||
+                MathF.Abs(io.MouseWheel) > 0.001f)
+            {
+                _cameraFocusAnimation = null;
+            }
+
             if (ImGui.IsMouseDown(ImGuiMouseButton.Right))
             {
                 _viewportCamera.Rotate(io.MouseDelta.X, io.MouseDelta.Y);
@@ -741,102 +794,27 @@ public class EditorApplication : IDisposable
     /// </summary>
     private void FocusOnSelection()
     {
-        if (_world == null || !_selection.HasSelection) return;
+        if (!_selection.HasSelection) return;
+        FocusOnEntity(_selection.PrimarySelection);
+    }
 
-        var entity = _selection.PrimarySelection;
-        if (!_world.IsAlive(entity)) return;
+    /// <summary>
+    /// Smoothly move the viewport camera so the entity's bounds (mesh, collider or
+    /// black hole) fill the view, keeping the current viewing direction.
+    /// </summary>
+    private void FocusOnEntity(Entity entity)
+    {
+        if (_world == null) return;
 
-        if (!_world.HasComponent<TransformComponent>(entity)) return;
+        var bounds = Viewport.CameraFraming.ComputeEntityBounds(_world, entity);
+        if (bounds == null) return;
 
-        ref var transform = ref _world.GetComponent<TransformComponent>(entity);
-        var targetPosition = transform.Position;
-        
-        // Calculate entity bounds to determine view distance
-        float boundingRadius = GetEntityBoundingRadius(entity, transform.LocalScale);
-        
-        // Calculate distance based on entity size and FOV
-        float fovRad = _viewportCamera.FieldOfView * MathF.PI / 180f;
-        float distance = boundingRadius / MathF.Sin(fovRad * 0.5f);
-        distance = MathF.Max(distance, 2f); // Minimum distance
-        distance *= 1.5f; // Add some margin
-        
-        // Calculate new camera position - back away from target along current view direction
-        // But we want to look AT the target, so we need to calculate the direction to target first
-        var directionToTarget = Vector3.Normalize(targetPosition - _viewportCamera.Position);
-        
-        // If camera is at target (or very close), use forward direction
-        if (float.IsNaN(directionToTarget.X) || 
-            Vector3.DistanceSquared(targetPosition, _viewportCamera.Position) < 0.01f)
-        {
-            directionToTarget = _viewportCamera.Forward;
-        }
-        
-        // New camera position
-        _viewportCamera.Position = targetPosition - directionToTarget * distance;
-        
-        // Update camera to look at target
-        LookAt(targetPosition);
-        
-        // Reset accumulation for renderer
+        var from = new Viewport.CameraPose(_viewportCamera.Position, _viewportCamera.Yaw, _viewportCamera.Pitch);
+        var to = Viewport.CameraFraming.Frame(bounds.Value, _viewportCamera.Position, _viewportCamera.Forward, _viewportCamera.FieldOfView);
+        _cameraFocusAnimation = new Viewport.CameraFocusAnimation(from, to);
         _raytracerSettings.ResetAccumulation = true;
-        
-        Console.WriteLine($"Focused on entity at {targetPosition}");
-    }
 
-    /// <summary>
-    /// Point the camera to look at a target position
-    /// </summary>
-    private void LookAt(Vector3 target)
-    {
-        var direction = Vector3.Normalize(target - _viewportCamera.Position);
-        
-        // Calculate yaw and pitch from direction
-        float yaw = MathF.Atan2(direction.Z, direction.X) * 180f / MathF.PI;
-        float pitch = MathF.Asin(direction.Y) * 180f / MathF.PI;
-        
-        _viewportCamera.Yaw = yaw;
-        _viewportCamera.Pitch = pitch;
-    }
-
-    /// <summary>
-    /// Calculate the bounding radius of an entity based on its components
-    /// </summary>
-    private float GetEntityBoundingRadius(Entity entity, Vector3 scale)
-    {
-        float radius = 1f; // Default radius
-        
-        // Check collider for size
-        if (_world!.HasComponent<ColliderComponent>(entity))
-        {
-            ref var collider = ref _world.GetComponent<ColliderComponent>(entity);
-            
-            radius = collider.ShapeType switch
-            {
-                ColliderType.Sphere => collider.SphereRadius * MathF.Max(scale.X, MathF.Max(scale.Y, scale.Z)),
-                ColliderType.Box => collider.BoxHalfExtents.Length() * scale.Length() / MathF.Sqrt(3f),
-                ColliderType.Capsule => MathF.Max(collider.CapsuleRadius, collider.CapsuleHeight * 0.5f) * 
-                                        MathF.Max(scale.X, MathF.Max(scale.Y, scale.Z)),
-                _ => 1f
-            };
-        }
-        
-        // Check for gravity source (black holes can be large)
-        if (_world.HasComponent<GravitySourceComponent>(entity))
-        {
-            ref var gravity = ref _world.GetComponent<GravitySourceComponent>(entity);
-            // Schwarzschild radius approximation for visualization
-            float schwarzschildRadius = gravity.Mass * 0.5f;
-            radius = MathF.Max(radius, schwarzschildRadius * 3f);
-        }
-        
-        // Check for accretion disk
-        if (_world.HasComponent<AccretionDiskComponent>(entity))
-        {
-            ref var disk = ref _world.GetComponent<AccretionDiskComponent>(entity);
-            radius = MathF.Max(radius, disk.OuterRadius);
-        }
-        
-        return MathF.Max(radius, 0.5f); // Minimum radius
+        Console.WriteLine($"Focusing on entity {entity.Id} at {bounds.Value.Center} (radius {bounds.Value.Radius:F2})");
     }
 
     private void UpdateTransformGizmo(Vector2 viewportMin, Vector2 viewportSize, bool hovered)
@@ -1304,60 +1282,162 @@ public class EditorApplication : IDisposable
 
     private const string SceneFileFilter = "Scene Files (*.rhes)|*.rhes|All Files (*.*)|*.*";
     private const string SceneFileExtension = ".rhes";
+    private const string UnsavedChangesPopupId = "Unsaved Changes###UnsavedChangesPrompt";
     private UI.FileDialogMode _pendingFileDialogMode;
+
+    /// <summary>
+    /// Run an action that replaces the current scene, first asking to save if there are unsaved changes.
+    /// </summary>
+    /// <summary>
+    /// Called by panels when they change the scene without going through the undo system
+    /// </summary>
+    private void OnSceneModified()
+    {
+        _dirtyTracker.MarkDirty();
+        _autoSaveManager?.MarkDirty();
+    }
+
+    private void RequestSceneChange(Action change)
+    {
+        if (!_dirtyTracker.IsDirty)
+        {
+            change();
+            return;
+        }
+
+        _pendingSceneChange = change;
+        _showUnsavedChangesPrompt = true;
+    }
+
+    /// <summary>
+    /// Open a scene file, asking to save unsaved changes first
+    /// </summary>
+    private void RequestOpenScene(string path)
+    {
+        RequestSceneChange(() => LoadScene(path));
+    }
+
+    private void DrawUnsavedChangesPrompt()
+    {
+        if (_showUnsavedChangesPrompt)
+        {
+            ImGui.OpenPopup(UnsavedChangesPopupId);
+            _showUnsavedChangesPrompt = false;
+        }
+
+        var center = ImGui.GetMainViewport().GetCenter();
+        ImGui.SetNextWindowPos(center, ImGuiCond.Appearing, new Vector2(0.5f, 0.5f));
+
+        if (!ImGui.BeginPopupModal(UnsavedChangesPopupId, ImGuiWindowFlags.AlwaysAutoResize | ImGuiWindowFlags.NoResize))
+            return;
+
+        var sceneName = string.IsNullOrEmpty(_currentScenePath) ? "Untitled scene" : Path.GetFileName(_currentScenePath);
+        ImGui.Text($"{sceneName} has unsaved changes.");
+        ImGui.Text("Save before continuing?");
+        ImGui.Spacing();
+
+        if (ImGui.Button("Save", new Vector2(100, 0)))
+        {
+            ImGui.CloseCurrentPopup();
+            var continuation = _pendingSceneChange;
+            _pendingSceneChange = null;
+            SaveSceneDialog(continuation);
+        }
+        ImGui.SameLine();
+        if (ImGui.Button("Don't Save", new Vector2(100, 0)))
+        {
+            ImGui.CloseCurrentPopup();
+            var continuation = _pendingSceneChange;
+            _pendingSceneChange = null;
+            continuation?.Invoke();
+        }
+        ImGui.SameLine();
+        if (ImGui.Button("Cancel", new Vector2(100, 0)) || ImGui.IsKeyPressed(ImGuiKey.Escape))
+        {
+            ImGui.CloseCurrentPopup();
+            _pendingSceneChange = null;
+        }
+
+        ImGui.EndPopup();
+    }
 
     private void OpenSceneDialog()
     {
-        _pendingFileDialogMode = UI.FileDialogMode.Open;
-        var startDir = GetSceneDirectory();
-        _fileDialog.Open(UI.FileDialogMode.Open, "Scene", startDir, SceneFileFilter, SceneFileExtension);
+        RequestSceneChange(() =>
+        {
+            _pendingFileDialogMode = UI.FileDialogMode.Open;
+            var startDir = GetSceneDirectory();
+            _fileDialog.Open(UI.FileDialogMode.Open, "Scene", startDir, SceneFileFilter, SceneFileExtension);
+        });
     }
 
-    private void SaveSceneDialog()
+    /// <summary>
+    /// Save to the current path, or ask for one. <paramref name="afterSave"/> runs only if the save succeeds.
+    /// </summary>
+    private void SaveSceneDialog(Action? afterSave = null)
     {
         // If we have a current scene path, save directly without dialog
         if (!string.IsNullOrEmpty(_currentScenePath) && File.Exists(_currentScenePath))
         {
-            SaveScene(_currentScenePath);
+            if (SaveScene(_currentScenePath))
+            {
+                afterSave?.Invoke();
+            }
         }
         else
         {
-            SaveSceneAsDialog();
+            SaveSceneAsDialog(afterSave);
         }
     }
 
-    private void SaveSceneAsDialog()
+    private void SaveSceneAsDialog(Action? afterSave = null)
     {
         _pendingFileDialogMode = UI.FileDialogMode.Save;
+        _afterSaveAs = afterSave;
         var startDir = GetSceneDirectory();
-        _fileDialog.Open(UI.FileDialogMode.Save, "Scene", startDir, SceneFileFilter, SceneFileExtension);
+        var defaultName = string.IsNullOrEmpty(_currentScenePath)
+            ? "NewScene" + SceneFileExtension
+            : Path.GetFileName(_currentScenePath);
+        _fileDialog.Open(UI.FileDialogMode.Save, "Scene", startDir, SceneFileFilter, SceneFileExtension, defaultName);
     }
 
     private void DrawFileDialog()
     {
         var result = _fileDialog.Draw();
-        
+
         if (result == UI.FileDialogResult.Ok)
         {
             var path = _fileDialog.SelectedPath;
-            
+
             if (_pendingFileDialogMode == UI.FileDialogMode.Open)
             {
                 LoadScene(path);
             }
             else
             {
-                SaveScene(path);
+                var afterSave = _afterSaveAs;
+                _afterSaveAs = null;
+                if (SaveScene(path))
+                {
+                    afterSave?.Invoke();
+                }
             }
+        }
+        else if (result == UI.FileDialogResult.Cancel)
+        {
+            _afterSaveAs = null;
         }
     }
 
-    private void SaveScene(string path)
+    /// <summary>
+    /// Save the scene to a file and make it the current scene
+    /// </summary>
+    private bool SaveScene(string path)
     {
         if (_world == null)
         {
             Console.WriteLine("Cannot save: No world loaded");
-            return;
+            return false;
         }
 
         try
@@ -1365,18 +1445,38 @@ public class EditorApplication : IDisposable
             _sceneSerializer.SaveToFile(_world, path);
             _currentScenePath = path;
             Console.WriteLine($"Scene saved to: {path}");
-            
+
+            _dirtyTracker.MarkClean();
             // Mark auto-save as saved (manual save resets the timer)
             _autoSaveManager?.MarkSaved();
-            
-            // Update window title
-            var fileName = Path.GetFileName(path);
-            _window!.Title = $"{WindowTitle} - {fileName}";
+            _projectManager.AddRecentScene(path);
+            UpdateWindowTitle();
+            return true;
         }
         catch (Exception ex)
         {
             Console.WriteLine($"Failed to save scene: {ex.Message}");
+            return false;
         }
+    }
+
+    /// <summary>
+    /// Auto-save callback. Saving to the current scene file is a normal save; saving to a
+    /// backup location (untitled scene) leaves the current path and dirty state alone.
+    /// </summary>
+    private void AutoSaveScene(string path)
+    {
+        if (!string.IsNullOrEmpty(_currentScenePath) && path == _currentScenePath)
+        {
+            if (!SaveScene(path))
+                throw new IOException($"Failed to save {path}");
+            return;
+        }
+
+        if (_world == null)
+            return;
+
+        _sceneSerializer.SaveToFile(_world, path);
     }
 
     private void LoadScene(string path)
@@ -1395,11 +1495,12 @@ public class EditorApplication : IDisposable
             _sceneSerializer.LoadFromFile(_world, path);
             _currentScenePath = path;
             Console.WriteLine($"Scene loaded from: {path}");
-            
-            // Update window title
-            var fileName = Path.GetFileName(path);
-            _window!.Title = $"{WindowTitle} - {fileName}";
-            
+
+            _dirtyTracker.MarkClean();
+            _autoSaveManager?.MarkSaved();
+            _projectManager.AddRecentScene(path);
+            UpdateWindowTitle();
+
             // Reset accumulation for renderer
             _raytracerSettings.ResetAccumulation = true;
         }
@@ -1409,6 +1510,19 @@ public class EditorApplication : IDisposable
             // Reload default scene on failure
             LoadDefaultShowcaseScene();
         }
+    }
+
+    /// <summary>
+    /// Window title: editor name, scene file name and an asterisk for unsaved changes
+    /// </summary>
+    private void UpdateWindowTitle()
+    {
+        if (_window == null)
+            return;
+
+        var sceneName = string.IsNullOrEmpty(_currentScenePath) ? "Untitled" : Path.GetFileName(_currentScenePath);
+        var dirtyMarker = _dirtyTracker.IsDirty ? "*" : "";
+        _window.Title = $"{WindowTitle} - {sceneName}{dirtyMarker}";
     }
 
     private string GetSceneDirectory()
@@ -1530,6 +1644,13 @@ public class EditorApplication : IDisposable
         {
             panel.SetContext(_world, _selection, _undoRedo);
         }
+
+        // A fresh world is an unsaved, untitled scene with no changes yet
+        _currentScenePath = string.Empty;
+        _cameraFocusAnimation = null;
+        _dirtyTracker.MarkClean();
+        _autoSaveManager?.MarkSaved();
+        UpdateWindowTitle();
     }
 
     private void LoadEditorSettings()

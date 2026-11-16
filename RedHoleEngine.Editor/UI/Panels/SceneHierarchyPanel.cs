@@ -12,8 +12,15 @@ public class SceneHierarchyPanel : EditorPanel
 {
     public override string Title => "Hierarchy";
 
+    private readonly Action<Entity>? _focusEntity;
     private string _searchFilter = "";
     private Entity _entityToDelete = Entity.Null;
+
+    /// <param name="focusEntity">Callback that frames an entity in the viewport camera</param>
+    public SceneHierarchyPanel(Action<Entity>? focusEntity = null)
+    {
+        _focusEntity = focusEntity;
+    }
 
     protected override void OnDraw()
     {
@@ -31,12 +38,21 @@ public class SceneHierarchyPanel : EditorPanel
         // Entity list
         DrawEntityList();
 
+        // F focuses the viewport camera on the selected entity while this panel has focus
+        if (_focusEntity != null && Selection is { HasSelection: true } &&
+            ImGui.IsWindowFocused(ImGuiFocusedFlags.RootAndChildWindows) &&
+            !ImGui.GetIO().WantTextInput && ImGui.IsKeyPressed(ImGuiKey.F, false))
+        {
+            _focusEntity(Selection.PrimarySelection);
+        }
+
         // Handle deferred deletion
         if (!_entityToDelete.IsNull)
         {
             World.DestroyEntity(_entityToDelete);
             Selection?.RemoveFromSelection(_entityToDelete);
             _entityToDelete = Entity.Null;
+            MarkSceneDirty();
         }
     }
 
@@ -55,6 +71,7 @@ public class SceneHierarchyPanel : EditorPanel
                 var entity = World!.CreateEntity();
                 World.AddComponent(entity, new TransformComponent());
                 Selection?.Select(entity);
+                MarkSceneDirty();
             }
 
             ImGui.Separator();
@@ -65,6 +82,7 @@ public class SceneHierarchyPanel : EditorPanel
                 World.AddComponent(entity, new TransformComponent());
                 World.AddComponent(entity, CameraComponent.CreatePerspective(60f, 16f / 9f));
                 Selection?.Select(entity);
+                MarkSceneDirty();
             }
 
             if (ImGui.MenuItem("Black Hole"))
@@ -73,6 +91,7 @@ public class SceneHierarchyPanel : EditorPanel
                 World.AddComponent(entity, new TransformComponent());
                 World.AddComponent(entity, GravitySourceComponent.CreateBlackHole(1e6f));
                 Selection?.Select(entity);
+                MarkSceneDirty();
             }
 
             ImGui.Separator();
@@ -86,6 +105,7 @@ public class SceneHierarchyPanel : EditorPanel
                     World.AddComponent(entity, RigidBodyComponent.CreateDynamic(1f));
                     World.AddComponent(entity, ColliderComponent.CreateSphere(0.5f));
                     Selection?.Select(entity);
+                    MarkSceneDirty();
                 }
 
                 if (ImGui.MenuItem("Box"))
@@ -95,6 +115,7 @@ public class SceneHierarchyPanel : EditorPanel
                     World.AddComponent(entity, RigidBodyComponent.CreateDynamic(1f));
                     World.AddComponent(entity, ColliderComponent.CreateBox(new Vector3(0.5f)));
                     Selection?.Select(entity);
+                    MarkSceneDirty();
                 }
 
                 if (ImGui.MenuItem("Ground Plane"))
@@ -104,6 +125,7 @@ public class SceneHierarchyPanel : EditorPanel
                     World.AddComponent(entity, RigidBodyComponent.CreateStatic());
                     World.AddComponent(entity, ColliderComponent.CreateGroundPlane());
                     Selection?.Select(entity);
+                    MarkSceneDirty();
                 }
 
                 ImGui.EndMenu();
@@ -149,6 +171,7 @@ public class SceneHierarchyPanel : EditorPanel
                 var entity = World.CreateEntity();
                 World.AddComponent(entity, new TransformComponent());
                 Selection?.Select(entity);
+                MarkSceneDirty();
             }
             ImGui.EndPopup();
         }
@@ -197,9 +220,10 @@ public class SceneHierarchyPanel : EditorPanel
 
             ImGui.Separator();
 
-            if (ImGui.MenuItem("Focus"))
+            if (ImGui.MenuItem("Focus", "F", false, _focusEntity != null))
             {
-                // TODO: Focus camera on entity
+                Selection.Select(entity);
+                _focusEntity?.Invoke(entity);
             }
 
             ImGui.EndPopup();
@@ -337,5 +361,6 @@ public class SceneHierarchyPanel : EditorPanel
         }
 
         Selection?.Select(newEntity);
+        MarkSceneDirty();
     }
 }

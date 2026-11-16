@@ -105,11 +105,12 @@ void main() {
         return;
     }
     
-    // Reconstruct world position
-    // Note: depth interpretation depends on how raytracer stores it
-    // Assuming linear depth in world units
-    float normalizedDepth = depth / farPlane;
-    vec3 worldPos = reconstructWorldPos(unjitteredUV, normalizedDepth);
+    // Reconstruct world position.
+    // The raytracer stores the Euclidean distance from the camera to the primary hit
+    // (not an NDC depth), so walk that distance along this pixel's view ray. Any NDC
+    // depth works for recovering the ray direction; 0.5 is used like the sky path above.
+    vec3 viewDir = normalize(reconstructWorldPos(unjitteredUV, 0.5) - currentCameraPos);
+    vec3 worldPos = currentCameraPos + viewDir * depth;
     
     // Project to previous frame
     vec2 prevUV = projectToPrevFrame(worldPos);

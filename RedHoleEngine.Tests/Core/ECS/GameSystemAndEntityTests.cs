@@ -137,7 +137,7 @@ public class GameSystemAndEntityTests
     }
 
     [Fact]
-    public void ComponentSystem_Pair_PersistsFirstComponentOnly()
+    public void ComponentSystem_Pair_ProcessesMatchingAndPersistsBothComponents()
     {
         using var world = new World();
         var system = world.AddSystem(new PairSystem());
@@ -151,26 +151,12 @@ public class GameSystemAndEntityTests
 
         Assert.Equal(1, system.Processed);
         Assert.Equal(2, world.GetComponent<Alpha>(both).Value);
-        Assert.Equal(2, world.GetComponent<Beta>(both).Value);
+        Assert.Equal(7, world.GetComponent<Beta>(both).Value);
         Assert.Equal(8, world.GetComponent<Alpha>(onlyAlpha).Value);
     }
 
-    [Fact(Skip = "BUG: expected ComponentSystem<T1,T2> to write T2 back to the pool, actual TryGet copies the struct so T2 mutations are discarded")]
-    public void ComponentSystem_Pair_PersistsSecondComponent()
-    {
-        using var world = new World();
-        world.AddSystem(new PairSystem());
-        var both = world.CreateEntity();
-        world.AddComponent(both, new Alpha { Value = 1 });
-        world.AddComponent(both, new Beta { Value = 2 });
-
-        world.Update(0.1f);
-
-        Assert.Equal(7, world.GetComponent<Beta>(both).Value);
-    }
-
     [Fact]
-    public void ComponentSystem_Triple_RequiresAllThreeAndDropsLaterCopies()
+    public void ComponentSystem_Triple_RequiresAllThreeAndPersistsEveryComponent()
     {
         using var world = new World();
         var system = world.AddSystem(new TripleSystem());
@@ -186,25 +172,9 @@ public class GameSystemAndEntityTests
 
         Assert.Equal(1, system.Processed);
         Assert.Equal(2, world.GetComponent<Alpha>(full).Value);
-        Assert.Equal(2, world.GetComponent<Beta>(full).Value);
-        Assert.Equal(3, world.GetComponent<Gamma>(full).Value);
-        Assert.Equal(4, world.GetComponent<Alpha>(partial).Value);
-    }
-
-    [Fact(Skip = "BUG: expected ComponentSystem<T1,T2,T3> to persist T2 and T3 mutations, actual only the T1 pool reference is updated")]
-    public void ComponentSystem_Triple_PersistsEveryComponent()
-    {
-        using var world = new World();
-        world.AddSystem(new TripleSystem());
-        var full = world.CreateEntity();
-        world.AddComponent(full, new Alpha { Value = 1 });
-        world.AddComponent(full, new Beta { Value = 2 });
-        world.AddComponent(full, new Gamma { Value = 3 });
-
-        world.Update(0.1f);
-
         Assert.Equal(3, world.GetComponent<Beta>(full).Value);
         Assert.Equal(4, world.GetComponent<Gamma>(full).Value);
+        Assert.Equal(4, world.GetComponent<Alpha>(partial).Value);
     }
 
     [Fact]

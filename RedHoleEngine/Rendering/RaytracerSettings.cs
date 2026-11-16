@@ -38,8 +38,32 @@ public class RaytracerSettings
     public bool Denoise { get; set; }
     public bool ResetAccumulation { get; set; }
     
+    /// <summary>
+    /// Maximum per-pixel samples to accumulate before the raytracer stops tracing new frames
+    /// (the converged image keeps being presented and denoised). 0 = unlimited.
+    /// Samples per frame = RaysPerPixel * SamplesPerFrame.
+    /// </summary>
+    public int MaxAccumulatedSamples { get; set; } = 0;
+
+    /// <summary>
+    /// Reset accumulation (and denoiser history) automatically when scene data uploaded to the GPU
+    /// changes: BVH/triangles, materials, environment map, or black hole parameters.
+    /// </summary>
+    public bool AutoResetAccumulationOnSceneChange { get; set; } = true;
+    
     // Advanced denoising settings
-    public DenoiseMethod DenoiseMethod { get; set; } = DenoiseMethod.Bilateral;
+    /// <summary>
+    /// Filter used when <see cref="Denoise"/> is on. Bilateral is the cheap 3x3 filter built into the
+    /// raytracer shader; A-Trous and SVGF run as separate compute passes after the raytracer.
+    /// </summary>
+    public DenoiseMethod DenoiseMethod { get; set; } = DenoiseMethod.ATrous;
+
+    /// <summary>
+    /// Reuse the previous frame's denoised history (temporal reprojection with motion vectors).
+    /// A-Trous: adds a temporal pass before the spatial filter. SVGF: enables temporal accumulation of
+    /// color and moments; without it SVGF falls back to a spatial variance estimate every frame.
+    /// </summary>
+    public bool DenoiseUseHistory { get; set; } = false;
     public int ATrousIterations { get; set; } = 5;           // Number of A-trous filter passes (1-6)
     public float ATrousColorSigma { get; set; } = 0.5f;      // Color weight sensitivity
     public float ATrousNormalSigma { get; set; } = 0.1f;     // Normal weight sensitivity
@@ -105,6 +129,8 @@ public class RaytracerSettings
         LensingStepSize = Math.Clamp(LensingStepSize, 0.1f, 1.0f);
         LensingBvhCheckInterval = Math.Clamp(LensingBvhCheckInterval, 1, 16);
         LensingMaxDistance = Math.Clamp(LensingMaxDistance, 50f, 1000f);
+        
+        MaxAccumulatedSamples = Math.Max(0, MaxAccumulatedSamples);
         
         // Denoising clamps
         ATrousIterations = Math.Clamp(ATrousIterations, 1, 6);

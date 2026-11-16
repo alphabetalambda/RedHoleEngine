@@ -10,8 +10,6 @@ using SharpGLTF.Geometry.VertexTypes;
 using SharpGLTF.Materials;
 using SharpGLTF.Scenes;
 using SharpGLTF.Schema2;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.PixelFormats;
 using EngineAlphaMode = RedHoleEngine.Rendering.PBR.AlphaMode;
 using EngineMesh = RedHoleEngine.Resources.Mesh;
 
@@ -57,12 +55,60 @@ public class GltfImportTests : IDisposable
         primitive.AddTriangle(V(0, 0), V(1, 1), V(0, 1));
     }
 
+    /// <summary>
+    /// Encode a 2x2 solid-colour RGBA PNG by hand (the engine has no image encoder).
+    /// </summary>
     private static byte[] CreatePng(byte r, byte g, byte b)
     {
-        using var image = new Image<Rgba32>(2, 2, new Rgba32(r, g, b, 255));
+        const int size = 2;
+        var raw = new byte[size * (1 + size * 4)];
+        for (int y = 0; y < size; y++)
+        {
+            int row = y * (1 + size * 4);
+            raw[row] = 0; // filter: none
+            for (int x = 0; x < size; x++)
+            {
+                int o = row + 1 + x * 4;
+                raw[o] = r; raw[o + 1] = g; raw[o + 2] = b; raw[o + 3] = 255;
+            }
+        }
+
+        using var compressed = new MemoryStream();
+        using (var zlib = new System.IO.Compression.ZLibStream(compressed, System.IO.Compression.CompressionLevel.Optimal, leaveOpen: true))
+            zlib.Write(raw);
+
         using var stream = new MemoryStream();
-        image.SaveAsPng(stream);
+        stream.Write(new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A });
+        WritePngChunk(stream, "IHDR", new byte[] { 0, 0, 0, size, 0, 0, 0, size, 8, 6, 0, 0, 0 });
+        WritePngChunk(stream, "IDAT", compressed.ToArray());
+        WritePngChunk(stream, "IEND", Array.Empty<byte>());
         return stream.ToArray();
+    }
+
+    private static uint Crc32(ReadOnlySpan<byte> data)
+    {
+        uint crc = 0xFFFFFFFF;
+        foreach (byte value in data)
+        {
+            crc ^= value;
+            for (int bit = 0; bit < 8; bit++)
+                crc = (crc & 1) != 0 ? (crc >> 1) ^ 0xEDB88320 : crc >> 1;
+        }
+        return ~crc;
+    }
+
+    private static void WritePngChunk(Stream stream, string type, byte[] data)
+    {
+        var body = new byte[4 + data.Length];
+        System.Text.Encoding.ASCII.GetBytes(type, body);
+        data.CopyTo(body, 4);
+
+        Span<byte> word = stackalloc byte[4];
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(word, (uint)data.Length);
+        stream.Write(word);
+        stream.Write(body);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(word, Crc32(body));
+        stream.Write(word);
     }
 
     /// <summary>

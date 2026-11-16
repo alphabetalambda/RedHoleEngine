@@ -17,6 +17,7 @@ using RedHoleEngine.Rendering.Rasterization;
 using RedHoleEngine.Rendering.PBR;
 using RedHoleEngine.Rendering.Lighting;
 using RedHoleEngine.Rendering.Upscaling;
+using RedHoleEngine.Rendering.Denoising;
 using Silk.NET.Core;
 using Silk.NET.Core.Native;
 using Silk.NET.Vulkan;
@@ -31,7 +32,7 @@ namespace RedHoleEngine.Rendering.Backends;
 /// <summary>
 /// Vulkan graphics backend - uses MoltenVK on macOS for Metal support
 /// </summary>
-public unsafe class VulkanBackend : IGraphicsBackend
+public unsafe partial class VulkanBackend : IGraphicsBackend
 {
     public RaytracerSettings RaytracerSettings { get; } = new();
     public RenderSettings RenderSettings { get; } = new();
@@ -167,6 +168,8 @@ public unsafe class VulkanBackend : IGraphicsBackend
     private Vector3 _lastCameraForward;
     private float _lastCameraFov;
     private int _lastSettingsHash;
+    private bool _accumulationCapped;   // MaxAccumulatedSamples reached: skip tracing, keep presenting
+    private readonly SceneChangeTracker _sceneChangeTracker = new();
     private UpscaleMethod _lastUpscaleMethod;
     private UpscaleQuality _lastUpscaleQuality;
 
@@ -208,6 +211,7 @@ public unsafe class VulkanBackend : IGraphicsBackend
     private Image _gbufferAlbedoImage;      // Albedo (RGB) + metallic (A)
     private DeviceMemory _gbufferAlbedoMemory;
     private ImageView _gbufferAlbedoView;
+    private bool _gbufferLayoutInitialized;
     
     // Upscaled output image (for DLSS/FSR/XeSS at display resolution)
     private Image _upscaledImage;
@@ -278,6 +282,7 @@ public unsafe class VulkanBackend : IGraphicsBackend
         InitializeDebugRenderer();
         InitializeUiRenderer();
         InitializeUpscaler();
+        InitializeDenoiser();
 
         Console.WriteLine("Vulkan initialized successfully!");
         Console.WriteLine($"Using device: {GetDeviceName()}");
@@ -837,6 +842,9 @@ public unsafe class VulkanBackend : IGraphicsBackend
         _vk.DestroyImageView(_device, _gbufferAlbedoView, null);
         _vk.DestroyImage(_device, _gbufferAlbedoImage, null);
         _vk.FreeMemory(_device, _gbufferAlbedoMemory, null);
+        
+        // Denoiser images are render-resolution too
+        DestroyDenoiseImages();
     }
     
     private void CreateRenderResolutionImages()
@@ -852,6 +860,11 @@ public unsafe class VulkanBackend : IGraphicsBackend
         _outputImageLayout = ImageLayout.Undefined;
         _raytracingDepthLayout = ImageLayout.Undefined;
         _motionVectorImageLayout = ImageLayout.Undefined;
+        _gbufferLayoutInitialized = false;
+        
+        // Recreate denoiser images at the new size if the denoiser has been used
+        // (descriptors are rebound in UpdateRenderResolutionDescriptors)
+        RecreateDenoiseImagesIfWanted();
     }
     
     private void UpdateRenderResolutionDescriptors()
@@ -987,6 +1000,9 @@ public unsafe class VulkanBackend : IGraphicsBackend
         {
             _vk!.UpdateDescriptorSets(_device, (uint)mvWrites.Length, writesPtr, 0, null);
         }
+        
+        // Denoiser sets reference the output, G-buffer, depth and motion vector images
+        UpdateDenoiseDescriptors();
     }
 
     private void CreateStorageImage(int width, int height, out Image image, out DeviceMemory memory, out ImageView view)
@@ -994,7 +1010,7 @@ public unsafe class VulkanBackend : IGraphicsBackend
         CreateStorageImage(width, height, Format.R32G32B32A32Sfloat, out image, out memory, out view);
     }
     
-    private void CreateStorageImage(int width, int height, Format format, out Image image, out DeviceMemory memory, out ImageView view)
+    private void CreateStorageImage(int width, int height, Format format, out Image image, out DeviceMemory memory, out ImageView view, ImageUsageFlags extraUsage = 0)
     {
         var imageInfo = new ImageCreateInfo
         {
@@ -1006,7 +1022,7 @@ public unsafe class VulkanBackend : IGraphicsBackend
             ArrayLayers = 1,
             Samples = SampleCountFlags.Count1Bit,
             Tiling = ImageTiling.Optimal,
-            Usage = ImageUsageFlags.StorageBit | ImageUsageFlags.TransferSrcBit,
+            Usage = ImageUsageFlags.StorageBit | ImageUsageFlags.TransferSrcBit | extraUsage,
             SharingMode = SharingMode.Exclusive,
             InitialLayout = ImageLayout.Undefined
         };
@@ -2527,6 +2543,7 @@ public unsafe class VulkanBackend : IGraphicsBackend
             materials = new[] { GpuMaterial.Default };
         }
 
+        _sceneChangeTracker.MarkDirty();
         _materialCount = materials.Length;
         EnsureMaterialBuffer(materials.Length);
         UploadBufferData(materials, _materialBuffer);
@@ -2890,6 +2907,7 @@ public unsafe class VulkanBackend : IGraphicsBackend
     {
         _environmentMap = envMap;
         _envMapDirty = true;
+        _sceneChangeTracker.MarkDirty();
     }
     
     private void InitializeEnvironmentMap()
@@ -3416,6 +3434,9 @@ public unsafe class VulkanBackend : IGraphicsBackend
 
     public void SetRaytracerMeshData(RaytracerMeshData data)
     {
+        // Any BVH/triangle upload means the scene geometry changed
+        _sceneChangeTracker.MarkDirty();
+
         if (data == null)
         {
             _bvhNodeCount = 0;
@@ -3496,10 +3517,11 @@ public unsafe class VulkanBackend : IGraphicsBackend
         // Check if upscale settings changed and need to recreate render resources
         CheckUpscaleSettingsChanged();
 
-        UpdateAccumulationState(camera);
+        UpdateAccumulationState(camera, blackHole);
 
         // Update uniforms - use render resolution for raytracer
         RaytracerSettings.Clamp();
+        PrepareDenoiseFrame();
         var uniforms = new RaytracerUniforms
         {
             Resolution = new Vector2(_renderWidth, _renderHeight),
@@ -3524,7 +3546,8 @@ public unsafe class VulkanBackend : IGraphicsBackend
                 RaytracerSettings.SamplesPerFrame,
                 _frameIndex,
                 RaytracerSettings.Accumulate ? 1f : 0f,
-                RaytracerSettings.Denoise ? 1f : 0f),
+                // Built-in 3x3 bilateral only for the Bilateral method (or when the GPU denoiser is unavailable)
+                _frameDenoisePlan.InShaderBilateral ? 1f : 0f),
             LensingSettings = new Vector4(
                 RaytracerSettings.LensingMaxSteps,
                 RaytracerSettings.LensingStepSize,
@@ -3618,7 +3641,9 @@ public unsafe class VulkanBackend : IGraphicsBackend
 
         if (RaytracerSettings.Accumulate)
         {
-            _frameIndex++;
+            // Once the sample cap is reached no new samples are traced, so the count stays put
+            if (!_accumulationCapped)
+                _frameIndex++;
         }
         else
         {
@@ -3643,9 +3668,10 @@ public unsafe class VulkanBackend : IGraphicsBackend
 
     public void RenderToReadback(Camera camera, BlackHole? blackHole, float time, byte[] rgbaBuffer)
     {
-        UpdateAccumulationState(camera);
+        UpdateAccumulationState(camera, blackHole);
 
         RaytracerSettings.Clamp();
+        PrepareDenoiseFrame();
         var uniforms = new RaytracerUniforms
         {
             Resolution = new Vector2(_width, _height),
@@ -3670,7 +3696,8 @@ public unsafe class VulkanBackend : IGraphicsBackend
                 RaytracerSettings.SamplesPerFrame,
                 _frameIndex,
                 RaytracerSettings.Accumulate ? 1f : 0f,
-                RaytracerSettings.Denoise ? 1f : 0f),
+                // Built-in 3x3 bilateral only for the Bilateral method (or when the GPU denoiser is unavailable)
+                _frameDenoisePlan.InShaderBilateral ? 1f : 0f),
             LensingSettings = new Vector4(
                 RaytracerSettings.LensingMaxSteps,
                 RaytracerSettings.LensingStepSize,
@@ -3736,7 +3763,9 @@ public unsafe class VulkanBackend : IGraphicsBackend
 
         if (RaytracerSettings.Accumulate)
         {
-            _frameIndex++;
+            // Once the sample cap is reached no new samples are traced, so the count stays put
+            if (!_accumulationCapped)
+                _frameIndex++;
         }
         else
         {
@@ -3773,17 +3802,31 @@ public unsafe class VulkanBackend : IGraphicsBackend
             _raytracingDepthLayout = ImageLayout.General;
         }
 
-        _vk.CmdBindPipeline(_computeCommandBuffer, PipelineBindPoint.Compute, _computePipeline);
-
-        fixed (DescriptorSet* set = &_computeDescriptorSet)
+        // G-buffer images are written by the raytracer and read by the denoiser
+        if (!_gbufferLayoutInitialized)
         {
-            _vk.CmdBindDescriptorSets(_computeCommandBuffer, PipelineBindPoint.Compute, _computePipelineLayout, 0, 1, set, 0, null);
+            TransitionImageLayout(_computeCommandBuffer, _gbufferNormalImage, ImageLayout.Undefined, ImageLayout.General);
+            TransitionImageLayout(_computeCommandBuffer, _gbufferAlbedoImage, ImageLayout.Undefined, ImageLayout.General);
+            _gbufferLayoutInitialized = true;
         }
 
         // Dispatch at render resolution (may be lower than display when upscaling)
         uint groupsX = (uint)Math.Ceiling(_renderWidth / 16.0);
         uint groupsY = (uint)Math.Ceiling(_renderHeight / 16.0);
-        _vk.CmdDispatch(_computeCommandBuffer, groupsX, groupsY, 1);
+
+        // Once MaxAccumulatedSamples is reached the raytracer is skipped: the output, accumulation and
+        // G-buffer images keep the converged frame (layout transitions preserve their contents).
+        if (!_accumulationCapped)
+        {
+            _vk.CmdBindPipeline(_computeCommandBuffer, PipelineBindPoint.Compute, _computePipeline);
+
+            fixed (DescriptorSet* set = &_computeDescriptorSet)
+            {
+                _vk.CmdBindDescriptorSets(_computeCommandBuffer, PipelineBindPoint.Compute, _computePipelineLayout, 0, 1, set, 0, null);
+            }
+
+            _vk.CmdDispatch(_computeCommandBuffer, groupsX, groupsY, 1);
+        }
         
         // Barrier between raytracer and motion vector passes
         // Ensure depth writes are complete before motion vector shader reads
@@ -3812,8 +3855,9 @@ public unsafe class VulkanBackend : IGraphicsBackend
             0, 0, null, 0, null, 1, &imageBarrier);
         
         // Motion vector pass - generate motion vectors from depth
-        if (_motionVectorPipeline.Handle != 0 && _motionVectorGenerator != null && 
-            RaytracerSettings.UpscaleMethod != UpscaleMethod.None)
+        // (needed by temporal upscalers and by the denoiser's history reprojection)
+        if (_motionVectorPipeline.Handle != 0 && _motionVectorGenerator != null &&
+            (RaytracerSettings.UpscaleMethod != UpscaleMethod.None || _frameDenoisePlan.NeedsMotionVectors))
         {
             // Transition motion vector image to general layout
             if (_motionVectorImageLayout != ImageLayout.General)
@@ -3837,6 +3881,10 @@ public unsafe class VulkanBackend : IGraphicsBackend
             _vk.CmdDispatch(_computeCommandBuffer, groupsX, groupsY, 1);
         }
 
+        // Denoiser passes (A-Trous / SVGF). When they run, the final denoised image becomes
+        // the blit/readback source and is left in TRANSFER_SRC_OPTIMAL.
+        RecordDenoisePasses(_computeCommandBuffer);
+
         // Transition output image for transfer
         TransitionImageLayout(_computeCommandBuffer, _outputImage, ImageLayout.General, ImageLayout.TransferSrcOptimal);
         _outputImageLayout = ImageLayout.TransferSrcOptimal;
@@ -3859,7 +3907,8 @@ public unsafe class VulkanBackend : IGraphicsBackend
                 ImageExtent = new Extent3D((uint)_renderWidth, (uint)_renderHeight, 1)
             };
 
-            _vk.CmdCopyImageToBuffer(_computeCommandBuffer, _outputImage, ImageLayout.TransferSrcOptimal, readbackBuffer.Value, 1, &region);
+            // Read back what would be presented (denoised image when the denoiser ran)
+            _vk.CmdCopyImageToBuffer(_computeCommandBuffer, GetPresentSourceImage(), ImageLayout.TransferSrcOptimal, readbackBuffer.Value, 1, &region);
             TransitionImageLayout(_computeCommandBuffer, _outputImage, ImageLayout.TransferSrcOptimal, ImageLayout.General);
             _outputImageLayout = ImageLayout.General;
         }
@@ -3867,7 +3916,7 @@ public unsafe class VulkanBackend : IGraphicsBackend
         _vk.EndCommandBuffer(_computeCommandBuffer);
     }
 
-    private void UpdateAccumulationState(Camera camera)
+    private void UpdateAccumulationState(Camera camera, BlackHole? blackHole)
     {
         int settingsHash = HashCode.Combine(
             RaytracerSettings.RaysPerPixel,
@@ -3883,12 +3932,28 @@ public unsafe class VulkanBackend : IGraphicsBackend
                              camera.Forward != _lastCameraForward ||
                              Math.Abs(camera.FieldOfView - _lastCameraFov) > 0.001f;
 
-        if (RaytracerSettings.ResetAccumulation || cameraChanged || settingsHash != _lastSettingsHash || !RaytracerSettings.Accumulate)
+        // Scene data uploads (BVH/triangles, materials, environment map) and black hole parameters
+        bool sceneChanged = _sceneChangeTracker.Update(SceneChangeTracker.HashBlackHole(blackHole));
+        bool autoReset = sceneChanged && RaytracerSettings.AutoResetAccumulationOnSceneChange;
+
+        // Changes that invalidate the image content (as opposed to camera motion, which the
+        // denoiser's temporal history can reproject)
+        bool contentReset = RaytracerSettings.ResetAccumulation || settingsHash != _lastSettingsHash || autoReset;
+
+        if (contentReset || cameraChanged || !RaytracerSettings.Accumulate)
         {
             _frameIndex = 0;
             _accumInitialized = false;
             RaytracerSettings.ResetAccumulation = false;
         }
+
+        if (contentReset)
+        {
+            _denoiseHistoryValid = false;
+        }
+
+        // Stop tracing new frames once the per-pixel sample cap is reached
+        _accumulationCapped = AccumulationPolicy.IsSampleCapReached(RaytracerSettings, _frameIndex);
 
         _lastCameraPos = camera.Position;
         _lastCameraForward = camera.Forward;
@@ -3982,6 +4047,12 @@ public unsafe class VulkanBackend : IGraphicsBackend
                 TransitionImageLayout(_graphicsCommandBuffer, _outputImage, _outputImageLayout, ImageLayout.TransferSrcOptimal);
                 _outputImageLayout = ImageLayout.TransferSrcOptimal;
             }
+            // The denoised image is left in TRANSFER_SRC_OPTIMAL by the compute pass
+            if (_blitFromDenoised && _denoiseFinalLayout != ImageLayout.TransferSrcOptimal)
+            {
+                TransitionImageLayout(_graphicsCommandBuffer, GetPresentSourceImage(), _denoiseFinalLayout, ImageLayout.TransferSrcOptimal);
+                _denoiseFinalLayout = ImageLayout.TransferSrcOptimal;
+            }
             // Transition swapchain image to transfer dst
             TransitionImageLayout(_graphicsCommandBuffer, _swapchainImages[imageIndex], ImageLayout.Undefined, ImageLayout.TransferDstOptimal);
 
@@ -3991,10 +4062,11 @@ public unsafe class VulkanBackend : IGraphicsBackend
             bool useUpscaling = RaytracerSettings.UpscaleMethod != UpscaleMethod.None && 
                                _renderWidth != _width;
             
-            // Source image is output (render resolution) - hardware scaling handles the resize
+            // Source image is output (render resolution) - hardware scaling handles the resize.
+            // When the GPU denoiser ran this frame, its final image is presented instead.
             int srcWidth = _renderWidth;
             int srcHeight = _renderHeight;
-            var srcImage = _outputImage;
+            var srcImage = GetPresentSourceImage();
             
             // Blit from compute output to swapchain image with hardware scaling
             var blitRegion = new ImageBlit
@@ -4412,6 +4484,12 @@ public unsafe class VulkanBackend : IGraphicsBackend
                 _vk.DestroyPipelineLayout(_device, _motionVectorPipelineLayout, null);
                 _vk.DestroyDescriptorSetLayout(_device, _motionVectorDescriptorSetLayout, null);
             }
+            
+            // Cleanup denoiser (render-resolution images, pipelines, descriptor pool)
+            DestroyDenoiseImages();
+            DestroyDenoiserPipelines();
+            _denoiser?.Dispose();
+            _denoiser = null;
             
             // Cleanup motion vector uniform buffer
             if (_motionVectorUniformBuffer.Handle != 0)

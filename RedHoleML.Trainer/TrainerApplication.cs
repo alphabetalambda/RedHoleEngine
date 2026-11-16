@@ -1,5 +1,6 @@
 using System.Numerics;
 using ImGuiNET;
+using RedHoleEngine.Editor.UI;
 using RedHoleML.Trainer.UI.Panels;
 using Silk.NET.Input;
 using Silk.NET.Maths;
@@ -28,6 +29,19 @@ public class TrainerApplication : IDisposable
 
     // Shared state
     private readonly TrainerState _state = new();
+
+    // Project file and dialogs
+    private string _projectPath = "";
+    private readonly FileDialog _projectDialog = new();
+    private FileDialogMode _projectDialogMode;
+    private readonly AboutDialog _aboutDialog = new(
+        "RedHole ML Trainer",
+        "Dataset preparation and model training for RedHole Engine",
+        typeof(TrainerApplication).Assembly,
+        typeof(RedHoleEngine.Core.ECS.World).Assembly);
+    private string _statusMessage = "";
+    private bool _statusIsError;
+    private DateTime _statusTime;
 
     public int WindowWidth { get; set; } = 1400;
     public int WindowHeight { get; set; } = 900;
@@ -116,6 +130,10 @@ public class TrainerApplication : IDisposable
         // End dockspace
         EndDockSpace();
 
+        HandleShortcuts();
+        DrawProjectDialog();
+        _aboutDialog.Draw();
+
         // Render ImGui
         _imguiController?.Render();
     }
@@ -155,17 +173,21 @@ public class TrainerApplication : IDisposable
         {
             if (ImGui.BeginMenu("File"))
             {
-                if (ImGui.MenuItem("New Project", "Ctrl+N"))
+                if (ImGui.MenuItem("New Project", "Ctrl+N", false, !_state.IsTraining))
                 {
-                    _state.Reset();
+                    NewProject();
                 }
-                if (ImGui.MenuItem("Open Project", "Ctrl+O"))
+                if (ImGui.MenuItem("Open Project...", "Ctrl+O", false, !_state.IsTraining))
                 {
-                    // TODO: Open project dialog
+                    OpenProjectDialog();
                 }
-                if (ImGui.MenuItem("Save Project", "Ctrl+S"))
+                if (ImGui.MenuItem("Save Project", "Ctrl+S", false, !_state.IsTraining))
                 {
-                    // TODO: Save project
+                    SaveProject();
+                }
+                if (ImGui.MenuItem("Save Project As...", "Ctrl+Shift+S", false, !_state.IsTraining))
+                {
+                    SaveProjectAsDialog();
                 }
                 ImGui.Separator();
                 if (ImGui.MenuItem("Import Dataset", "Ctrl+I"))
@@ -226,11 +248,14 @@ public class TrainerApplication : IDisposable
             {
                 if (ImGui.MenuItem("Documentation"))
                 {
-                    // TODO: Open docs
+                    if (AppInfo.TryOpenDocumentation(out var docsMessage))
+                        SetStatus(docsMessage);
+                    else
+                        SetStatus($"Could not open documentation: {docsMessage}", isError: true);
                 }
                 if (ImGui.MenuItem("About"))
                 {
-                    // TODO: About dialog
+                    _aboutDialog.Show();
                 }
                 ImGui.EndMenu();
             }
@@ -288,11 +313,163 @@ public class TrainerApplication : IDisposable
             {
                 ImGui.TextColored(new Vector4(1f, 0.9f, 0.3f, 1f), $"Training... {_state.TrainingProgress:P0}");
             }
+            else if (!string.IsNullOrEmpty(_statusMessage) && (DateTime.UtcNow - _statusTime).TotalSeconds < 8)
+            {
+                var color = _statusIsError ? new Vector4(1f, 0.5f, 0.4f, 1f) : new Vector4(0.7f, 0.75f, 0.85f, 1f);
+                ImGui.TextColored(color, _statusMessage);
+            }
+            else if (!string.IsNullOrEmpty(_projectPath))
+            {
+                ImGui.TextDisabled(Path.GetFileName(_projectPath));
+            }
         }
         ImGui.End();
         
         ImGui.PopStyleVar(3);
     }
+
+    #region Project files
+
+    private void NewProject()
+    {
+        _state.Reset();
+        _projectPath = "";
+        UpdateWindowTitle();
+        SetStatus("New project");
+    }
+
+    private string GetProjectDialogDirectory()
+    {
+        var dir = !string.IsNullOrEmpty(_projectPath) ? Path.GetDirectoryName(_projectPath)
+            : !string.IsNullOrEmpty(_state.DatasetPath) ? Path.GetDirectoryName(_state.DatasetPath)
+            : null;
+        return !string.IsNullOrEmpty(dir) && Directory.Exists(dir)
+            ? dir
+            : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+    }
+
+    private void OpenProjectDialog()
+    {
+        _projectDialogMode = FileDialogMode.Open;
+        _projectDialog.Open(FileDialogMode.Open, "ML Project", GetProjectDialogDirectory(), TrainerProject.FileFilter, TrainerProject.FileExtension);
+    }
+
+    private void SaveProject()
+    {
+        if (string.IsNullOrEmpty(_projectPath))
+        {
+            SaveProjectAsDialog();
+            return;
+        }
+
+        SaveProjectTo(_projectPath);
+    }
+
+    private void SaveProjectAsDialog()
+    {
+        _projectDialogMode = FileDialogMode.Save;
+        var defaultName = !string.IsNullOrEmpty(_projectPath)
+            ? Path.GetFileName(_projectPath)
+            : !string.IsNullOrEmpty(_state.DatasetPath)
+                ? Path.GetFileNameWithoutExtension(_state.DatasetPath) + TrainerProject.FileExtension
+                : "MLProject" + TrainerProject.FileExtension;
+        _projectDialog.Open(FileDialogMode.Save, "ML Project", GetProjectDialogDirectory(), TrainerProject.FileFilter, TrainerProject.FileExtension, defaultName);
+    }
+
+    private void DrawProjectDialog()
+    {
+        if (_projectDialog.Draw() != FileDialogResult.Ok)
+            return;
+
+        if (_projectDialogMode == FileDialogMode.Open)
+            LoadProjectFrom(_projectDialog.SelectedPath);
+        else
+            SaveProjectTo(_projectDialog.SelectedPath);
+    }
+
+    private void SaveProjectTo(string path)
+    {
+        try
+        {
+            TrainerProject.Save(_state, path);
+            _projectPath = path;
+            UpdateWindowTitle();
+            SetStatus($"Saved {Path.GetFileName(path)}");
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"Failed to save project: {ex.Message}", isError: true);
+        }
+    }
+
+    private void LoadProjectFrom(string path)
+    {
+        try
+        {
+            var warnings = TrainerProject.Load(_state, path);
+            _projectPath = path;
+            UpdateWindowTitle();
+            foreach (var warning in warnings)
+            {
+                Console.WriteLine($"[Project] {warning}");
+            }
+            SetStatus(warnings.Count == 0
+                ? $"Opened {Path.GetFileName(path)}"
+                : $"Opened {Path.GetFileName(path)} with {warnings.Count} warning(s): {warnings[0]}",
+                isError: warnings.Count > 0);
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"Failed to open project: {ex.Message}", isError: true);
+        }
+    }
+
+    private void HandleShortcuts()
+    {
+        var io = ImGui.GetIO();
+        if (!io.KeyCtrl || io.WantTextInput || _projectDialog.IsOpen || _state.IsTraining)
+            return;
+
+        if (ImGui.IsKeyPressed(ImGuiKey.S, false))
+        {
+            if (io.KeyShift) SaveProjectAsDialog();
+            else SaveProject();
+        }
+        else if (ImGui.IsKeyPressed(ImGuiKey.O, false))
+        {
+            OpenProjectDialog();
+        }
+        else if (ImGui.IsKeyPressed(ImGuiKey.N, false))
+        {
+            NewProject();
+        }
+        else if (ImGui.IsKeyPressed(ImGuiKey.I, false))
+        {
+            _datasetPanel?.ShowImportDialog();
+        }
+        else if (ImGui.IsKeyPressed(ImGuiKey.E, false) && _state.TrainedModel != null)
+        {
+            _exportPanel?.ShowExportDialog();
+        }
+    }
+
+    private void SetStatus(string message, bool isError = false)
+    {
+        _statusMessage = message;
+        _statusIsError = isError;
+        _statusTime = DateTime.UtcNow;
+        Console.WriteLine(message);
+    }
+
+    private void UpdateWindowTitle()
+    {
+        if (_window == null) return;
+        _window.Title = string.IsNullOrEmpty(_projectPath)
+            ? WindowTitle
+            : $"{WindowTitle} - {Path.GetFileName(_projectPath)}";
+    }
+
+    #endregion
 
     private void OnResize(Vector2D<int> size)
     {

@@ -430,8 +430,8 @@ public class AudioDebugVisualizer
             // Photon sphere
             _debugDraw.DrawWireSphere(pos, gravity.PhotonSphereRadius, DebugColor.Orange.WithAlpha(0.4f), 16);
 
-            // ISCO
-            _debugDraw.DrawCircle(pos, gravity.ISCO, Vector3.UnitY, DebugColor.Yellow.WithAlpha(0.3f), 32);
+            // ISCO (prograde, spin-aware; equals 6M for a non-spinning source)
+            _debugDraw.DrawCircle(pos, gravity.ProgradeISCO, Vector3.UnitY, DebugColor.Yellow.WithAlpha(0.3f), 32);
 
             // Time dilation gradient rings
             for (int i = 1; i <= 5; i++)

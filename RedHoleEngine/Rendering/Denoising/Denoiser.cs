@@ -1,4 +1,5 @@
 using System.Numerics;
+using System.Runtime.InteropServices;
 
 namespace RedHoleEngine.Rendering.Denoising;
 
@@ -83,7 +84,8 @@ public class Denoiser : IDisposable
     /// <summary>
     /// Get parameters for SVGF temporal pass.
     /// </summary>
-    public SVGFTemporalParams GetSVGFTemporalParams()
+    /// <param name="historyValid">Whether the previous-frame images hold valid data for this resolution.</param>
+    public SVGFTemporalParams GetSVGFTemporalParams(bool historyValid = false)
     {
         return new SVGFTemporalParams
         {
@@ -91,7 +93,8 @@ public class Denoiser : IDisposable
             TemporalAlpha = _settings.SVGFTemporalAlpha,
             NormalThreshold = 0.9f,  // cos(~25 degrees)
             DepthThreshold = 0.1f,   // 10% relative depth difference
-            MaxHistoryLength = 32
+            MaxHistoryLength = 32,
+            HistoryValid = historyValid ? 1 : 0
         };
     }
 
@@ -135,7 +138,9 @@ public class Denoiser : IDisposable
 
 /// <summary>
 /// Parameters for A-Trous wavelet denoiser shader.
+/// Uploaded as push constants; layout must match <c>denoise_atrous.comp</c> (32 bytes).
 /// </summary>
+[StructLayout(LayoutKind.Sequential)]
 public struct ATrousParams
 {
     public Vector2 Resolution;
@@ -149,7 +154,9 @@ public struct ATrousParams
 
 /// <summary>
 /// Parameters for SVGF temporal accumulation pass.
+/// Uploaded as push constants; layout must match <c>denoise_svgf_temporal.comp</c> (32 bytes).
 /// </summary>
+[StructLayout(LayoutKind.Sequential)]
 public struct SVGFTemporalParams
 {
     public Vector2 Resolution;
@@ -157,13 +164,16 @@ public struct SVGFTemporalParams
     public float NormalThreshold;
     public float DepthThreshold;
     public int MaxHistoryLength;
-    public float Pad0;
+    /// <summary>1 when previous-frame history may be reprojected, 0 to ignore it.</summary>
+    public int HistoryValid;
     public float Pad1;
 }
 
 /// <summary>
 /// Parameters for SVGF variance estimation pass.
+/// Uploaded as push constants; layout must match <c>denoise_svgf_variance.comp</c> (16 bytes).
 /// </summary>
+[StructLayout(LayoutKind.Sequential)]
 public struct SVGFVarianceParams
 {
     public Vector2 Resolution;
@@ -173,7 +183,9 @@ public struct SVGFVarianceParams
 
 /// <summary>
 /// Parameters for SVGF spatial filter pass.
+/// Uploaded as push constants; layout must match <c>denoise_svgf_spatial.comp</c> (32 bytes).
 /// </summary>
+[StructLayout(LayoutKind.Sequential)]
 public struct SVGFSpatialParams
 {
     public Vector2 Resolution;

@@ -68,6 +68,16 @@ public sealed class TrainerState : IDisposable
     public string DatasetPath { get; private set; } = "";
 
     /// <summary>
+    /// Whether the loaded dataset's first row is a header
+    /// </summary>
+    public bool DatasetHasHeader { get; private set; } = true;
+
+    /// <summary>
+    /// Column separator of the loaded dataset
+    /// </summary>
+    public char DatasetSeparator { get; private set; } = ',';
+
+    /// <summary>
     /// Selected label column for training
     /// </summary>
     public string LabelColumn { get; set; } = "";
@@ -85,15 +95,8 @@ public sealed class TrainerState : IDisposable
         ClearDataset();
 
         DatasetPath = filePath;
-
-        // Load with TextLoader
-        var loader = _mlContext.Data.CreateTextLoader(new TextLoader.Options
-        {
-            HasHeader = hasHeader,
-            Separators = new[] { separator },
-            AllowQuoting = true,
-            TrimWhitespace = true
-        });
+        DatasetHasHeader = hasHeader;
+        DatasetSeparator = separator;
 
         // First pass: detect columns
         using (var reader = new StreamReader(filePath))

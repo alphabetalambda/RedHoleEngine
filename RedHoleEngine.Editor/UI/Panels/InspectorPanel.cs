@@ -33,6 +33,9 @@ public class InspectorPanel : EditorPanel
     private Entity _editingEntity;
     private string _editingProperty = "";
 
+    // Detects edits that are not recorded as undo commands so the scene is still marked dirty
+    private readonly UntrackedEditDetector _untrackedEdits = new();
+
     protected override void OnDraw()
     {
         if (World == null || Selection == null)
@@ -54,6 +57,18 @@ public class InspectorPanel : EditorPanel
             return;
         }
 
+        _untrackedEdits.BeginFrame(EntityStateSnapshot.Capture(World, entity), UndoRedo?.StateVersion ?? 0);
+
+        DrawEntityInspector(entity);
+
+        if (_untrackedEdits.EndFrame(EntityStateSnapshot.Capture(World, entity), UndoRedo?.StateVersion ?? 0, ImGui.IsAnyItemActive()))
+        {
+            MarkSceneDirty();
+        }
+    }
+
+    private void DrawEntityInspector(Entity entity)
+    {
         // Entity header
         DrawEntityHeader(entity);
 

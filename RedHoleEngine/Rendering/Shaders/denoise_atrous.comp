@@ -13,15 +13,16 @@
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
-// Input/output images
-layout(set = 0, binding = 0, rgba32f) uniform image2D inputImage;
-layout(set = 0, binding = 1, rgba32f) uniform image2D outputImage;
-layout(set = 0, binding = 2, rgba32f) uniform readonly image2D normalImage;  // World-space normals
-layout(set = 0, binding = 3, r32f) uniform readonly image2D depthImage;       // Linear depth
+// Input/output images.
+// Descriptor set layout is shared with denoise_svgf_spatial.comp (binding 4 = variance, unused here).
+layout(set = 0, binding = 0, rgba32f) uniform readonly image2D inputImage;
+layout(set = 0, binding = 1, rgba32f) uniform writeonly image2D outputImage;
+layout(set = 0, binding = 2, rgba16f) uniform readonly image2D normalImage;  // World-space normals (G-buffer, RGBA16F)
+layout(set = 0, binding = 3, r32f) uniform readonly image2D depthImage;      // Linear depth
 
-// Uniforms
-layout(set = 0, binding = 4) uniform DenoiseParams {
-    ivec2 resolution;
+// Per-iteration parameters (push constants, 32 bytes). Matches Denoising.ATrousParams.
+layout(push_constant) uniform DenoiseParams {
+    vec2 resolution;
     int stepSize;           // 1, 2, 4, 8, 16, 32 for each iteration
     float colorSigma;       // Color weight sensitivity (phi_c)
     float normalSigma;      // Normal weight sensitivity (phi_n)
@@ -53,8 +54,9 @@ const float kernelWeights[25] = float[25](
 
 void main() {
     ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 resolution = ivec2(params.resolution);
     
-    if (pixelCoord.x >= params.resolution.x || pixelCoord.y >= params.resolution.y) {
+    if (pixelCoord.x >= resolution.x || pixelCoord.y >= resolution.y) {
         return;
     }
     
@@ -80,8 +82,8 @@ void main() {
         ivec2 sampleCoord = pixelCoord + offsets[i] * params.stepSize;
         
         // Boundary check
-        if (sampleCoord.x < 0 || sampleCoord.x >= params.resolution.x ||
-            sampleCoord.y < 0 || sampleCoord.y >= params.resolution.y) {
+        if (sampleCoord.x < 0 || sampleCoord.x >= resolution.x ||
+            sampleCoord.y < 0 || sampleCoord.y >= resolution.y) {
             continue;
         }
         

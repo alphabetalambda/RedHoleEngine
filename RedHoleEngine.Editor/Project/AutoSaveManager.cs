@@ -30,9 +30,15 @@ public class AutoSaveManager
     public DateTime LastSaveTime => _lastSaveTime;
 
     /// <summary>
-    /// Whether there are unsaved changes
+    /// Whether the scene has unsaved changes (as reported by the editor's dirty tracking)
     /// </summary>
-    public bool HasUnsavedChanges => _hasChanges;
+    public bool HasUnsavedChanges => _hasUnsavedChanges();
+
+    /// <summary>
+    /// Whether an auto-save is due: something changed since the last (auto-)save and the
+    /// scene still differs from its saved state (undoing back to the save point cancels it).
+    /// </summary>
+    private bool HasPendingChanges => _hasChanges && _hasUnsavedChanges();
 
     /// <summary>
     /// Seconds until next auto-save (0 if disabled or no changes)
@@ -41,7 +47,7 @@ public class AutoSaveManager
     {
         get
         {
-            if (!_enabled || !_hasChanges) return 0;
+            if (!_enabled || !HasPendingChanges) return 0;
             
             var interval = GetAutoSaveInterval();
             if (interval <= 0) return 0;
@@ -99,7 +105,7 @@ public class AutoSaveManager
     /// </summary>
     public void Update()
     {
-        if (!_enabled || !_hasChanges)
+        if (!_enabled || !HasPendingChanges)
             return;
 
         var interval = GetAutoSaveInterval();
@@ -190,7 +196,7 @@ public class AutoSaveManager
     /// </summary>
     public void SaveNow()
     {
-        if (_hasChanges)
+        if (HasPendingChanges)
         {
             PerformAutoSave();
         }
@@ -208,7 +214,7 @@ public class AutoSaveManager
         if (interval <= 0)
             return "Auto-save off";
 
-        if (!_hasChanges)
+        if (!HasPendingChanges)
             return "No unsaved changes";
 
         var remaining = SecondsUntilNextSave;

@@ -1,6 +1,6 @@
 # AI behavior tree, director, and perception
 
-This is the decision architecture for stalker-style enemies. It is the skeleton (tree, memory, senses, pacing), not a finished creature: there is no navigation, animation, or attack trace here. A game reads `BlackboardKeys.Intent` and moves the body.
+This is the decision architecture for stalker-style enemies. It is the skeleton (tree, memory, senses, pacing, and getting from A to B), not a finished creature: there is no animation or attack trace here. The tree writes `BlackboardKeys.Intent` and an intent position; the [navigation](#navigation) module walks the body there.
 
 The shape follows the public accounts of the Alien in *Alien: Isolation*: a large behavior tree that only knows what it has sensed, behaviors that unlock over time, and a separate director that knows where the player is and spends a menace gauge so the creature is not on top of the player forever.
 
@@ -19,6 +19,7 @@ World.Update
   PerceptionSystem     priority 100   view cone + noise board -> blackboard
   DirectorSystem       priority 150   menace gauge + periodic hint -> blackboard
   BehaviorTreeSystem   priority 200   tree reads the blackboard, writes intent
+  NavigationSystem     priority 250   plans paths and moves agents that have a destination
 ```
 
 Lower priority runs first. Keep that order if you replace a system.
@@ -151,6 +152,114 @@ Hints refresh on `HintInterval` (default 3s), on a phase change, and when the su
 
 Blackboard keys: `director.menace`, `director.phase`, `director.hintKind`, `director.hintPosition`, `director.hintRadius`.
 
+## Navigation
+
+Namespace: `RedHoleEngine.AI.Navigation`. Three layers: a grid that says where an agent can stand, a pathfinder over it, and a system that walks agents along the result.
+
+### Grid
+
+`NavGrid` is 2.5D: a uniform grid on the XZ plane where each cell is walkable or blocked and has one ground height. That matches what the engine can collide with (planes, boxes, spheres, capsules; no triangle meshes to build a navmesh from) and keeps path queries free of allocation. Ramps and steps work through `MaxStepHeight`, the largest height difference an agent may cross between neighbouring cells. Floors stacked above each other do not fit in one grid; use one grid per storey.
+
+Build it by hand:
+
+```csharp
+var grid = new NavGrid(origin: new Vector3(-20f, 0f, -20f), width: 80, depth: 80, cellSize: 0.5f);
+grid.SetWalkable(new Vector3(-2f, 0f, -20f), new Vector3(2f, 0f, 10f), walkable: false); // a wall
+```
+
+Or bake it from physics colliders:
+
+```csharp
+// After at least one world update: PhysicsSystem registers colliders when it first sees their entity.
+var grid = NavGridBaker.Bake(physicsSystem.PhysicsWorld, min, max, cellSize: 0.5f,
+    new NavBakeSettings { AgentRadius = 0.4f, AgentHeight = 1.8f, MaxStepHeight = 0.4f });
+```
+
+For each cell the baker casts a ray down to find the ground (the highest surface under the cell center), rejects ground steeper than `MaxSlopeDegrees`, then stacks overlap spheres of `AgentRadius + Padding` over that point to check the agent fits. Static bodies count by default; `IncludeKinematic`, `IncludeDynamic` and `LayerMask` change that. Triggers never count.
+
+Things to know:
+
+- Clearance is tested at the cell center, so a smoothed path can pass up to half a cell closer to an obstacle than `AgentRadius`. Keep cells no larger than the agent, or add `Padding`.
+- The top of an obstacle is baked as a raised cell. It reads as walkable but is cut off from the floor by `MaxStepHeight`; ask `grid.IsReachable` or the pathfinder, not `IsWalkable`, whether an agent can get there.
+- Rays start `ScanHeight` above the grid origin. In a room with a ceiling collider, set it below the ceiling.
+- Capsule colliders block cells but are never ground (the physics raycast skips them).
+- Every edit bumps `grid.Version`. Moving agents replan when it changes, so opening a door is `grid.SetWalkable(...)`.
+
+### Paths
+
+`NavPathfinder.FindPath(grid, start, goal, path)` runs A* (8 neighbours, no cutting across the corner of a blocked cell) and then pulls the string tight: from each kept point it jumps to the furthest later point in line of sight. The result starts at `start` and ends at `goal`.
+
+- A start or goal on a blocked cell is snapped to the nearest walkable cell within `SnapDistance` (default 2). Further than that is `InvalidStart` / `InvalidGoal`.
+- The grid labels connected regions once per version, so an unreachable goal returns `Unreachable` without a search.
+- Buffers are reused. After warm-up a query allocates nothing. One pathfinder per thread.
+
+### Agents
+
+```csharp
+var navigation = world.AddSystem(new NavigationSystem { Grid = grid });
+
+world.AddComponent(entity, new TransformComponent(spawn));
+world.AddComponent(entity, NavAgentComponent.Create(speed: 3.5f, acceleration: 20f, stoppingDistance: 0.1f, radius: 0.4f));
+
+bool reachable = navigation.SetDestination(entity, target); // plans now
+// or: world.GetComponent<NavAgentComponent>(entity).SetDestination(target); // plans on the next update
+```
+
+`NavAgentComponent.Status` goes `Pending` -> `Moving` -> `Arrived`, or `Unreachable`. `Stop()` drops the order and the agent brakes.
+
+Steering is deliberately simple: accelerate along the path, brake so the agent stops at the goal instead of overshooting ("arrive"), and push away from agents whose radii overlap. Separation compares every pair of agents; set `NavigationSystem.EnableSeparation = false` for a crowd, or `SeparationWeight = 0` on one agent. With a low `Acceleration` relative to `Speed` an agent swings wide on corners, so keep it high for tight corridors.
+
+How the body moves depends on the entity:
+
+| Entity has | Moved by |
+| --- | --- |
+| No rigid body, or a kinematic/static one | The transform is moved directly (and `PhysicsSystem` copies it onto a kinematic body). Y follows the grid height plus `BaseOffset` when `SnapToGround` is set, and the transform turns to face its heading when `FaceMovement` is set. |
+| A dynamic rigid body | Only the horizontal velocity of the body is set. Physics moves it, gravity owns Y, and collisions still apply. |
+
+### Behavior-tree leaves
+
+Two forms of the same leaves. Both return `Running` on the way, `Success` on arrival, and `Failure` when the tree is ticked without a world, the agent has no `NavAgentComponent`, or there is no path (reported on the first tick when a `NavigationSystem` is present).
+
+Node classes, for trees built in code. They also cancel their own order when the branch is preempted, so the agent does not keep walking somewhere the tree stopped caring about:
+
+```csharp
+using RedHoleEngine.AI.Navigation;
+
+var tree = new BehaviorTreeBuilder("guard")
+    .Selector("root")
+        .Guard("scared", ctx => ctx.Blackboard.GetOr("scared", false))
+            .Flee("run", BlackboardKeys.LastSeenPosition, fleeDistance: 8f, safeDistance: 12f)
+        .End()
+        .Guard("has-lead", ctx => ctx.Blackboard.Has(BlackboardKeys.LastKnownPosition))
+            .MoveTo("check-it-out", BlackboardKeys.LastKnownPosition)
+        .End()
+        .Patrol("rounds", pointA, pointB, pointC)
+    .End()
+    .Build();
+```
+
+| Node | Builder | Behaviour |
+| --- | --- | --- |
+| `MoveToNode` | `.MoveTo(name, key)` / `.MoveTo(name, position)` | Walks to a blackboard `Vector3` or a fixed point. Fails while the key is missing. Replans when the target moves more than 0.5. |
+| `FleeNode` | `.Flee(name, threatKey, fleeDistance, safeDistance)` | Picks reachable points away from the threat. Succeeds once `safeDistance` away, fails when cornered. |
+| `PatrolNode` | `.Patrol(name, points...)` | One point per success, so put it under `Repeat` (and `Cooldown` to pause at each stop). An unreachable point fails and is skipped. |
+| `WanderNode` | `.Wander(name, radius, center, seed)` | Random reachable point within the radius; success on arrival. |
+
+`BehaviorTreeBuilder.Leaf(node)` adds any other custom leaf. These node types are code-only: `BehaviorTreeDocument.FromTree` cannot export them.
+
+Stateless actions, for JSON trees. `NavigationActions.Register(registry)` adds:
+
+| Action id | Does |
+| --- | --- |
+| `nav.moveToIntent` | Walks to `agent.intentPosition` |
+| `nav.moveToLastKnown` | Walks to `sense.lastKnownPosition` |
+| `nav.fleeLastSeen` | Flees from `sense.lastSeenPosition` |
+| `nav.patrol` | Patrols the `Vector3[]` stored under `nav.patrolPoints` (index in `nav.patrolIndex`) |
+| `nav.wander` | Wanders within 6 units |
+| `nav.stop` | Drops the destination |
+
+For other keys or distances, register a factory result under your own id: `registry.RegisterAction("pack.goToDen", NavigationActions.MoveToKey("pack.den"))`. The static methods (`NavigationActions.MoveTo(context, target)`, `Flee`, `Patrol`, `Wander`, `Stop`) can also be called from inside your own actions. A registered action cannot see its branch being preempted; follow it with a branch that gives a new order or calls `nav.stop`.
+
 ## Sample stalker
 
 `RedHoleEngine.AI.Sample.StalkerTree` is a small priority list:
@@ -166,6 +275,8 @@ Blackboard keys: `director.menace`, `director.phase`, `director.hintKind`, `dire
 
 Intent values live in `AgentIntent`: `Patrol`, `Investigate`, `Search`, `Hunt`, `Ambush`, `Retreat`. `agent.intentPosition` is where that intent is aimed, when it has a place.
 
+Give the stalker entity a `NavAgentComponent` (and add a `NavigationSystem` with a grid) and it walks: after each decision the sample actions call `NavigationActions.FollowIntent`, which heads for `agent.intentPosition` or stops when the intent has no place. While patrolling it walks the `Vector3[]` under `nav.patrolPoints` if you set one. The statuses the tree returns are the same with or without a nav agent, so the decision logic is unchanged.
+
 ## Extending it
 
 1. Add a stateless condition or action and register it (`registry.RegisterCondition("pack.flank", FlankReady)`). Keep timers and targets on the blackboard, keyed with your own strings or a new constant next to `BlackboardKeys`.
@@ -175,4 +286,4 @@ Intent values live in `AgentIntent`: `Patrol`, `Investigate`, `Search`, `Hunt`, 
 5. Custom composite types are code. The JSON compiler only knows the built-in node set; new decisions should be new registered leaves, not new JSON types, unless you extend `BehaviorTreeDocument.Compile`.
 6. Line of sight: assign `PerceptionSystem.Vision`. Do not bake a physics query into the cone test; `SensoryMath` stays pure so the tests do not need a world collider.
 
-Movement, attack traces, and "which locker to check" are deliberately not in this layer. When those exist, implement them as actions that return `Running` until the body arrives and `Success` or `Failure` when it does, reading `agent.intentPosition`.
+Attack traces and "which locker to check" are deliberately not in this layer. When those exist, implement them like the navigation leaves: actions that return `Running` until the body is done and `Success` or `Failure` when it is.

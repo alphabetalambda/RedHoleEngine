@@ -1,8 +1,7 @@
 using System;
 using System.IO;
 using System.Numerics;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.PixelFormats;
+using RedHoleEngine.Resources;
 
 namespace RedHoleEngine.Rendering.PBR;
 
@@ -106,28 +105,12 @@ public class EnvironmentMap : IDisposable
     /// </summary>
     private bool LoadRadianceHdr(string path)
     {
-        // Use ImageSharp's HDR support
-        using var image = Image.Load<RgbaVector>(path);
-        
+        var image = ImageUtils.LoadRgbFloat(path);
+
         _width = image.Width;
         _height = image.Height;
-        _hdrData = new float[_width * _height * 3];
-        
-        image.ProcessPixelRows(accessor =>
-        {
-            for (int y = 0; y < accessor.Height; y++)
-            {
-                var row = accessor.GetRowSpan(y);
-                for (int x = 0; x < accessor.Width; x++)
-                {
-                    int idx = (y * _width + x) * 3;
-                    _hdrData[idx] = row[x].R;
-                    _hdrData[idx + 1] = row[x].G;
-                    _hdrData[idx + 2] = row[x].B;
-                }
-            }
-        });
-        
+        _hdrData = image.Rgb;
+
         FilePath = path;
         Console.WriteLine($"Loaded HDR environment: {path} ({_width}x{_height})");
         return true;
@@ -138,28 +121,21 @@ public class EnvironmentMap : IDisposable
     /// </summary>
     private bool LoadStandardImage(string path)
     {
-        using var image = Image.Load<Rgba32>(path);
-        
+        var image = ImageUtils.LoadRgba8(path);
+
         _width = image.Width;
         _height = image.Height;
         _hdrData = new float[_width * _height * 3];
-        
-        image.ProcessPixelRows(accessor =>
+
+        var rgba = image.Rgba;
+        for (int i = 0; i < _width * _height; i++)
         {
-            for (int y = 0; y < accessor.Height; y++)
-            {
-                var row = accessor.GetRowSpan(y);
-                for (int x = 0; x < accessor.Width; x++)
-                {
-                    int idx = (y * _width + x) * 3;
-                    // Convert sRGB to linear
-                    _hdrData[idx] = SrgbToLinear(row[x].R / 255f);
-                    _hdrData[idx + 1] = SrgbToLinear(row[x].G / 255f);
-                    _hdrData[idx + 2] = SrgbToLinear(row[x].B / 255f);
-                }
-            }
-        });
-        
+            // Convert sRGB to linear
+            _hdrData[i * 3] = SrgbToLinear(rgba[i * 4] / 255f);
+            _hdrData[i * 3 + 1] = SrgbToLinear(rgba[i * 4 + 1] / 255f);
+            _hdrData[i * 3 + 2] = SrgbToLinear(rgba[i * 4 + 2] / 255f);
+        }
+
         FilePath = path;
         Console.WriteLine($"Loaded environment (converted to HDR): {path} ({_width}x{_height})");
         return true;

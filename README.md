@@ -59,7 +59,7 @@ RedHoleEngine is a modern game engine built around a unique specialization: real
 | UI | ImGui.NET |
 | ML | Microsoft.ML, FastTree, LightGBM |
 | Models | SharpGLTF, AssimpNet |
-| Images | SixLabors.ImageSharp |
+| Images | StbImageSharp |
 
 ---
 

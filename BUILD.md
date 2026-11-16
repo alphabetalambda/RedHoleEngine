@@ -196,14 +196,6 @@ If you see errors about `DebugDrawManager` or `DebugRenderer`, ensure the `RedHo
 dotnet test RedHoleEngine.Tests/RedHoleEngine.Tests.csproj
 ```
 
-## Package Warnings
-
-The project uses `SixLabors.ImageSharp` which has known vulnerabilities. These are display-only warnings and don't affect the build. To suppress:
-
-```bash
-dotnet build -p:NoWarn=NU1902;NU1903
-```
-
 ## IDE Support
 
 ### Visual Studio / Rider

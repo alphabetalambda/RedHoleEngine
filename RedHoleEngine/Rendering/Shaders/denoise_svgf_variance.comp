@@ -11,19 +11,21 @@
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
 layout(set = 0, binding = 0, rgba32f) uniform readonly image2D momentsImage;       // Accumulated moments
-layout(set = 0, binding = 1, r16f) uniform readonly image2D historyLengthImage;   // History length
+layout(set = 0, binding = 1, r32f) uniform readonly image2D historyLengthImage;    // History length
 layout(set = 0, binding = 2, r32f) uniform writeonly image2D varianceImage;        // Output variance
 
-layout(set = 0, binding = 3) uniform VarianceParams {
-    ivec2 resolution;
+// Push constants (16 bytes). Matches Denoising.SVGFVarianceParams.
+layout(push_constant) uniform VarianceParams {
+    vec2 resolution;
     int minHistoryForVariance;    // Minimum history frames before using temporal variance
     float spatialVarianceBoost;   // Boost factor for spatial variance
 } params;
 
 void main() {
     ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 resolution = ivec2(params.resolution);
     
-    if (pixelCoord.x >= params.resolution.x || pixelCoord.y >= params.resolution.y) {
+    if (pixelCoord.x >= resolution.x || pixelCoord.y >= resolution.y) {
         return;
     }
     
@@ -49,8 +51,8 @@ void main() {
             for (int dx = -1; dx <= 1; dx++) {
                 ivec2 sampleCoord = pixelCoord + ivec2(dx, dy);
                 
-                if (sampleCoord.x < 0 || sampleCoord.x >= params.resolution.x ||
-                    sampleCoord.y < 0 || sampleCoord.y >= params.resolution.y) {
+                if (sampleCoord.x < 0 || sampleCoord.x >= resolution.x ||
+                    sampleCoord.y < 0 || sampleCoord.y >= resolution.y) {
                     continue;
                 }
                 

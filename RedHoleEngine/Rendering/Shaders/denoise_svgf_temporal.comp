@@ -14,29 +14,30 @@ layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
 // Current frame inputs
 layout(set = 0, binding = 0, rgba32f) uniform readonly image2D currentColor;      // Noisy input color
-layout(set = 0, binding = 1, rgba32f) uniform readonly image2D currentNormal;     // World-space normals
+layout(set = 0, binding = 1, rgba16f) uniform readonly image2D currentNormal;     // World-space normals (G-buffer, RGBA16F)
 layout(set = 0, binding = 2, r32f) uniform readonly image2D currentDepth;         // Linear depth
-layout(set = 0, binding = 3, rg16f) uniform readonly image2D motionVectors;       // Screen-space motion
+layout(set = 0, binding = 3, rg16f) uniform readonly image2D motionVectors;       // Screen-space motion (pixels)
 
 // Previous frame data
 layout(set = 0, binding = 4, rgba32f) uniform readonly image2D prevColor;         // Previous accumulated color
 layout(set = 0, binding = 5, rgba32f) uniform readonly image2D prevMoments;       // Previous moments (mean, mean^2)
-layout(set = 0, binding = 6, r16f) uniform readonly image2D prevHistoryLength;    // Previous history length
-layout(set = 0, binding = 7, rgba32f) uniform readonly image2D prevNormal;        // Previous normals
+layout(set = 0, binding = 6, r32f) uniform readonly image2D prevHistoryLength;    // Previous history length
+layout(set = 0, binding = 7, rgba16f) uniform readonly image2D prevNormal;        // Previous normals
 layout(set = 0, binding = 8, r32f) uniform readonly image2D prevDepth;            // Previous depth
 
 // Outputs
 layout(set = 0, binding = 9, rgba32f) uniform writeonly image2D outColor;         // Accumulated color
 layout(set = 0, binding = 10, rgba32f) uniform writeonly image2D outMoments;      // Accumulated moments
-layout(set = 0, binding = 11, r16f) uniform writeonly image2D outHistoryLength;   // Updated history length
+layout(set = 0, binding = 11, r32f) uniform writeonly image2D outHistoryLength;   // Updated history length
 
-layout(set = 0, binding = 12) uniform SVGFParams {
-    ivec2 resolution;
+// Push constants (32 bytes). Matches Denoising.SVGFTemporalParams.
+layout(push_constant) uniform SVGFParams {
+    vec2 resolution;
     float temporalAlpha;       // Base temporal blend factor
     float normalThreshold;     // Threshold for normal rejection
     float depthThreshold;      // Threshold for depth rejection
     int maxHistoryLength;      // Maximum history frames to accumulate
-    float pad0;
+    int historyValid;          // 0 = previous-frame images are invalid (first frame, reset, resize)
     float pad1;
 } params;
 
@@ -47,9 +48,16 @@ float luminance(vec3 color) {
 
 // Check if reprojected sample is valid (consistency check)
 bool isReprojectionValid(ivec2 currentCoord, ivec2 prevCoord, vec3 currentNormal, float currentDepth) {
+    ivec2 resolution = ivec2(params.resolution);
+    
+    // History disabled or invalidated
+    if (params.historyValid == 0) {
+        return false;
+    }
+    
     // Boundary check
-    if (prevCoord.x < 0 || prevCoord.x >= params.resolution.x ||
-        prevCoord.y < 0 || prevCoord.y >= params.resolution.y) {
+    if (prevCoord.x < 0 || prevCoord.x >= resolution.x ||
+        prevCoord.y < 0 || prevCoord.y >= resolution.y) {
         return false;
     }
     
@@ -81,8 +89,9 @@ bool isReprojectionValid(ivec2 currentCoord, ivec2 prevCoord, vec3 currentNormal
 
 void main() {
     ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 resolution = ivec2(params.resolution);
     
-    if (pixelCoord.x >= params.resolution.x || pixelCoord.y >= params.resolution.y) {
+    if (pixelCoord.x >= resolution.x || pixelCoord.y >= resolution.y) {
         return;
     }
     
@@ -103,8 +112,8 @@ void main() {
     currentNormalVal = normalize(currentNormalVal);
     
     // Calculate reprojected position
-    vec2 prevUV = (vec2(pixelCoord) + 0.5) / vec2(params.resolution) - motion / vec2(params.resolution);
-    ivec2 prevCoord = ivec2(prevUV * vec2(params.resolution));
+    vec2 prevUV = (vec2(pixelCoord) + 0.5) / params.resolution - motion / params.resolution;
+    ivec2 prevCoord = ivec2(floor(prevUV * params.resolution));
     
     // Check if reprojection is valid
     bool validReprojection = isReprojectionValid(pixelCoord, prevCoord, currentNormalVal, currentDepthVal);

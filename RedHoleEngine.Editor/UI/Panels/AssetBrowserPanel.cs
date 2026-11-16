@@ -41,6 +41,7 @@ public class AssetBrowserPanel : EditorPanel
 {
     private readonly Func<string> _getProjectPath;
     private readonly Action<string> _openSceneAction;
+    private readonly Action<string>? _importModelAction;
     
     private string _currentPath = "";
     private string _rootPath = "";
@@ -62,10 +63,11 @@ public class AssetBrowserPanel : EditorPanel
 
     public override string Title => "Assets";
 
-    public AssetBrowserPanel(Func<string> getProjectPath, Action<string> openSceneAction)
+    public AssetBrowserPanel(Func<string> getProjectPath, Action<string> openSceneAction, Action<string>? importModelAction = null)
     {
         _getProjectPath = getProjectPath;
         _openSceneAction = openSceneAction;
+        _importModelAction = importModelAction;
     }
 
     protected override void OnDraw()
@@ -386,6 +388,49 @@ public class AssetBrowserPanel : EditorPanel
         {
             _openSceneAction(entry.FullPath);
         }
+        else if (entry.Type == AssetType.Prefab)
+        {
+            InstantiatePrefab(entry.FullPath);
+        }
+        else if (CanImportModel(entry))
+        {
+            _importModelAction!(entry.FullPath);
+        }
+    }
+
+    private void InstantiatePrefab(string path)
+    {
+        if (World == null)
+        {
+            Console.WriteLine("Cannot instantiate prefab: No world loaded");
+            return;
+        }
+
+        if (!RedHoleEngine.Resources.Prefab.TryLoadFromFile(path, out var prefab, out var error) || prefab == null)
+        {
+            Console.WriteLine($"Failed to load prefab '{path}': {error}");
+            return;
+        }
+
+        try
+        {
+            var command = new Commands.InstantiatePrefabCommand(World, Selection, prefab);
+            if (UndoRedo != null)
+                UndoRedo.ExecuteCommand(command);
+            else
+                command.Execute();
+        }
+        catch (InvalidDataException ex)
+        {
+            Console.WriteLine($"Failed to instantiate prefab '{path}': {ex.Message}");
+        }
+    }
+
+    private bool CanImportModel(AssetEntry entry)
+    {
+        return _importModelAction != null
+            && entry.Type == AssetType.Mesh
+            && RedHoleEngine.Resources.ModelImport.ModelLoader.IsSupported(entry.FullPath);
     }
 
     private void HandleContextMenu()
@@ -406,6 +451,24 @@ public class AssetBrowserPanel : EditorPanel
                     if (ImGui.MenuItem("Open Scene"))
                     {
                         _openSceneAction(_selectedEntry.FullPath);
+                    }
+                    ImGui.Separator();
+                }
+
+                if (_selectedEntry.Type == AssetType.Prefab)
+                {
+                    if (ImGui.MenuItem("Instantiate in Scene"))
+                    {
+                        InstantiatePrefab(_selectedEntry.FullPath);
+                    }
+                    ImGui.Separator();
+                }
+
+                if (CanImportModel(_selectedEntry))
+                {
+                    if (ImGui.MenuItem("Add to Scene"))
+                    {
+                        _importModelAction!(_selectedEntry.FullPath);
                     }
                     ImGui.Separator();
                 }

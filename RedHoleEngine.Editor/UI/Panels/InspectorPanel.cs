@@ -28,6 +28,7 @@ public class InspectorPanel : EditorPanel
     private AudioSourceComponent? _editStartAudioSource;
     private CollisionSoundComponent? _editStartCollisionSound;
     private RenderSettingsComponent? _editStartRenderSettings;
+    private LightComponent? _editStartLight;
     
     private Entity _editingEntity;
     private string _editingProperty = "";
@@ -82,6 +83,7 @@ public class InspectorPanel : EditorPanel
         DrawAudioSourceComponent(entity);
         DrawCollisionSoundComponent(entity);
         DrawRenderSettingsComponent(entity);
+        DrawLightComponent(entity);
 
         ImGui.Separator();
 
@@ -800,6 +802,103 @@ public class InspectorPanel : EditorPanel
         ImGui.Spacing();
     }
 
+    private void DrawLightComponent(Entity entity)
+    {
+        if (!World!.HasComponent<LightComponent>(entity)) return;
+
+        bool open = ImGui.CollapsingHeader("Light", ImGuiTreeNodeFlags.DefaultOpen);
+
+        if (ImGui.BeginPopupContextItem("LightContext"))
+        {
+            if (ImGui.MenuItem("Remove Component"))
+            {
+                World.RemoveComponent<LightComponent>(entity);
+                ImGui.EndPopup();
+                return;
+            }
+            ImGui.EndPopup();
+        }
+
+        if (!open) return;
+
+        ref var light = ref World.GetComponent<LightComponent>(entity);
+
+        var enabled = light.Enabled;
+        BeginPropertyEdit(entity, "Enabled", ref light, ref _editStartLight);
+        if (ImGui.Checkbox("Enabled##Light", ref enabled))
+        {
+            light.Enabled = enabled;
+        }
+        EndPropertyEdit(entity, "Enabled", ref light, ref _editStartLight);
+
+        var types = Enum.GetNames<LightType>();
+        int currentType = (int)light.Type;
+        BeginPropertyEdit(entity, "Type", ref light, ref _editStartLight);
+        if (ImGui.Combo("Type##Light", ref currentType, types, types.Length))
+        {
+            light.Type = (LightType)currentType;
+        }
+        EndPropertyEdit(entity, "Type", ref light, ref _editStartLight);
+
+        var color = light.Color;
+        BeginPropertyEdit(entity, "Color", ref light, ref _editStartLight);
+        if (ImGui.ColorEdit3("Color##Light", ref color))
+        {
+            light.Color = color;
+        }
+        EndPropertyEdit(entity, "Color", ref light, ref _editStartLight);
+
+        var intensity = light.Intensity;
+        BeginPropertyEdit(entity, "Intensity", ref light, ref _editStartLight);
+        if (ImGui.DragFloat("Intensity##Light", ref intensity, 0.1f, 0f, 100000f))
+        {
+            light.Intensity = MathF.Max(intensity, 0f);
+        }
+        EndPropertyEdit(entity, "Intensity", ref light, ref _editStartLight);
+
+        if (light.Type != LightType.Directional)
+        {
+            var range = light.Range;
+            BeginPropertyEdit(entity, "Range", ref light, ref _editStartLight);
+            if (ImGui.DragFloat("Range##Light", ref range, 0.1f, 0f, 100000f))
+            {
+                light.Range = MathF.Max(range, 0f);
+            }
+            EndPropertyEdit(entity, "Range", ref light, ref _editStartLight);
+        }
+
+        if (light.Type == LightType.Spot)
+        {
+            var inner = light.InnerConeAngle;
+            BeginPropertyEdit(entity, "InnerConeAngle", ref light, ref _editStartLight);
+            if (ImGui.DragFloat("Inner Cone Angle", ref inner, 0.5f, 0f, 89f))
+            {
+                light.InnerConeAngle = Math.Clamp(inner, 0f, 89f);
+                light.OuterConeAngle = MathF.Max(light.OuterConeAngle, light.InnerConeAngle);
+            }
+            EndPropertyEdit(entity, "InnerConeAngle", ref light, ref _editStartLight);
+
+            var outer = light.OuterConeAngle;
+            BeginPropertyEdit(entity, "OuterConeAngle", ref light, ref _editStartLight);
+            if (ImGui.DragFloat("Outer Cone Angle", ref outer, 0.5f, 0f, 89f))
+            {
+                light.OuterConeAngle = Math.Clamp(outer, 0f, 89f);
+                light.InnerConeAngle = MathF.Min(light.InnerConeAngle, light.OuterConeAngle);
+            }
+            EndPropertyEdit(entity, "OuterConeAngle", ref light, ref _editStartLight);
+        }
+
+        var castShadows = light.CastShadows;
+        BeginPropertyEdit(entity, "CastShadows", ref light, ref _editStartLight);
+        if (ImGui.Checkbox("Cast Shadows", ref castShadows))
+        {
+            light.CastShadows = castShadows;
+        }
+        EndPropertyEdit(entity, "CastShadows", ref light, ref _editStartLight);
+
+        ImGui.Spacing();
+    }
+
     private void DrawAddComponentButton(Entity entity)
     {
         if (ImGui.Button("Add Component", new Vector2(ImGui.GetContentRegionAvail().X, 0)))
@@ -853,6 +952,11 @@ public class InspectorPanel : EditorPanel
             if (!World.HasComponent<RenderSettingsComponent>(entity) && ImGui.MenuItem("Render Settings"))
             {
                 World.AddComponent(entity, new RenderSettingsComponent());
+            }
+
+            if (!World.HasComponent<LightComponent>(entity) && ImGui.MenuItem("Light"))
+            {
+                World.AddComponent(entity, new LightComponent());
             }
 
             ImGui.EndPopup();

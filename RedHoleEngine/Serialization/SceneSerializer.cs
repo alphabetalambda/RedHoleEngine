@@ -37,6 +37,7 @@ public class SceneSerializer
         RegisterComponent<MaterialComponent>(7, new MaterialComponentSerializer());
         RegisterComponent<RenderSettingsComponent>(8, new RenderSettingsComponentSerializer());
         RegisterComponent<RaytracerMeshComponent>(9, new RaytracerMeshComponentSerializer());
+        RegisterComponent<LightComponent>(20, new LightComponentSerializer());
     }
 
     /// <summary>
@@ -49,6 +50,72 @@ public class SceneSerializer
         _idToType[typeId] = type;
         _serializers[type] = serializer;
     }
+
+    #region Per-entity serialization (shared with prefabs)
+
+    /// <summary>
+    /// Serialize every registered component present on a single entity.
+    /// Returns (typeId, data) pairs in registration order.
+    /// </summary>
+    public List<(int typeId, byte[] data)> SerializeEntity(World world, Entity entity)
+    {
+        var components = new List<(int, byte[])>();
+
+        foreach (var (type, typeId) in _typeToId)
+        {
+            if (_serializers.TryGetValue(type, out var serializer))
+            {
+                var data = serializer.TrySerialize(world, entity);
+                if (data != null)
+                {
+                    components.Add((typeId, data));
+                }
+            }
+        }
+
+        return components;
+    }
+
+    /// <summary>
+    /// Deserialize a single component onto an entity.
+    /// Returns false (and does nothing) if the type ID is not registered.
+    /// </summary>
+    public bool TryDeserializeComponent(World world, Entity entity, int typeId, byte[] data)
+    {
+        if (_idToType.TryGetValue(typeId, out var componentType) &&
+            _serializers.TryGetValue(componentType, out var serializer))
+        {
+            serializer.Deserialize(world, entity, data);
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Get the component type name registered for a type ID (null if unknown)
+    /// </summary>
+    public string? GetComponentTypeName(int typeId)
+    {
+        return _idToType.TryGetValue(typeId, out var type) ? type.Name : null;
+    }
+
+    /// <summary>
+    /// Rewrite entity references held by the components of an entity.
+    /// Only serializers implementing <see cref="IEntityReferenceRemapper"/> take part.
+    /// </summary>
+    public void RemapEntityReferences(World world, Entity entity, Func<Entity, Entity> remap)
+    {
+        foreach (var serializer in _serializers.Values)
+        {
+            if (serializer is IEntityReferenceRemapper remapper)
+            {
+                remapper.RemapEntityReferences(world, entity, remap);
+            }
+        }
+    }
+
+    #endregion
 
     /// <summary>
     /// Save a world to a binary file
@@ -141,12 +208,8 @@ public class SceneSerializer
                 int dataLength = reader.ReadInt32();
                 byte[] data = reader.ReadBytes(dataLength);
 
-                if (_idToType.TryGetValue(typeId, out var componentType) &&
-                    _serializers.TryGetValue(componentType, out var serializer))
-                {
-                    serializer.Deserialize(world, entity, data);
-                }
                 // Skip unknown component types (forward compatibility)
+                TryDeserializeComponent(world, entity, typeId, data);
             }
         }
     }
@@ -171,19 +234,7 @@ public class SceneSerializer
                 // Found a new entity, collect all its components
                 if (world.TryGetEntity(entityId, out var entity))
                 {
-                    var components = new List<(int, byte[])>();
-
-                    foreach (var (compType, compTypeId) in _typeToId)
-                    {
-                        if (_serializers.TryGetValue(compType, out var compSerializer))
-                        {
-                            var data = compSerializer.TrySerialize(world, entity);
-                            if (data != null)
-                            {
-                                components.Add((compTypeId, data));
-                            }
-                        }
-                    }
+                    var components = SerializeEntity(world, entity);
 
                     if (components.Count > 0)
                     {
@@ -234,10 +285,53 @@ public interface IComponentSerializer
 }
 
 /// <summary>
+/// Optional capability for serializers whose component stores <see cref="Entity"/> references.
+/// Called after deserializing into new entities (e.g. prefab instantiation) so that
+/// references saved with the old entity IDs can be pointed at the newly created entities.
+/// </summary>
+public interface IEntityReferenceRemapper
+{
+    /// <summary>
+    /// Remap entity references in this serializer's component on the given entity (no-op if absent).
+    /// <paramref name="remap"/> receives the stored reference and returns the entity to use instead.
+    /// </summary>
+    void RemapEntityReferences(World world, Entity entity, Func<Entity, Entity> remap);
+}
+
+/// <summary>
 /// Base class for component serializers with common binary read/write helpers
 /// </summary>
-public abstract class ComponentSerializer<T> : IComponentSerializer where T : IComponent
+public abstract class ComponentSerializer<T> : IComponentSerializer, IEntityReferenceRemapper where T : IComponent
 {
+    public void RemapEntityReferences(World world, Entity entity, Func<Entity, Entity> remap)
+    {
+        if (!world.HasComponent<T>(entity))
+            return;
+
+        RemapEntityReferences(ref world.GetComponent<T>(entity), remap);
+    }
+
+    /// <summary>
+    /// Override when the component stores <see cref="Entity"/> references:
+    /// replace each one with <c>remap(reference)</c>. Default does nothing.
+    /// </summary>
+    protected virtual void RemapEntityReferences(ref T component, Func<Entity, Entity> remap)
+    {
+    }
+
+    /// <summary>Write an entity reference (ID and generation)</summary>
+    protected static void WriteEntity(BinaryWriter w, Entity e)
+    {
+        w.Write(e.Id);
+        w.Write(e.Generation);
+    }
+
+    /// <summary>Read an entity reference written by <see cref="WriteEntity"/></summary>
+    protected static Entity ReadEntity(BinaryReader r)
+    {
+        return new Entity(r.ReadInt32(), r.ReadInt32());
+    }
+
     public IEnumerable<int> GetEntityIds(World world)
     {
         return world.GetPool<T>().GetEntityIds();

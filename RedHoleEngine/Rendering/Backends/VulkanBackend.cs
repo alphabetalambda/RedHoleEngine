@@ -15,6 +15,7 @@ using RedHoleEngine.Rendering;
 using RedHoleEngine.Rendering.Raytracing;
 using RedHoleEngine.Rendering.Rasterization;
 using RedHoleEngine.Rendering.PBR;
+using RedHoleEngine.Rendering.Lighting;
 using RedHoleEngine.Rendering.Upscaling;
 using RedHoleEngine.Rendering.Denoising;
 using Silk.NET.Core;
@@ -120,6 +121,16 @@ public unsafe partial class VulkanBackend : IGraphicsBackend
     private DeviceMemory _materialBufferMemory;
     private ulong _materialBufferSize;
     private int _materialCount;
+
+    // Scene light list (binding 11). Host-visible and persistently mapped: it is small
+    // and rewritten together with the uniform buffer each frame.
+    private const uint LightBufferBinding = 11;
+    private VkBuffer _lightBuffer;
+    private DeviceMemory _lightBufferMemory;
+    private void* _lightBufferMapped;
+    private readonly GpuLight[] _lights = new GpuLight[GpuLight.MaxLights];
+    private int _lightCount;
+    private int _lightHash;
 
     // PBR Texture array
     private const int MaxMaterialTextures = 32;
@@ -1536,6 +1547,13 @@ public unsafe partial class VulkanBackend : IGraphicsBackend
                 DescriptorType = DescriptorType.StorageImage,
                 DescriptorCount = 1,
                 StageFlags = ShaderStageFlags.ComputeBit
+            },
+            new() // Scene lights
+            {
+                Binding = LightBufferBinding,
+                DescriptorType = DescriptorType.StorageBuffer,
+                DescriptorCount = 1,
+                StageFlags = ShaderStageFlags.ComputeBit
             }
         };
 
@@ -1921,7 +1939,7 @@ public unsafe partial class VulkanBackend : IGraphicsBackend
         {
             new() { Type = DescriptorType.StorageImage, DescriptorCount = 7 }, // Output, Accum, RaytracingDepth, MotionVector(2), GBufferNormal, GBufferAlbedo
             new() { Type = DescriptorType.UniformBuffer, DescriptorCount = 2 }, // Raytracer + MotionVector
-            new() { Type = DescriptorType.StorageBuffer, DescriptorCount = 3 }, // BVH, Triangles, Materials
+            new() { Type = DescriptorType.StorageBuffer, DescriptorCount = 4 }, // BVH, Triangles, Materials, Lights
             new() { Type = DescriptorType.CombinedImageSampler, DescriptorCount = MaxMaterialTextures + 1 } // Material textures + env map
         };
 
@@ -2052,6 +2070,7 @@ public unsafe partial class VulkanBackend : IGraphicsBackend
 
         EnsureRaytracerBuffers(1, 1);
         EnsureMaterialBuffer(1); // Ensure at least 1 material slot
+        CreateLightBuffer();
 
         var bvhDescInfo = new DescriptorBufferInfo
         {
@@ -2072,6 +2091,13 @@ public unsafe partial class VulkanBackend : IGraphicsBackend
             Buffer = _materialBuffer,
             Offset = 0,
             Range = _materialBufferSize
+        };
+
+        var lightDescInfo = new DescriptorBufferInfo
+        {
+            Buffer = _lightBuffer,
+            Offset = 0,
+            Range = LightBufferSize
         };
 
         var writes = new WriteDescriptorSet[]
@@ -2165,12 +2191,79 @@ public unsafe partial class VulkanBackend : IGraphicsBackend
                 DescriptorType = DescriptorType.StorageImage,
                 DescriptorCount = 1,
                 PImageInfo = &gbufferAlbedoInfo
+            },
+            new()
+            {
+                SType = StructureType.WriteDescriptorSet,
+                DstSet = _computeDescriptorSet,
+                DstBinding = LightBufferBinding,
+                DstArrayElement = 0,
+                DescriptorType = DescriptorType.StorageBuffer,
+                DescriptorCount = 1,
+                PBufferInfo = &lightDescInfo
             }
         };
 
         fixed (WriteDescriptorSet* writesPtr = writes)
         {
             _vk.UpdateDescriptorSets(_device, (uint)writes.Length, writesPtr, 0, null);
+        }
+    }
+
+    private static ulong LightBufferSize => (ulong)(GpuLight.MaxLights * Unsafe.SizeOf<GpuLight>());
+
+    /// <summary>
+    /// Create the fixed-size, persistently mapped light buffer (zero-filled).
+    /// </summary>
+    private void CreateLightBuffer()
+    {
+        if (_lightBuffer.Handle != 0)
+            return;
+
+        ulong size = LightBufferSize;
+        CreateBuffer(size, BufferUsageFlags.StorageBufferBit,
+            MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit,
+            out _lightBuffer, out _lightBufferMemory);
+
+        void* mapped = null;
+        if (_vk!.MapMemory(_device, _lightBufferMemory, 0, size, 0, &mapped) != Result.Success)
+        {
+            throw new Exception("Failed to map light buffer memory");
+        }
+
+        _lightBufferMapped = mapped;
+        Unsafe.InitBlockUnaligned(_lightBufferMapped, 0, (uint)size);
+    }
+
+    /// <summary>
+    /// Replace the scene light list used by the raytracer. Lights beyond
+    /// <see cref="GpuLight.MaxLights"/> are dropped. The data reaches the GPU with the next frame's uniforms.
+    /// </summary>
+    public void SetLights(ReadOnlySpan<GpuLight> lights)
+    {
+        int count = Math.Min(lights.Length, GpuLight.MaxLights);
+        lights.Slice(0, count).CopyTo(_lights);
+        _lightCount = count;
+
+        var hash = new HashCode();
+        hash.Add(count);
+        hash.AddBytes(MemoryMarshal.AsBytes(_lights.AsSpan(0, count)));
+        _lightHash = hash.ToHashCode();
+    }
+
+    /// <summary>
+    /// Copy the current light list into the mapped light buffer. Called alongside the
+    /// uniform update, after the previous frame's work has finished.
+    /// </summary>
+    private void UploadLights()
+    {
+        if (_lightBufferMapped == null || _lightCount == 0)
+            return;
+
+        ulong bytes = (ulong)(_lightCount * Unsafe.SizeOf<GpuLight>());
+        fixed (GpuLight* src = _lights)
+        {
+            System.Buffer.MemoryCopy(src, _lightBufferMapped, LightBufferSize, bytes);
         }
     }
     
@@ -3472,8 +3565,10 @@ public unsafe partial class VulkanBackend : IGraphicsBackend
             DiskThickness = 0f,  // Thin disk only - volumetric causes rendering artifacts
             ShowPhotonSphere = RaytracerSettings.ShowPhotonSphere ? 1f : 0f,
             PhotonSphereOpacity = RaytracerSettings.PhotonSphereOpacity,
-            PhotonSphereRadius = blackHole?.CalculatePhotonSphereRadius() ?? 0f
+            PhotonSphereRadius = blackHole?.CalculatePhotonSphereRadius() ?? 0f,
+            LightCount = _lightCount
         };
+        UploadLights();
         Unsafe.Copy(_uniformBufferMapped, ref uniforms);
 
 
@@ -3620,8 +3715,10 @@ public unsafe partial class VulkanBackend : IGraphicsBackend
             DiskThickness = 0f,  // Thin disk only - volumetric causes rendering artifacts
             ShowPhotonSphere = RaytracerSettings.ShowPhotonSphere ? 1f : 0f,
             PhotonSphereOpacity = RaytracerSettings.PhotonSphereOpacity,
-            PhotonSphereRadius = blackHole?.CalculatePhotonSphereRadius() ?? 0f
+            PhotonSphereRadius = blackHole?.CalculatePhotonSphereRadius() ?? 0f,
+            LightCount = _lightCount
         };
+        UploadLights();
         Unsafe.Copy(_uniformBufferMapped, ref uniforms);
 
         ulong requiredSize = (ulong)(_width * _height * 4 * sizeof(float));
@@ -3828,7 +3925,8 @@ public unsafe partial class VulkanBackend : IGraphicsBackend
             RaytracerSettings.Accumulate,
             RaytracerSettings.Denoise,
             _bvhNodeCount,
-            _triangleCount);
+            _triangleCount,
+            _lightHash); // Moving or editing a light invalidates accumulated samples
 
         bool cameraChanged = camera.Position != _lastCameraPos ||
                              camera.Forward != _lastCameraForward ||
@@ -4360,6 +4458,13 @@ public unsafe partial class VulkanBackend : IGraphicsBackend
             _vk.DestroyBuffer(_device, _triangleBuffer, null);
             _vk.FreeMemory(_device, _triangleBufferMemory, null);
         }
+        if (_device.Handle != 0 && _lightBuffer.Handle != 0)
+        {
+            _vk.UnmapMemory(_device, _lightBufferMemory);
+            _vk.DestroyBuffer(_device, _lightBuffer, null);
+            _vk.FreeMemory(_device, _lightBufferMemory, null);
+            _lightBufferMapped = null;
+        }
         if (_device.Handle != 0 && _readbackBuffer.Handle != 0)
         {
             _vk.DestroyBuffer(_device, _readbackBuffer, null);
@@ -4514,6 +4619,6 @@ public struct RaytracerUniforms
     [FieldOffset(204)] public float ShowPhotonSphere;   // 1.0 = show, 0.0 = hide
     [FieldOffset(208)] public float PhotonSphereOpacity;// 0.0 - 1.0
     [FieldOffset(212)] public float PhotonSphereRadius; // Calculated from mass and spin
-    [FieldOffset(216)] public float Pad9;
+    [FieldOffset(216)] public float LightCount;         // Scene lights in the light buffer (0 = fallback rig)
     [FieldOffset(220)] public float Pad10;
 }

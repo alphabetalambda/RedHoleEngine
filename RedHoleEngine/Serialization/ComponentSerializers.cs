@@ -366,3 +366,36 @@ public class RaytracerMeshComponentSerializer : ComponentSerializer<RaytracerMes
         };
     }
 }
+
+/// <summary>
+/// Serializer for LightComponent
+/// </summary>
+public class LightComponentSerializer : ComponentSerializer<LightComponent>
+{
+    protected override void Serialize(ref LightComponent component, BinaryWriter writer)
+    {
+        writer.Write((int)component.Type);
+        WriteVector3(writer, component.Color);
+        writer.Write(component.Intensity);
+        writer.Write(component.Range);
+        writer.Write(component.InnerConeAngle);
+        writer.Write(component.OuterConeAngle);
+        writer.Write(component.CastShadows);
+        writer.Write(component.Enabled);
+    }
+
+    protected override LightComponent Deserialize(BinaryReader reader)
+    {
+        return new LightComponent
+        {
+            Type = (LightType)reader.ReadInt32(),
+            Color = ReadVector3(reader),
+            Intensity = reader.ReadSingle(),
+            Range = reader.ReadSingle(),
+            InnerConeAngle = reader.ReadSingle(),
+            OuterConeAngle = reader.ReadSingle(),
+            CastShadows = reader.ReadBoolean(),
+            Enabled = reader.ReadBoolean()
+        };
+    }
+}

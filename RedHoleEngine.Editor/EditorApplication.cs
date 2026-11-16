@@ -149,7 +149,10 @@ public class EditorApplication : IDisposable
             AutoSaveScene);
 
         // Create panels
-        _hierarchyPanel = new SceneHierarchyPanel(entity => FocusOnEntity(entity));
+        _hierarchyPanel = new SceneHierarchyPanel(entity => FocusOnEntity(entity))
+        {
+            PrefabDirectoryProvider = () => _projectManager.HasProject ? _projectManager.GetPrefabsPath() : ""
+        };
         _inspectorPanel = new InspectorPanel();
         _consolePanel = new ConsolePanel();
         _raytracerPanel = new RaytracerSettingsPanel(_raytracerSettings);
@@ -158,7 +161,8 @@ public class EditorApplication : IDisposable
         _terminalPanel = new TerminalPanel(_terminalSession, () => _terminalSaveManager);
         _assetBrowserPanel = new AssetBrowserPanel(
             () => _projectManager.HasProject ? _projectManager.GetAssetPath() : "",
-            RequestOpenScene);
+            RequestOpenScene,
+            path => ImportModel(path));
         _materialEditorPanel = new MaterialEditorPanel(_projectManager, _materialLibrary);
         _environmentPanel = new EnvironmentPanel(OnEnvironmentMapChanged);
 
@@ -1510,6 +1514,35 @@ public class EditorApplication : IDisposable
             // Reload default scene on failure
             LoadDefaultShowcaseScene();
         }
+    }
+
+    /// <summary>
+    /// Import a glTF/GLB model and add its meshes to the current scene
+    /// </summary>
+    private void ImportModel(string path)
+    {
+        if (_world == null) return;
+
+        // Flattened: scene files do not store transform parenting.
+        var instance = Resources.ModelImport.ModelInstantiator.Instantiate(_world, _gameResources, path,
+            new Resources.ModelImport.ModelInstantiateOptions
+            {
+                MaterialLibrary = _materialLibrary,
+                FlattenHierarchy = true
+            });
+
+        if (instance == null)
+        {
+            Console.WriteLine($"Failed to import model: {path}");
+            return;
+        }
+
+        if (instance.MeshEntities.Count > 0)
+            _selection.SelectMultiple(instance.MeshEntities);
+
+        OnSceneModified();
+        _raytracerSettings.ResetAccumulation = true;
+        Console.WriteLine($"Imported model {Path.GetFileName(path)}: {instance.MeshEntities.Count} mesh entities");
     }
 
     /// <summary>

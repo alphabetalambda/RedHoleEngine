@@ -58,6 +58,37 @@ public class RaytracerSettingsPanel : EditorPanel
             _settings.Preset = RaytracerQualityPreset.Custom;
         }
 
+        if (_settings.Accumulate)
+        {
+            ImGui.Indent();
+
+            int maxAccumulatedSamples = _settings.MaxAccumulatedSamples;
+            if (ImGui.InputInt("Max Samples", ref maxAccumulatedSamples, 64, 1024))
+            {
+                _settings.MaxAccumulatedSamples = Math.Max(0, maxAccumulatedSamples);
+            }
+            ImGui.SameLine();
+            ImGui.TextDisabled("(?)");
+            if (ImGui.IsItemHovered())
+            {
+                ImGui.SetTooltip("Per-pixel samples to accumulate before tracing stops (0 = unlimited).\n" +
+                                 "Samples per frame = Rays Per Pixel x Samples/Frame.");
+            }
+
+            var autoReset = _settings.AutoResetAccumulationOnSceneChange;
+            if (ImGui.Checkbox("Reset On Scene Change", ref autoReset))
+            {
+                _settings.AutoResetAccumulationOnSceneChange = autoReset;
+            }
+            if (ImGui.IsItemHovered())
+            {
+                ImGui.SetTooltip("Restart accumulation when meshes, materials, the environment map\n" +
+                                 "or black hole parameters change.");
+            }
+
+            ImGui.Unindent();
+        }
+
         var denoise = _settings.Denoise;
         if (ImGui.Checkbox("Denoise", ref denoise))
         {
@@ -76,6 +107,22 @@ public class RaytracerSettingsPanel : EditorPanel
             {
                 _settings.DenoiseMethod = (DenoiseMethod)methodIdx;
                 _settings.ResetAccumulation = true;
+            }
+
+            if (_settings.DenoiseMethod == DenoiseMethod.ATrous || _settings.DenoiseMethod == DenoiseMethod.SVGF)
+            {
+                var useHistory = _settings.DenoiseUseHistory;
+                if (ImGui.Checkbox("Use History", ref useHistory))
+                {
+                    _settings.DenoiseUseHistory = useHistory;
+                }
+                ImGui.SameLine();
+                ImGui.TextDisabled("(?)");
+                if (ImGui.IsItemHovered())
+                {
+                    ImGui.SetTooltip("Reproject last frame's denoised result with motion vectors.\n" +
+                                     "Steadier while the camera moves, but can ghost.");
+                }
             }
             
             // A-Trous specific settings
@@ -97,6 +144,21 @@ public class RaytracerSettingsPanel : EditorPanel
                 if (ImGui.SliderFloat("Normal Sigma", ref normalSigma, 0.01f, 1.0f))
                 {
                     _settings.ATrousNormalSigma = normalSigma;
+                }
+
+                float depthSigma = _settings.ATrousDepthSigma;
+                if (ImGui.SliderFloat("Depth Sigma", ref depthSigma, 0.01f, 1.0f))
+                {
+                    _settings.ATrousDepthSigma = depthSigma;
+                }
+
+                if (_settings.DenoiseUseHistory)
+                {
+                    float historyAlpha = _settings.SVGFTemporalAlpha;
+                    if (ImGui.SliderFloat("History Alpha", ref historyAlpha, 0.01f, 1.0f))
+                    {
+                        _settings.SVGFTemporalAlpha = historyAlpha;
+                    }
                 }
             }
             

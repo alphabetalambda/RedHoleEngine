@@ -12,15 +12,17 @@
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
-layout(set = 0, binding = 0, rgba32f) uniform image2D colorImage;           // Input/Output color (ping-pong)
-layout(set = 0, binding = 1, rgba32f) uniform readonly image2D normalImage; // World-space normals
-layout(set = 0, binding = 2, r32f) uniform readonly image2D depthImage;     // Linear depth
-layout(set = 0, binding = 3, r32f) uniform readonly image2D varianceImage;  // Per-pixel variance
+// Descriptor set layout is shared with denoise_atrous.comp:
+// 0 = input color, 1 = output color, 2 = normals, 3 = depth, 4 = variance.
+layout(set = 0, binding = 0, rgba32f) uniform readonly image2D colorImage;   // Input color (ping-pong)
+layout(set = 0, binding = 1, rgba32f) uniform writeonly image2D outputImage; // Filtered output
+layout(set = 0, binding = 2, rgba16f) uniform readonly image2D normalImage;  // World-space normals (G-buffer, RGBA16F)
+layout(set = 0, binding = 3, r32f) uniform readonly image2D depthImage;      // Linear depth
+layout(set = 0, binding = 4, r32f) uniform readonly image2D varianceImage;   // Per-pixel variance
 
-layout(set = 0, binding = 4, rgba32f) uniform writeonly image2D outputImage; // Filtered output
-
-layout(set = 0, binding = 5) uniform SpatialParams {
-    ivec2 resolution;
+// Per-iteration parameters (push constants, 32 bytes). Matches Denoising.SVGFSpatialParams.
+layout(push_constant) uniform SpatialParams {
+    vec2 resolution;
     int stepSize;              // A-Trous step size (1, 2, 4, 8, 16)
     float phiColor;            // Color weight (higher = more blur)
     float phiNormal;           // Normal weight (higher = more edge-aware)
@@ -65,8 +67,9 @@ float computeWeight(
 
 void main() {
     ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 resolution = ivec2(params.resolution);
     
-    if (pixelCoord.x >= params.resolution.x || pixelCoord.y >= params.resolution.y) {
+    if (pixelCoord.x >= resolution.x || pixelCoord.y >= resolution.y) {
         return;
     }
     
@@ -96,8 +99,8 @@ void main() {
             ivec2 sampleCoord = pixelCoord + ivec2(dx, dy) * params.stepSize;
             
             // Boundary check
-            if (sampleCoord.x < 0 || sampleCoord.x >= params.resolution.x ||
-                sampleCoord.y < 0 || sampleCoord.y >= params.resolution.y) {
+            if (sampleCoord.x < 0 || sampleCoord.x >= resolution.x ||
+                sampleCoord.y < 0 || sampleCoord.y >= resolution.y) {
                 continue;
             }
             

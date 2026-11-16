@@ -30,4 +30,13 @@
         <ProjectReference Include="..\RedHoleEngine\RedHoleEngine.csproj" />
     </ItemGroup>
 
+    <!-- ImGui file dialog and About dialog shared with the editor (source-linked; the trainer
+         does not reference the editor project) -->
+    <ItemGroup>
+        <Compile Include="..\RedHoleEngine.Editor\UI\FileDialog.cs" Link="Shared\FileDialog.cs" />
+        <Compile Include="..\RedHoleEngine.Editor\UI\FileDialogLogic.cs" Link="Shared\FileDialogLogic.cs" />
+        <Compile Include="..\RedHoleEngine.Editor\UI\AppInfo.cs" Link="Shared\AppInfo.cs" />
+        <Compile Include="..\RedHoleEngine.Editor\UI\AboutDialog.cs" Link="Shared\AboutDialog.cs" />
+    </ItemGroup>
+
 </Project>

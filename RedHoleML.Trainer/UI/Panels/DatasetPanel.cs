@@ -1,5 +1,6 @@
 using System.Numerics;
 using ImGuiNET;
+using RedHoleEngine.Editor.UI;
 
 namespace RedHoleML.Trainer.UI.Panels;
 
@@ -14,6 +15,7 @@ public class DatasetPanel
     private bool _hasHeader = true;
     private int _separatorIndex; // 0=comma, 1=tab, 2=semicolon
     private readonly string[] _separators = { "Comma (,)", "Tab", "Semicolon (;)" };
+    private readonly FileDialog _csvFileDialog = new();
 
     public bool IsVisible { get; set; } = true;
 
@@ -239,8 +241,25 @@ public class DatasetPanel
         if (ImGui.BeginPopupModal("Import Dataset", ref _showImportDialog, ImGuiWindowFlags.NoResize))
         {
             ImGui.Text("CSV File Path:");
-            ImGui.SetNextItemWidth(-1);
+            ImGui.SetNextItemWidth(-90);
             ImGui.InputText("##Path", ref _importPath, 1024);
+            ImGui.SameLine();
+            if (ImGui.Button("Browse..."))
+            {
+                var startDir = Path.GetDirectoryName(_importPath);
+                _csvFileDialog.Open(FileDialogMode.Open, "Dataset",
+                    !string.IsNullOrEmpty(startDir) && Directory.Exists(startDir)
+                        ? startDir
+                        : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                    "Delimited Text (*.csv;*.tsv;*.txt)|*.csv;*.tsv;*.txt|All Files (*.*)|*.*");
+            }
+            // Drawn inside this modal so it stacks on top of it
+            if (_csvFileDialog.Draw() == FileDialogResult.Ok)
+            {
+                _importPath = _csvFileDialog.SelectedPath;
+                if (_importPath.EndsWith(".tsv", StringComparison.OrdinalIgnoreCase))
+                    _separatorIndex = 1;
+            }
 
             ImGui.Spacing();
 

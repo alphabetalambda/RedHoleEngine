@@ -2,6 +2,8 @@ using System.Numerics;
 using ImGuiNET;
 using RedHoleEngine.Components;
 using RedHoleEngine.Core.ECS;
+using RedHoleEngine.Resources;
+using RedHoleEngine.Serialization;
 
 namespace RedHoleEngine.Editor.UI.Panels;
 
@@ -14,6 +16,12 @@ public class SceneHierarchyPanel : EditorPanel
 
     private string _searchFilter = "";
     private Entity _entityToDelete = Entity.Null;
+
+    /// <summary>
+    /// Returns the folder prefabs are saved to (empty when no project is loaded).
+    /// "Save as Prefab" is disabled while this is unset.
+    /// </summary>
+    public Func<string>? PrefabDirectoryProvider { get; set; }
 
     protected override void OnDraw()
     {
@@ -195,6 +203,12 @@ public class SceneHierarchyPanel : EditorPanel
                 DuplicateEntity(entity);
             }
 
+            var prefabDirectory = PrefabDirectoryProvider?.Invoke() ?? "";
+            if (ImGui.MenuItem("Save as Prefab", "", false, !string.IsNullOrEmpty(prefabDirectory)))
+            {
+                SaveAsPrefab(entity, prefabDirectory);
+            }
+
             ImGui.Separator();
 
             if (ImGui.MenuItem("Focus"))
@@ -280,6 +294,30 @@ public class SceneHierarchyPanel : EditorPanel
 
         string label = GetEntityLabel(entity);
         return label.Contains(_searchFilter, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void SaveAsPrefab(Entity entity, string directory)
+    {
+        if (World == null) return;
+
+        try
+        {
+            // Pick a file name that does not overwrite an existing prefab
+            var baseName = $"Entity_{entity.Id}";
+            var path = Path.Combine(directory, baseName + Prefab.FileExtension);
+            for (int i = 1; File.Exists(path); i++)
+            {
+                path = Path.Combine(directory, $"{baseName}_{i}{Prefab.FileExtension}");
+            }
+
+            var prefab = PrefabUtility.CreateFromEntity(World, entity, Path.GetFileNameWithoutExtension(path));
+            prefab.SaveToFile(path);
+            Console.WriteLine($"Prefab saved to: {path}");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Failed to save prefab: {ex.Message}");
+        }
     }
 
     private void DuplicateEntity(Entity source)

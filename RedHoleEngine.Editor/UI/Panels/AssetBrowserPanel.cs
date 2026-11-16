@@ -386,6 +386,38 @@ public class AssetBrowserPanel : EditorPanel
         {
             _openSceneAction(entry.FullPath);
         }
+        else if (entry.Type == AssetType.Prefab)
+        {
+            InstantiatePrefab(entry.FullPath);
+        }
+    }
+
+    private void InstantiatePrefab(string path)
+    {
+        if (World == null)
+        {
+            Console.WriteLine("Cannot instantiate prefab: No world loaded");
+            return;
+        }
+
+        if (!RedHoleEngine.Resources.Prefab.TryLoadFromFile(path, out var prefab, out var error) || prefab == null)
+        {
+            Console.WriteLine($"Failed to load prefab '{path}': {error}");
+            return;
+        }
+
+        try
+        {
+            var command = new Commands.InstantiatePrefabCommand(World, Selection, prefab);
+            if (UndoRedo != null)
+                UndoRedo.ExecuteCommand(command);
+            else
+                command.Execute();
+        }
+        catch (InvalidDataException ex)
+        {
+            Console.WriteLine($"Failed to instantiate prefab '{path}': {ex.Message}");
+        }
     }
 
     private void HandleContextMenu()
@@ -406,6 +438,15 @@ public class AssetBrowserPanel : EditorPanel
                     if (ImGui.MenuItem("Open Scene"))
                     {
                         _openSceneAction(_selectedEntry.FullPath);
+                    }
+                    ImGui.Separator();
+                }
+
+                if (_selectedEntry.Type == AssetType.Prefab)
+                {
+                    if (ImGui.MenuItem("Instantiate in Scene"))
+                    {
+                        InstantiatePrefab(_selectedEntry.FullPath);
                     }
                     ImGui.Separator();
                 }

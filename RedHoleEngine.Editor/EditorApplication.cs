@@ -133,7 +133,10 @@ public class EditorApplication : IDisposable
             SaveScene);
 
         // Create panels
-        _hierarchyPanel = new SceneHierarchyPanel();
+        _hierarchyPanel = new SceneHierarchyPanel
+        {
+            PrefabDirectoryProvider = () => _projectManager.HasProject ? _projectManager.GetPrefabsPath() : ""
+        };
         _inspectorPanel = new InspectorPanel();
         _consolePanel = new ConsolePanel();
         _raytracerPanel = new RaytracerSettingsPanel(_raytracerSettings);

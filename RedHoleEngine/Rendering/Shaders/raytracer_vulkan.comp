@@ -44,7 +44,7 @@ layout(set = 0, binding = 1) uniform UniformBlock {
     float u_ShowPhotonSphere;    // 1.0 = show, 0.0 = hide
     float u_PhotonSphereOpacity; // 0.0 - 1.0
     float u_PhotonSphereRadius;  // Radius where light can orbit
-    float _pad9;
+    float u_LightCount;          // Number of valid entries in lights[] (0 = built-in fallback rig)
     float _pad10;
 };
 
@@ -123,6 +123,31 @@ struct GpuMaterial {
 
 layout(std430, set = 0, binding = 5) buffer Materials {
     GpuMaterial materials[];
+};
+
+// Scene light list - matches GpuLight struct in C# (64 bytes per light)
+// Note: bindings 9 and 10 are the denoiser G-buffer images, so lights use binding 11
+const int MAX_LIGHTS = 64;
+const int LIGHT_TYPE_DIRECTIONAL = 0;
+const int LIGHT_TYPE_POINT = 1;
+const int LIGHT_TYPE_SPOT = 2;
+
+struct GpuLight {
+    vec3 position;        // offset 0  - world position (point/spot)
+    float range;          // offset 12 - fade-out distance, <= 0 = unbounded
+    vec3 direction;       // offset 16 - normalized direction the light travels
+    int type;             // offset 28 - LIGHT_TYPE_*
+    vec3 color;           // offset 32 - linear RGB
+    float intensity;      // offset 44
+    float spotInnerCos;   // offset 48 - cos(inner half-angle)
+    float spotOuterCos;   // offset 52 - cos(outer half-angle)
+    int castShadows;      // offset 56 - 1 = trace shadow rays
+    float pad0;           // offset 60
+    // Total: 64 bytes
+};
+
+layout(std430, set = 0, binding = 11) readonly buffer Lights {
+    GpuLight lights[];
 };
 
 // Texture array for PBR materials (binding 6)
@@ -567,6 +592,105 @@ vec3 getSpecularIBL(vec3 R, float roughness) {
     return sampleEnvironmentRough(R, roughness) * 0.5;
 }
 
+// Any-hit occlusion test through the BVH (defined after the BVH helpers)
+bool shadowOccluded(vec3 ro, vec3 rd, float maxDist);
+
+// Direct lighting from the scene light list, or from the built-in
+// key/fill/rim rig when the scene has no lights.
+// geoNormal is the unperturbed surface normal, used to offset shadow rays.
+vec3 evaluateDirectLighting(
+    vec3 hitPos,
+    vec3 geoNormal,
+    vec3 N,
+    vec3 V,
+    vec3 albedo,
+    float metallic,
+    float roughness,
+    float ior,
+    float clearcoat,
+    float clearcoatRoughness
+) {
+    vec3 result = vec3(0.0);
+    int lightCount = min(int(u_LightCount + 0.5), MAX_LIGHTS);
+
+    if (lightCount <= 0) {
+        // === Fallback rig (unshadowed) so scenes without lights are not black ===
+        // Key light from above-right
+        vec3 lightDir = normalize(vec3(0.5, 1.0, 0.3));
+        vec3 lightColor = vec3(1.0, 0.98, 0.95) * 2.0;
+        result += evaluateBRDF(albedo, metallic, roughness, ior, N, V, lightDir, lightColor);
+
+        // Fill light
+        vec3 fillDir = normalize(vec3(-0.7, 0.3, -0.5));
+        vec3 fillColor = vec3(0.3, 0.4, 0.6) * 0.5;
+        result += evaluateBRDF(albedo, metallic, roughness, ior, N, V, fillDir, fillColor);
+
+        // Rim/back light
+        vec3 rimDir = normalize(vec3(0.0, 0.2, -1.0));
+        vec3 rimColor = vec3(0.8, 0.7, 0.6) * 0.3;
+        result += evaluateBRDF(albedo, metallic, roughness, ior, N, V, rimDir, rimColor);
+
+        if (clearcoat > 0.0) {
+            result += evaluateClearcoat(clearcoat, clearcoatRoughness, N, V, lightDir) * lightColor;
+        }
+        return result;
+    }
+
+    // Shadow ray offset scales with distance from the origin to survive float precision
+    float bias = 1e-3 * max(1.0, max(abs(hitPos.x), max(abs(hitPos.y), abs(hitPos.z))));
+
+    for (int i = 0; i < lightCount; i++) {
+        GpuLight light = lights[i];
+
+        vec3 L;
+        float dist = 1e20;
+        float attenuation = 1.0;
+
+        if (light.type == LIGHT_TYPE_DIRECTIONAL) {
+            L = -light.direction;
+        } else {
+            vec3 toLight = light.position - hitPos;
+            float distSq = dot(toLight, toLight);
+            if (distSq < 1e-10) continue;
+            dist = sqrt(distSq);
+            if (light.range > 0.0 && dist >= light.range) continue;
+            L = toLight / dist;
+
+            // Inverse-square falloff, windowed so it reaches zero at the light's range
+            attenuation = 1.0 / max(distSq, 1e-4);
+            if (light.range > 0.0) {
+                float x = dist / light.range;
+                float window = clamp(1.0 - x * x * x * x, 0.0, 1.0);
+                attenuation *= window * window;
+            }
+
+            if (light.type == LIGHT_TYPE_SPOT) {
+                float cosAngle = dot(-L, light.direction);
+                float t = clamp((cosAngle - light.spotOuterCos) / max(light.spotInnerCos - light.spotOuterCos, 1e-4), 0.0, 1.0);
+                attenuation *= t * t * (3.0 - 2.0 * t);
+            }
+        }
+
+        if (attenuation <= 0.0 || dot(N, L) <= 0.0) continue;
+
+        vec3 radiance = light.color * light.intensity * attenuation;
+        if (max(radiance.r, max(radiance.g, radiance.b)) < 1e-5) continue;
+
+        if (light.castShadows != 0) {
+            // Straight-line shadow ray (not bent by the black hole metric)
+            vec3 offsetNormal = dot(geoNormal, L) >= 0.0 ? geoNormal : -geoNormal;
+            if (shadowOccluded(hitPos + offsetNormal * bias, L, dist - 2.0 * bias)) continue;
+        }
+
+        result += evaluateBRDF(albedo, metallic, roughness, ior, N, V, L, radiance);
+        if (clearcoat > 0.0) {
+            result += evaluateClearcoat(clearcoat, clearcoatRoughness, N, V, L) * radiance;
+        }
+    }
+
+    return result;
+}
+
 // Shade a surface hit using PBR
 vec3 shadePBR(
     vec3 hitPos,
@@ -586,23 +710,10 @@ vec3 shadePBR(
     
     vec3 result = vec3(0.0);
     
-    // === Direct Lighting from Key Light ===
-    // Simple directional light from above-right
-    vec3 lightDir = normalize(vec3(0.5, 1.0, 0.3));
-    vec3 lightColor = vec3(1.0, 0.98, 0.95) * 2.0;
-    
-    result += evaluateBRDF(albedo, metallic, roughness, mat.ior, N, V, lightDir, lightColor);
-    
-    // === Fill Light ===
-    vec3 fillDir = normalize(vec3(-0.7, 0.3, -0.5));
-    vec3 fillColor = vec3(0.3, 0.4, 0.6) * 0.5;
-    result += evaluateBRDF(albedo, metallic, roughness, mat.ior, N, V, fillDir, fillColor);
-    
-    // === Rim/Back Light ===
-    vec3 rimDir = normalize(vec3(0.0, 0.2, -1.0));
-    vec3 rimColor = vec3(0.8, 0.7, 0.6) * 0.3;
-    result += evaluateBRDF(albedo, metallic, roughness, mat.ior, N, V, rimDir, rimColor);
-    
+    // === Direct Lighting (scene light list, incl. clearcoat) ===
+    result += evaluateDirectLighting(hitPos, N, N, V, albedo, metallic, roughness, mat.ior,
+                                     mat.clearcoat, mat.clearcoatRoughness);
+
     // === Ambient/Environment ===
     // Approximate image-based lighting with sky color
     vec3 F0 = calculateF0(albedo, metallic, mat.ior);
@@ -624,11 +735,6 @@ vec3 shadePBR(
     float ao = mat.occlusionStrength;
     result += (ambientDiffuse + ambientSpecular) * ao;
     
-    // === Clearcoat ===
-    if (mat.clearcoat > 0.0) {
-        result += evaluateClearcoat(mat.clearcoat, mat.clearcoatRoughness, N, V, lightDir) * lightColor;
-    }
-    
     // === Emissive ===
     result += mat.emissiveFactor * mat.emissiveIntensity;
     
@@ -643,8 +749,11 @@ vec3 shadePBRWithUV(
     GpuTriangle tri,
     vec2 uv        // Interpolated UV coordinates
 ) {
+    // Keep the unperturbed normal for shadow ray offsets (normal mapping may change `normal`)
+    vec3 geoNormal = normalize(normal);
+
     PbrMaterial mat = defaultMaterial();
-    
+
     // Check if triangle has a valid material index
     int matIdx = tri.materialIndex;
     if (matIdx >= 0 && matIdx < materials.length()) {
@@ -710,19 +819,10 @@ vec3 shadePBRWithUV(
     
     vec3 result = vec3(0.0);
     
-    // === Direct Lighting ===
-    vec3 lightDir = normalize(vec3(0.5, 1.0, 0.3));
-    vec3 lightColor = vec3(1.0, 0.98, 0.95) * 2.0;
-    result += evaluateBRDF(albedo, metallic, roughness, mat.ior, N, V, lightDir, lightColor);
-    
-    vec3 fillDir = normalize(vec3(-0.7, 0.3, -0.5));
-    vec3 fillColor = vec3(0.3, 0.4, 0.6) * 0.5;
-    result += evaluateBRDF(albedo, metallic, roughness, mat.ior, N, V, fillDir, fillColor);
-    
-    vec3 rimDir = normalize(vec3(0.0, 0.2, -1.0));
-    vec3 rimColor = vec3(0.8, 0.7, 0.6) * 0.3;
-    result += evaluateBRDF(albedo, metallic, roughness, mat.ior, N, V, rimDir, rimColor);
-    
+    // === Direct Lighting (scene light list, incl. clearcoat) ===
+    result += evaluateDirectLighting(hitPos, geoNormal, N, V, albedo, metallic, roughness, mat.ior,
+                                     mat.clearcoat, mat.clearcoatRoughness);
+
     // === IBL Ambient/Environment ===
     vec3 F0 = calculateF0(albedo, metallic, mat.ior);
     vec3 F = fresnelSchlickRoughness(max(dot(N, V), 0.0), F0, roughness);
@@ -737,11 +837,6 @@ vec3 shadePBRWithUV(
     vec3 ambientSpecular = getSpecularIBL(R, roughness) * F;
     
     result += (ambientDiffuse + ambientSpecular) * mat.occlusionStrength;
-    
-    // === Clearcoat ===
-    if (mat.clearcoat > 0.0) {
-        result += evaluateClearcoat(mat.clearcoat, mat.clearcoatRoughness, N, V, lightDir) * lightColor;
-    }
     
     // === Emissive ===
     result += mat.emissiveFactor * mat.emissiveIntensity;
@@ -1426,6 +1521,51 @@ vec2 interpolateUV(GpuTriangle tri, float u, float v) {
 vec4 interpolateTangent(GpuTriangle tri, float u, float v) {
     // For now, use face tangent (tangent is per-triangle not per-vertex in our struct)
     return tri.tangent;
+}
+
+// Any-hit BVH traversal for shadow rays: true if anything blocks [0, maxDist) along rd.
+// Strongly emissive triangles (laser beam billboards) do not cast shadows.
+bool shadowOccluded(vec3 ro, vec3 rd, float maxDist) {
+    int nodeCount = int(u_RaySettings.z + 0.5);
+    int triCount = int(u_RaySettings.w + 0.5);
+    if (nodeCount == 0 || triCount == 0 || maxDist <= 0.0) return false;
+
+    int stack[64];
+    int stackPtr = 0;
+    stack[stackPtr++] = 0;
+
+    while (stackPtr > 0) {
+        int nodeIndex = stack[--stackPtr];
+        if (nodeIndex < 0 || nodeIndex >= nodeCount) continue;
+        BvhNode node = bvhNodes[nodeIndex];
+
+        float tmin;
+        float tmax;
+        if (!intersectAabb(ro, rd, node.boundsMin, node.boundsMax, tmin, tmax) || tmin > maxDist) {
+            continue;
+        }
+
+        if (node.triCount > 0) {
+            int first = node.leftFirst;
+            for (int i = 0; i < node.triCount; i++) {
+                int triIndex = first + i;
+                if (triIndex < 0 || triIndex >= triCount) continue;
+                GpuTriangle tri = triangles[triIndex];
+                float t, u, v;
+                if (intersectTriangle(ro, rd, tri, t, u, v) && t < maxDist) {
+                    if (max(tri.emissive.r, max(tri.emissive.g, tri.emissive.b)) > 1.0) continue;
+                    return true;
+                }
+            }
+        } else {
+            int left = node.leftFirst;
+            int right = left + 1;
+            if (right < nodeCount && stackPtr < 63) stack[stackPtr++] = right;
+            if (left < nodeCount && stackPtr < 63) stack[stackPtr++] = left;
+        }
+    }
+
+    return false;
 }
 
 // Hit info structure for BVH traversal

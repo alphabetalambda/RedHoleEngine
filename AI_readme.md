@@ -35,6 +35,7 @@ This file is a concise, AI-oriented guide to the RedHoleEngine codebase: archite
 - Raytracing settings live in `Rendering/RaytracerSettings.cs` and `Rendering/RenderSettings.cs`.
 - Shaders are in `RedHoleEngine/Rendering/Shaders/` and copied to output by the project file.
 - Vulkan compute uses precompiled SPIR-V for `raytracer_vulkan.spv`.
+- Scene lights: `LightComponent` entities are gathered by `Rendering/Lighting/LightSystem.cs` into a `GpuLight` storage buffer (binding 11, max 64, count in `RaytracerUniforms.LightCount`); with zero lights the shader uses its built-in key/fill/rim rig. Regenerate `raytracer_vulkan.spv` whenever `raytracer_vulkan.comp` changes.
 
 ## Physics conventions
 - Physics system in `Physics/PhysicsSystem.cs` synchronizes ECS and physics world.

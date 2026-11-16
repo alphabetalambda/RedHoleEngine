@@ -1,5 +1,6 @@
 using System.Numerics;
 using RedHoleEngine.Core.ECS;
+using RedHoleEngine.Physics;
 
 namespace RedHoleEngine.Components;
 
@@ -82,9 +83,16 @@ public struct GravitySourceComponent : IComponent
     public readonly float SchwarzschildRadius => 2f * Mass;
 
     /// <summary>
-    /// Photon sphere radius (for Schwarzschild): r = 1.5 * rs = 3M
+    /// Photon sphere radius: r = 1.5 * rs = 3M for Schwarzschild.
+    /// For a spinning source (SpinParameter &gt; 0) this is the prograde equatorial photon orbit,
+    /// which shrinks to M as a* → 1, matching <see cref="BlackHole.CalculatePhotonSphereRadius"/>.
     /// </summary>
-    public readonly float PhotonSphereRadius => 3f * Mass;
+    public readonly float PhotonSphereRadius => KerrMetric.PhotonOrbitRadius(Mass, SpinParameter, prograde: true);
+
+    /// <summary>
+    /// Retrograde equatorial photon orbit radius: 3M at a* = 0, growing to 4M at a* = 1.
+    /// </summary>
+    public readonly float RetrogradePhotonOrbitRadius => KerrMetric.PhotonOrbitRadius(Mass, SpinParameter, prograde: false);
 
     /// <summary>
     /// Innermost Stable Circular Orbit (for Schwarzschild): r = 3 * rs = 6M
@@ -179,36 +187,12 @@ public struct GravitySourceComponent : IComponent
     /// <summary>
     /// Prograde ISCO radius for Kerr black hole
     /// </summary>
-    public readonly float ProgradeISCO
-    {
-        get
-        {
-            if (SpinParameter < 0.001f)
-                return 6f * Mass;
-                
-            float a = SpinParameter;
-            float Z1 = 1 + MathF.Pow(1 - a * a, 1f/3f) * (MathF.Pow(1 + a, 1f/3f) + MathF.Pow(1 - a, 1f/3f));
-            float Z2 = MathF.Sqrt(3 * a * a + Z1 * Z1);
-            return Mass * (3 + Z2 - MathF.Sqrt((3 - Z1) * (3 + Z1 + 2 * Z2)));
-        }
-    }
+    public readonly float ProgradeISCO => KerrMetric.Isco(Mass, SpinParameter, prograde: true);
     
     /// <summary>
     /// Retrograde ISCO radius for Kerr black hole
     /// </summary>
-    public readonly float RetrogradeISCO
-    {
-        get
-        {
-            if (SpinParameter < 0.001f)
-                return 6f * Mass;
-                
-            float a = SpinParameter;
-            float Z1 = 1 + MathF.Pow(1 - a * a, 1f/3f) * (MathF.Pow(1 + a, 1f/3f) + MathF.Pow(1 - a, 1f/3f));
-            float Z2 = MathF.Sqrt(3 * a * a + Z1 * Z1);
-            return Mass * (3 + Z2 + MathF.Sqrt((3 - Z1) * (3 + Z1 + 2 * Z2)));
-        }
-    }
+    public readonly float RetrogradeISCO => KerrMetric.Isco(Mass, SpinParameter, prograde: false);
 
     /// <summary>
     /// Create a Schwarzschild black hole

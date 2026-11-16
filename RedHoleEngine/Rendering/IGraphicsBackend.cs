@@ -99,7 +99,14 @@ public interface IGraphicsBackend : IDisposable
     /// Upload PBR materials to the GPU
     /// </summary>
     void UploadMaterials(MaterialLibrary library);
-    
+
+    /// <summary>
+    /// Replace the raytracer's light list (at most <see cref="Lighting.GpuLight.MaxLights"/> are used).
+    /// An empty list selects the built-in three-light fallback rig. Backends without
+    /// scene lighting can ignore this.
+    /// </summary>
+    void SetLights(ReadOnlySpan<Lighting.GpuLight> lights) { }
+
     /// <summary>
     /// Set the environment map for IBL (Image-Based Lighting)
     /// </summary>

@@ -13,6 +13,7 @@ using RedHoleEngine.Profiling;
 using RedHoleEngine.Rendering;
 using RedHoleEngine.Rendering.Backends;
 using RedHoleEngine.Rendering.Debug;
+using RedHoleEngine.Rendering.Lighting;
 using RedHoleEngine.Rendering.Raytracing;
 using RedHoleEngine.Rendering.Rasterization;
 using RedHoleEngine.Rendering.UI;
@@ -47,6 +48,7 @@ public class Application : IDisposable
 
     // Raytracing
     private RaytracerMeshSystem? _raytracerMeshSystem;
+    private LightSystem? _lightSystem;
     private RasterMeshSystem? _rasterMeshSystem;
     private RenderSettingsSystem? _renderSettingsSystem;
     private UiSystem? _uiSystem;
@@ -367,6 +369,14 @@ public class Application : IDisposable
         if (_legacyCamera != null)
         {
             _raytracerMeshSystem.SetCamera(_legacyCamera);
+        }
+
+        // Collect scene lights for the raytracer's direct lighting
+        _lightSystem = new LightSystem();
+        scene.World.AddSystem(_lightSystem);
+        if (_backend != null)
+        {
+            _lightSystem.SetBackend(_backend);
         }
 
         // Initialize raster mesh system (primitive mode)

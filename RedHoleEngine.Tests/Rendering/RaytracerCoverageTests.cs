@@ -370,6 +370,8 @@ internal sealed class RecordingGraphicsBackend : IGraphicsBackend
     public void SetRaytracerMeshData(RaytracerMeshData data) => RaytracerUploads.Add(data);
     public void SetRasterMeshData(RasterMeshData data) => RasterUploads.Add(data);
     public void UploadMaterials(MaterialLibrary library) => MaterialUploads++;
+    public List<RedHoleEngine.Rendering.Lighting.GpuLight[]> LightUploads { get; } = new();
+    public void SetLights(ReadOnlySpan<RedHoleEngine.Rendering.Lighting.GpuLight> lights) => LightUploads.Add(lights.ToArray());
     public void Initialize() { }
     public void Render(Camera camera, BlackHole blackHole, float time) { }
     public void Render(Camera camera, BlackHole blackHole, float time, DebugDrawManager? debugDraw) { }

@@ -126,6 +126,7 @@ public class DeleteEntitiesCommand : ICommand
         CaptureComponent<RenderSettingsComponent>(entity, snapshot);
         CaptureComponent<RaytracerMeshComponent>(entity, snapshot);
         CaptureComponent<AccretionDiskComponent>(entity, snapshot);
+        CaptureComponent<LightComponent>(entity, snapshot);
 
         return snapshot;
     }
@@ -385,6 +386,7 @@ public class DuplicateEntitiesCommand : ICommand
         CaptureComponent<RenderSettingsComponent>(entity, snapshot);
         CaptureComponent<RaytracerMeshComponent>(entity, snapshot);
         CaptureComponent<AccretionDiskComponent>(entity, snapshot);
+        CaptureComponent<LightComponent>(entity, snapshot);
 
         return snapshot;
     }

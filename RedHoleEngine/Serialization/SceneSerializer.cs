@@ -37,6 +37,7 @@ public class SceneSerializer
         RegisterComponent<MaterialComponent>(7, new MaterialComponentSerializer());
         RegisterComponent<RenderSettingsComponent>(8, new RenderSettingsComponentSerializer());
         RegisterComponent<RaytracerMeshComponent>(9, new RaytracerMeshComponentSerializer());
+        RegisterComponent<LightComponent>(20, new LightComponentSerializer());
     }
 
     /// <summary>

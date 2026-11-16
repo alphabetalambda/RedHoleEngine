@@ -20,6 +20,10 @@
 
   <ItemGroup>
     <ProjectReference Include="..\RedHoleEngine\RedHoleEngine.csproj" />
+    <ProjectReference Include="..\RedHoleEngine.Editor\RedHoleEngine.Editor.csproj" />
+    <!-- Aliased: the trainer source-links the editor's shared UI files, so its copies of those
+         types would otherwise clash with the editor's -->
+    <ProjectReference Include="..\RedHoleML.Trainer\RedHoleML.Trainer.csproj" Aliases="trainer" />
   </ItemGroup>
 
 </Project>

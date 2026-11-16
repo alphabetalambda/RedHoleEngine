@@ -41,6 +41,17 @@ public abstract class EditorPanel
     protected UndoRedoManager? UndoRedo { get; private set; }
 
     /// <summary>
+    /// Invoked when the panel changes the scene without recording an undo command,
+    /// so the editor can mark the scene as having unsaved changes
+    /// </summary>
+    public Action? SceneModified { get; set; }
+
+    /// <summary>
+    /// Report a scene change that bypassed the undo/redo system
+    /// </summary>
+    protected void MarkSceneDirty() => SceneModified?.Invoke();
+
+    /// <summary>
     /// Set references to shared editor state
     /// </summary>
     public void SetContext(World? world, SelectionManager? selection, UndoRedoManager? undoRedo = null)

@@ -5,10 +5,18 @@ namespace RedHoleEngine.Editor.Commands;
 /// </summary>
 public class UndoRedoManager
 {
-    private readonly Stack<ICommand> _undoStack = new();
-    private readonly Stack<ICommand> _redoStack = new();
+    private readonly Stack<Entry> _undoStack = new();
+    private readonly Stack<Entry> _redoStack = new();
     private readonly int _maxHistorySize;
     private bool _isExecutingCommand;
+
+    // Versioning: every distinct document state reachable through undo/redo gets a unique id.
+    // StateVersion is the id of the current state, so callers can remember a "save point"
+    // and later tell whether the document has moved away from it (or been undone back to it).
+    private long _nextVersion;
+    private long _baseVersion;
+
+    private readonly record struct Entry(ICommand Command, long Version);
     
     /// <summary>
     /// Event fired when the undo/redo state changes
@@ -43,12 +51,19 @@ public class UndoRedoManager
     /// <summary>
     /// Description of the next command to undo (or null if none)
     /// </summary>
-    public string? UndoDescription => _undoStack.Count > 0 ? _undoStack.Peek().Description : null;
+    public string? UndoDescription => _undoStack.Count > 0 ? _undoStack.Peek().Command.Description : null;
     
     /// <summary>
     /// Description of the next command to redo (or null if none)
     /// </summary>
-    public string? RedoDescription => _redoStack.Count > 0 ? _redoStack.Peek().Description : null;
+    public string? RedoDescription => _redoStack.Count > 0 ? _redoStack.Peek().Command.Description : null;
+
+    /// <summary>
+    /// Identifier of the current document state. It changes whenever a command is executed,
+    /// merged, undone, redone or the history is cleared, and returns to a previous value when
+    /// undo/redo returns to that exact state. Compare against a stored value to detect unsaved changes.
+    /// </summary>
+    public long StateVersion => _undoStack.Count > 0 ? _undoStack.Peek().Version : _baseVersion;
 
     public UndoRedoManager(int maxHistorySize = 100)
     {
@@ -72,13 +87,16 @@ public class UndoRedoManager
             command.Execute();
             
             // Try to merge with the last command
-            if (_undoStack.Count > 0 && _undoStack.Peek().CanMergeWith(command))
+            if (_undoStack.Count > 0 && _undoStack.Peek().Command.CanMergeWith(command))
             {
-                _undoStack.Peek().MergeWith(command);
+                // A merge changes the resulting state, so it gets a fresh version
+                var top = _undoStack.Pop();
+                top.Command.MergeWith(command);
+                _undoStack.Push(top with { Version = ++_nextVersion });
             }
             else
             {
-                _undoStack.Push(command);
+                _undoStack.Push(new Entry(command, ++_nextVersion));
                 
                 // Trim history if it exceeds max size
                 TrimHistory();
@@ -106,9 +124,9 @@ public class UndoRedoManager
         _isExecutingCommand = true;
         try
         {
-            var command = _undoStack.Pop();
-            command.Undo();
-            _redoStack.Push(command);
+            var entry = _undoStack.Pop();
+            entry.Command.Undo();
+            _redoStack.Push(entry);
             
             StateChanged?.Invoke();
         }
@@ -129,9 +147,9 @@ public class UndoRedoManager
         _isExecutingCommand = true;
         try
         {
-            var command = _redoStack.Pop();
-            command.Execute();
-            _undoStack.Push(command);
+            var entry = _redoStack.Pop();
+            entry.Command.Execute();
+            _undoStack.Push(entry);
             
             StateChanged?.Invoke();
         }
@@ -148,6 +166,7 @@ public class UndoRedoManager
     {
         _undoStack.Clear();
         _redoStack.Clear();
+        _baseVersion = ++_nextVersion;
         StateChanged?.Invoke();
     }
 
@@ -156,7 +175,7 @@ public class UndoRedoManager
     /// </summary>
     public IEnumerable<string> GetUndoHistory(int maxCount = 10)
     {
-        return _undoStack.Take(maxCount).Select(c => c.Description);
+        return _undoStack.Take(maxCount).Select(e => e.Command.Description);
     }
 
     /// <summary>
@@ -164,24 +183,25 @@ public class UndoRedoManager
     /// </summary>
     public IEnumerable<string> GetRedoHistory(int maxCount = 10)
     {
-        return _redoStack.Take(maxCount).Select(c => c.Description);
+        return _redoStack.Take(maxCount).Select(e => e.Command.Description);
     }
 
     private void TrimHistory()
     {
-        // Convert to list, trim, and rebuild stack (keeps oldest commands)
-        if (_undoStack.Count > _maxHistorySize)
+        if (_undoStack.Count <= _maxHistorySize)
+            return;
+
+        // Stack enumerates newest first; keep the newest _maxHistorySize entries
+        var entries = _undoStack.ToList();
+        var dropped = entries.Skip(_maxHistorySize).ToList();
+
+        // The oldest reachable state is now the one after the newest dropped command
+        _baseVersion = dropped[0].Version;
+
+        _undoStack.Clear();
+        for (int i = _maxHistorySize - 1; i >= 0; i--)
         {
-            var commands = _undoStack.ToList();
-            commands.Reverse(); // Oldest first
-            commands = commands.Skip(commands.Count - _maxHistorySize).ToList();
-            commands.Reverse(); // Newest first again
-            
-            _undoStack.Clear();
-            foreach (var cmd in commands.AsEnumerable().Reverse())
-            {
-                _undoStack.Push(cmd);
-            }
+            _undoStack.Push(entries[i]);
         }
     }
 }

@@ -2,9 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Numerics;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.PixelFormats;
-using SixLabors.ImageSharp.Processing;
+using RedHoleEngine.Resources;
 
 namespace RedHoleEngine.Rendering.PBR;
 
@@ -140,25 +138,26 @@ public class TextureLibrary : IDisposable
 
         try
         {
-            using var image = Image.Load<Rgba32>(path);
-            
+            var image = ImageUtils.LoadRgba8(path);
+            var pixelData = image.Rgba;
+            int width = image.Width;
+            int height = image.Height;
+
             // Resize if too large
-            if (image.Width > MaxTextureSize || image.Height > MaxTextureSize)
+            if (width > MaxTextureSize || height > MaxTextureSize)
             {
                 float scale = Math.Min(
-                    (float)MaxTextureSize / image.Width,
-                    (float)MaxTextureSize / image.Height);
-                int newWidth = (int)(image.Width * scale);
-                int newHeight = (int)(image.Height * scale);
-                image.Mutate(x => x.Resize(newWidth, newHeight));
+                    (float)MaxTextureSize / width,
+                    (float)MaxTextureSize / height);
+                int newWidth = Math.Max(1, (int)(width * scale));
+                int newHeight = Math.Max(1, (int)(height * scale));
+                pixelData = ImageUtils.ResizeRgba8(pixelData, width, height, newWidth, newHeight);
+                width = newWidth;
+                height = newHeight;
             }
 
-            // Extract pixel data
-            var pixelData = new byte[image.Width * image.Height * 4];
-            image.CopyPixelDataTo(pixelData);
-
             bool isSrgb = type == PbrTextureType.BaseColor || type == PbrTextureType.Emissive;
-            var texture = new PbrTexture(path, image.Width, image.Height, pixelData, isSrgb);
+            var texture = new PbrTexture(path, width, height, pixelData, isSrgb);
             
             // Assign index and register
             texture.Index = _textures.Count;
@@ -166,7 +165,7 @@ public class TextureLibrary : IDisposable
             _texturesByPath[path] = texture;
             _isDirty = true;
 
-            Console.WriteLine($"Loaded texture: {path} ({image.Width}x{image.Height})");
+            Console.WriteLine($"Loaded texture: {path} ({width}x{height})");
             return texture;
         }
         catch (Exception ex)

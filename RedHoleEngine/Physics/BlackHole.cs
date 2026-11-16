@@ -86,11 +86,13 @@ public class BlackHole
     public float ErgospherePolarRadius => OuterHorizonRadius;
 
     /// <summary>
-    /// Photon sphere radius: r = 1.5 * rs = 3M
-    /// Light can orbit here in unstable circular orbits
-    /// Note: For Kerr, photon orbits are more complex (prograde vs retrograde)
+    /// Photon sphere radius: the unstable circular photon orbit.
+    /// Schwarzschild (a* = 0): r = 1.5 × rs = 3M.
+    /// Kerr: reports the prograde equatorial photon orbit, which shrinks from 3M to M as a* → 1
+    /// (the retrograde orbit grows to 4M; see <see cref="KerrMetric.PhotonOrbitRadius"/>).
+    /// Same value as <see cref="CalculatePhotonSphereRadius"/>.
     /// </summary>
-    public float PhotonSphereRadius => 1.5f * SchwarzschildRadius;
+    public float PhotonSphereRadius => CalculatePhotonSphereRadius();
 
     /// <summary>
     /// Inner radius of the accretion disk
@@ -133,53 +135,28 @@ public class BlackHole
     /// For a* = 0: ISCO = 6M (= 3 × rs)
     /// For a* = 1: ISCO = M
     /// </summary>
-    public float CalculateProgradeISCO()
-    {
-        if (Spin < 0.001f)
-            return 3.0f * SchwarzschildRadius; // 6M for Schwarzschild
-            
-        // Kerr ISCO formula (prograde)
-        float a = Spin;
-        float Z1 = 1 + MathF.Pow(1 - a * a, 1f/3f) * (MathF.Pow(1 + a, 1f/3f) + MathF.Pow(1 - a, 1f/3f));
-        float Z2 = MathF.Sqrt(3 * a * a + Z1 * Z1);
-        float isco = Mass * (3 + Z2 - MathF.Sqrt((3 - Z1) * (3 + Z1 + 2 * Z2)));
-        return isco;
-    }
+    public float CalculateProgradeISCO() => KerrMetric.Isco(Mass, Spin, prograde: true);
     
     /// <summary>
     /// Calculate the Innermost Stable Circular Orbit (ISCO) for retrograde orbits
     /// For a* = 0: ISCO = 6M (same as prograde)
     /// For a* = 1: ISCO = 9M
     /// </summary>
-    public float CalculateRetrogradeISCO()
-    {
-        if (Spin < 0.001f)
-            return 3.0f * SchwarzschildRadius; // 6M for Schwarzschild
-            
-        // Kerr ISCO formula (retrograde)
-        float a = Spin;
-        float Z1 = 1 + MathF.Pow(1 - a * a, 1f/3f) * (MathF.Pow(1 + a, 1f/3f) + MathF.Pow(1 - a, 1f/3f));
-        float Z2 = MathF.Sqrt(3 * a * a + Z1 * Z1);
-        float isco = Mass * (3 + Z2 + MathF.Sqrt((3 - Z1) * (3 + Z1 + 2 * Z2)));
-        return isco;
-    }
+    public float CalculateRetrogradeISCO() => KerrMetric.Isco(Mass, Spin, prograde: false);
     
     /// <summary>
     /// Calculate the photon sphere radius (where light can orbit)
     /// For Schwarzschild: r_ph = 1.5 × rs = 3M
-    /// For Kerr (prograde, equatorial): r_ph = 2M(1 + cos(2/3 × arccos(-a*)))
+    /// For Kerr this returns the prograde equatorial orbit, r_ph = 2M(1 + cos(2/3 × arccos(-a*))),
+    /// the smallest and most visible photon orbit (M at a* = 1). The renderer uploads this value.
     /// </summary>
-    public float CalculatePhotonSphereRadius()
-    {
-        if (Spin < 0.001f)
-            return 1.5f * SchwarzschildRadius; // 3M for Schwarzschild
-        
-        // For Kerr, photon sphere depends on direction
-        // Use prograde equatorial value (smallest, most visible)
-        float a = Spin;
-        float photonR = 2 * Mass * (1 + MathF.Cos(2f/3f * MathF.Acos(-a)));
-        return photonR;
-    }
+    public float CalculatePhotonSphereRadius() => KerrMetric.PhotonOrbitRadius(Mass, Spin, prograde: true);
+    
+    /// <summary>
+    /// Calculate the retrograde equatorial photon orbit radius,
+    /// r_ph = 2M(1 + cos(2/3 × arccos(a*))): 3M at a* = 0, 4M at a* = 1.
+    /// </summary>
+    public float CalculateRetrogradePhotonOrbitRadius() => KerrMetric.PhotonOrbitRadius(Mass, Spin, prograde: false);
     
     /// <summary>
     /// Kerr ring singularity radius (a = J/M in geometric units)
@@ -201,7 +178,6 @@ public class BlackHole
         float sin2Theta = sinTheta * sinTheta;
         
         float delta = r2 - 2 * Mass * r + a2;
-        float sigma = r2 + a2 * MathF.Cos(theta) * MathF.Cos(theta);
         
         float rPlusA2 = r2 + a2;
         float denominator = rPlusA2 * rPlusA2 - a2 * delta * sin2Theta;

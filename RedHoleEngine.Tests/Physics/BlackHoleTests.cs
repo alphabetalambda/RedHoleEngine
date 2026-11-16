@@ -127,17 +127,10 @@ public class BlackHoleTests
     }
 
     [Fact]
-    public void PhotonSphereRadius_Property_StaysAtOneAndAHalfSchwarzschildRadii()
-    {
-        var hole = BlackHole.CreateKerr(Vector3.Zero, 2f, 0.9f);
-        Assert.Equal(1.5f * hole.SchwarzschildRadius, hole.PhotonSphereRadius, Eps);
-        Assert.True(hole.CalculatePhotonSphereRadius() < hole.PhotonSphereRadius);
-    }
-
-    [Fact(Skip = "BUG: BlackHole.PhotonSphereRadius is fixed at 1.5*Rs for every spin, while CalculatePhotonSphereRadius() returns the spin-aware prograde photon orbit (smaller for a*>0). Not changed: the property comment documents the Schwarzschild approximation, and VulkanBackend already uploads CalculatePhotonSphereRadius().")]
-    public void PhotonSphereRadius_Property_ShouldTrackSpin()
+    public void PhotonSphereRadius_Property_TracksSpin()
     {
         var hole = BlackHole.CreateKerr(Vector3.Zero, 2f, 0.9f);
         Assert.Equal(hole.CalculatePhotonSphereRadius(), hole.PhotonSphereRadius, Eps);
+        Assert.True(hole.PhotonSphereRadius < 1.5f * hole.SchwarzschildRadius);
     }
 }

@@ -97,18 +97,20 @@ public class GravitySourceKerrTests
     }
 
     [Fact]
-    public void PhotonSphereRadius_IsThreeTimesMass_EvenForKerr()
+    public void PhotonSphereRadius_IsProgradeOrbit_ForKerr()
     {
         var kerr = GravitySourceComponent.CreateRotatingBlackHole(10f, 0.9f, Vector3.UnitY);
-        Assert.Equal(30f, kerr.PhotonSphereRadius, Eps);
+        // Prograde equatorial photon orbit at a* = 0.9 is 1.557855 M.
+        Assert.Equal(15.57855f, kerr.PhotonSphereRadius, Eps);
         Assert.Equal(60f, kerr.ISCO, Eps);
     }
 
-    [Fact(Skip = "BUG: GravitySourceComponent.PhotonSphereRadius is hardcoded to 3*Mass for Kerr sources. The spin-aware prograde photon orbit (BlackHole.CalculatePhotonSphereRadius) is smaller for a*>0. Left unchanged: the property comment scopes the formula to Schwarzschild, and there is no separate Kerr accessor. AudioDebugVisualizer draws this radius.")]
-    public void PhotonSphereRadius_ShouldShrinkAsSpinIncreases()
+    [Fact]
+    public void PhotonSphereRadius_ShrinksAsSpinIncreases()
     {
         var slow = GravitySourceComponent.CreateRotatingBlackHole(10f, 0.01f, Vector3.UnitY);
         var fast = GravitySourceComponent.CreateRotatingBlackHole(10f, 0.9f, Vector3.UnitY);
         Assert.True(fast.PhotonSphereRadius < slow.PhotonSphereRadius);
+        Assert.True(fast.RetrogradePhotonOrbitRadius > slow.RetrogradePhotonOrbitRadius);
     }
 }

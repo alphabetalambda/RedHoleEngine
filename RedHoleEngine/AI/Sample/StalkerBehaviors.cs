@@ -1,6 +1,7 @@
 using System.Numerics;
 using RedHoleEngine.AI.BehaviorTrees;
 using RedHoleEngine.AI.Director;
+using RedHoleEngine.AI.Navigation;
 using RedHoleEngine.AI.Perception;
 
 namespace RedHoleEngine.AI.Sample;
@@ -71,12 +72,41 @@ public static class StalkerBehaviors
             .RegisterCondition(StalkerIds.HasVisualContact, HasVisualContact)
             .RegisterCondition(StalkerIds.HasFreshNoise, HasFreshNoise)
             .RegisterCondition(StalkerIds.HasSearchTarget, HasSearchTarget)
-            .RegisterAction(StalkerIds.Retreat, Retreat)
-            .RegisterAction(StalkerIds.Ambush, Ambush)
-            .RegisterAction(StalkerIds.Hunt, Hunt)
-            .RegisterAction(StalkerIds.Investigate, Investigate)
-            .RegisterAction(StalkerIds.Search, Search)
-            .RegisterAction(StalkerIds.Patrol, Patrol);
+            .RegisterAction(StalkerIds.Retreat, WithNavigation(Retreat))
+            .RegisterAction(StalkerIds.Ambush, WithNavigation(Ambush))
+            .RegisterAction(StalkerIds.Hunt, WithNavigation(Hunt))
+            .RegisterAction(StalkerIds.Investigate, WithNavigation(Investigate))
+            .RegisterAction(StalkerIds.Search, WithNavigation(Search))
+            .RegisterAction(StalkerIds.Patrol, PatrolWithNavigation);
+    }
+
+    /// <summary>
+    /// Runs a decision, then walks the body toward the intent position it chose.
+    /// The decision's status is returned untouched, so the tree behaves the same with or
+    /// without navigation; an agent without a <see cref="NavAgentComponent"/> is not moved.
+    /// </summary>
+    private static Func<BehaviorContext, NodeStatus> WithNavigation(Func<BehaviorContext, NodeStatus> decide)
+    {
+        return context =>
+        {
+            var status = decide(context);
+            NavigationActions.FollowIntent(context);
+            return status;
+        };
+    }
+
+    /// <summary>
+    /// Patrol has no intent position. The body walks the route stored under
+    /// <see cref="NavigationKeys.PatrolPoints"/> when there is one, and stands still otherwise.
+    /// </summary>
+    private static NodeStatus PatrolWithNavigation(BehaviorContext context)
+    {
+        var status = Patrol(context);
+        if (context.Blackboard.Has(NavigationKeys.PatrolPoints))
+            NavigationActions.PatrolFromBlackboard(context);
+        else
+            NavigationActions.Stop(context);
+        return status;
     }
 
     public static bool ShouldRetreat(BehaviorContext context)

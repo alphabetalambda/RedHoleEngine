@@ -61,6 +61,16 @@ public sealed class BehaviorTreeBuilder
     public BehaviorTreeBuilder Action(string name, string actionKey)
         => Attach(new ActionNode(name, ResolveAction(actionKey), actionKey));
 
+    /// <summary>
+    /// Adds a ready-made leaf, for node types the builder has no method for
+    /// (for example the navigation nodes). Such a tree cannot be exported to JSON.
+    /// </summary>
+    public BehaviorTreeBuilder Leaf(BehaviorNode leaf)
+    {
+        ArgumentNullException.ThrowIfNull(leaf);
+        return Attach(leaf);
+    }
+
     /// <summary>Assigns a behavior-unlock id to the node most recently created.</summary>
     public BehaviorTreeBuilder Gate(string gateId)
     {

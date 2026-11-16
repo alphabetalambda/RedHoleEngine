@@ -42,6 +42,10 @@ This file is a concise, AI-oriented guide to the RedHoleEngine codebase: archite
 - Collider + rigid body components live in `Components/PhysicsComponents.cs` and `Physics/Collision/`.
 - Physics debug draw uses `Rendering/Debug/`.
 
+## AI conventions
+- Behavior trees, perception and the director live in `AI/` (see `docs/AI_BEHAVIOR_TREE.md`).
+- Navigation is in `AI/Navigation/`: `NavGrid` (hand-built or baked from colliders by `NavGridBaker`), `NavPathfinder` (A* + smoothing), `NavAgentComponent` + `NavigationSystem`, and the behavior-tree leaves in `NavigationNodes.cs` / `NavigationActions.cs`.
+
 ## Audio conventions
 - Audio systems and backends are in `Audio/`.
 - Clips are in `Audio/Clips/` and copied to output by the project file.
